@@ -74,6 +74,7 @@ echo "== TinyCC compile + stable GCC/newlib link =="
     "$ROOT_DIR/newlib-port/build/crt0_newlib.o" \
     "$ROOT_DIR/newlib-port/build/syscall_raw.o" \
     "$ROOT_DIR/newlib-port/build/syscalls.o" \
+    "$ROOT_DIR/newlib-port/build/stdio_lock.o" \
     "$OBJ" \
     "$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/lib/libc.a" \
     "$STABLE_LIBGCC"
@@ -99,6 +100,7 @@ echo "== TinyCC + newlib link with root ARM/EABI libgcc =="
     "$ROOT_DIR/newlib-port/build/crt0_newlib.o" \
     "$ROOT_DIR/newlib-port/build/syscall_raw.o" \
     "$MIN_SYSCALLS" \
+    "$ROOT_DIR/newlib-port/build/stdio_lock.o" \
     "$OBJ" \
     "$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/lib/libc.a" \
     "$TCC_LIBGCC"

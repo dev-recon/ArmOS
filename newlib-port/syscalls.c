@@ -184,6 +184,7 @@ extern long sys_shm_unlink(const char *name);
 extern long sys_shm_map(int id, void *addr, int flags);
 extern long sys_shm_unmap(void *addr, unsigned long size);
 extern long sys_socket(int domain, int type, int protocol);
+extern long sys_socketpair(int domain, int type, int protocol, int sockets[2]);
 extern long sys_bind(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_connect(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_listen(int sockfd, int backlog);
@@ -1487,6 +1488,11 @@ int dup2(int oldfd, int newfd)
 int socket(int domain, int type, int protocol)
 {
     return ret_errno(sys_socket(domain, type, protocol));
+}
+
+int socketpair(int domain, int type, int protocol, int sockets[2])
+{
+    return ret_errno(sys_socketpair(domain, type, protocol, sockets));
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)

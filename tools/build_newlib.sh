@@ -59,7 +59,8 @@ fi
 
 BUILD_CONTRACT="ArmOS Newlib reproducible paths v1
 target=$TARGET
-cflags=$TARGET_CFLAGS"
+cflags=$TARGET_CFLAGS
+retargetable_locking=yes"
 
 mkdir -p "$BUILD_ROOT/src" "$INSTALL_ROOT"
 if [ -d "$OBJ_DIR" ] &&
@@ -138,6 +139,7 @@ echo "=== Configuring newlib for $TARGET ==="
         --disable-multilib \
         --disable-newlib-supplied-syscalls \
         --enable-newlib-multithread \
+        --enable-newlib-retargetable-locking \
         --enable-newlib-reent-small \
         CFLAGS_FOR_TARGET="$TARGET_CFLAGS"
 )

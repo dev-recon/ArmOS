@@ -20,7 +20,11 @@
 #include <sys/types.h>
 
 #define AF_UNSPEC    0
+#define AF_UNIX      1
+#define AF_LOCAL     AF_UNIX
 #define AF_INET      2
+#define PF_UNIX      AF_UNIX
+#define PF_LOCAL     AF_LOCAL
 #define PF_INET      AF_INET
 #define SOCK_STREAM  1
 #define SOCK_DGRAM   2
@@ -38,6 +42,7 @@ struct sockaddr {
 };
 
 int socket(int domain, int type, int protocol);
+int socketpair(int domain, int type, int protocol, int sockets[2]);
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int listen(int sockfd, int backlog);

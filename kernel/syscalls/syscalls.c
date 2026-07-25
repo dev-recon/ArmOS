@@ -50,6 +50,7 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_clone] = (syscall_func_t)sys_clone,
     [__NR_set_tls] = (syscall_func_t)sys_set_tls,
     [__NR_get_tls_info] = (syscall_func_t)sys_get_tls_info,
+    [__NR_socketpair] = (syscall_func_t)sys_socketpair,
     [__NR_read] = (syscall_func_t)sys_read,
     [__NR_write] = (syscall_func_t)sys_write,
     [__NR_open] = (syscall_func_t)sys_open,

@@ -149,6 +149,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/net/device.o \
 	kernel/net/stack.o \
 	kernel/net/socket.o \
+	kernel/net/armos_socket.o \
 	kernel/net/control.o \
 	kernel/net/wifi.o \
 	kernel/fs/vfs.o \

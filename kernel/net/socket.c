@@ -25,6 +25,7 @@
 #include <kernel/memory.h>
 #include <kernel/net/socket.h>
 #include <kernel/net/stack.h>
+#include <kernel/net/armos_socket.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
 #include <kernel/syscalls.h>
@@ -1039,6 +1040,8 @@ int sys_socket(int domain, int type, int protocol)
     unsigned long irq_flags;
     int fd;
 
+    if (domain == ARMOS_AF_LOCAL)
+        return armos_socket_create(type, protocol);
     if (domain != NET_AF_INET ||
         (type != NET_SOCK_STREAM && type != NET_SOCK_DGRAM) ||
         (protocol != 0 &&
@@ -1073,6 +1076,8 @@ int sys_socket(int domain, int type, int protocol)
 
 int sys_bind(int fd, const void *address, uint32_t address_length)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_bind(fd, address, address_length);
     net_socket_t *socket = net_socket_from_fd(fd);
     net_sockaddr_in_t input;
     uint16_t port;
@@ -1116,6 +1121,8 @@ int sys_bind(int fd, const void *address, uint32_t address_length)
 
 int sys_connect(int fd, const void *address, uint32_t address_length)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_connect(fd, address, address_length);
     net_socket_t *socket = net_socket_from_fd(fd);
     net_sockaddr_in_t input;
     unsigned long irq_flags;
@@ -1170,6 +1177,8 @@ int sys_connect(int fd, const void *address, uint32_t address_length)
 
 int sys_listen(int fd, int backlog)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_listen(fd, backlog);
     net_socket_t *socket = net_socket_from_fd(fd);
 
     if (!socket)
@@ -1189,6 +1198,8 @@ int sys_listen(int fd, int backlog)
 
 int sys_accept(int fd, void *address, uint32_t *address_length)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_accept(fd, address, address_length);
     net_socket_t *listener = net_socket_from_fd(fd);
     net_socket_t *socket;
     net_sockaddr_in_t output;
@@ -1246,6 +1257,9 @@ int sys_accept(int fd, void *address, uint32_t *address_length)
 ssize_t sys_sendto(int fd, const void *buffer, size_t length, int flags,
                    const void *address, uint32_t address_length)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_send(fd, buffer, length, flags, address,
+                                address_length);
     net_socket_t *socket = net_socket_from_fd(fd);
     net_sockaddr_in_t destination;
     uint8_t *copy;
@@ -1296,6 +1310,9 @@ ssize_t sys_sendto(int fd, const void *buffer, size_t length, int flags,
 ssize_t sys_recvfrom(int fd, void *buffer, size_t length, int flags,
                      void *address, uint32_t *address_length)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_receive(fd, buffer, length, flags, address,
+                                   address_length);
     net_socket_t *socket = net_socket_from_fd(fd);
     net_sockaddr_in_t source;
     uint32_t user_length;
@@ -1340,6 +1357,8 @@ ssize_t sys_recvfrom(int fd, void *buffer, size_t length, int flags,
 
 int sys_socket_shutdown(int fd, int how)
 {
+    if (armos_socket_is_fd(fd))
+        return armos_socket_shutdown(fd, how);
     net_socket_t *socket = net_socket_from_fd(fd);
 
     if (!socket)

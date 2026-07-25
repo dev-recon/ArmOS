@@ -22,6 +22,7 @@
 #include <kernel/memory.h>
 #include <kernel/address_space.h>
 #include <kernel/vfs.h>
+#include <kernel/net/armos_socket.h>
 #include <kernel/fd.h>
 #include <kernel/string.h>
 #include <kernel/task.h>
@@ -846,6 +847,9 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_SOCKET)
         return false;
 
+    if (file->type == FILE_TYPE_ARMOS_SOCKET)
+        return armos_socket_read_ready(file);
+
     return file->f_op && file->f_op->read;
 }
 
@@ -860,6 +864,9 @@ static bool fd_write_ready(file_t *file)
         return buffer && buffer->readers > 0 && !buffer->closed_read &&
                buffer->count < PIPE_BUF_SIZE;
     }
+
+    if (file->type == FILE_TYPE_ARMOS_SOCKET)
+        return armos_socket_write_ready(file);
 
     return file->f_op && file->f_op->write;
 }

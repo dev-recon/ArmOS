@@ -34,6 +34,7 @@ CFLAGS := $(ARCH_FLAGS) -std=gnu99 -ffreestanding -nostdlib -fno-builtin \
 OBJECTS := $(BUILD_DIR)/crt0_newlib.o \
            $(BUILD_DIR)/syscall_raw.o \
            $(BUILD_DIR)/syscalls.o \
+           $(BUILD_DIR)/stdio_lock.o \
            $(BUILD_DIR)/pthread.o \
            $(BUILD_DIR)/pthread_sync.o
 

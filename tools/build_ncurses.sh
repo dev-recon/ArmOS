@@ -144,9 +144,7 @@ cp "$TERMINFO_SRC" "$BUNDLE_PREFIX/share/terminfo/armos.ti"
     -Wl,-Ttext="$TARGET_TEXT_ADDRESS" -Wl,-e,_start -Wl,--gc-sections \
     -Wl,--allow-multiple-definition \
     -o "$BUNDLE_USR_BIN/cursestest" \
-    "$NEWLIB_RUNTIME_DIR/crt0_newlib.o" \
-    "$NEWLIB_RUNTIME_DIR/syscall_raw.o" \
-    "$NEWLIB_RUNTIME_DIR/syscalls.o" \
+    $RUNTIME_OBJECTS \
     "$WORK_DIR/cursestest.o" \
     "$BUNDLE_PREFIX/lib/libncurses.a" \
     "$NEWLIB_LIBC" \

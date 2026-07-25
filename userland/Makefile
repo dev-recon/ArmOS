@@ -57,6 +57,7 @@ LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static \
 PORT_OBJECTS := $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/crt0_newlib.o \
                 $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscall_raw.o \
                 $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscalls.o \
+                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/stdio_lock.o \
                 $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread.o \
                 $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread_sync.o
 

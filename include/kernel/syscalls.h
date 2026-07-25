@@ -170,6 +170,7 @@ struct process;
 #define __NR_futex              ARMOS_NR_FUTEX
 #define __NR_set_tls            ARMOS_NR_SET_TLS
 #define __NR_get_tls_info       ARMOS_NR_GET_TLS_INFO
+#define __NR_socketpair         ARMOS_NR_SOCKETPAIR
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -336,6 +337,7 @@ int sys_fchmod(int fd, mode_t mode);
 int sys_chown(const char* pathname, uid_t owner, gid_t group);
 int sys_fchown(int fd, uid_t owner, gid_t group);
 int sys_socket(int domain, int type, int protocol);
+int sys_socketpair(int domain, int type, int protocol, int* sockets);
 int sys_bind(int sockfd, const void* addr, uint32_t addrlen);
 int sys_connect(int sockfd, const void* addr, uint32_t addrlen);
 int sys_listen(int sockfd, int backlog);

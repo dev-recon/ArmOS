@@ -121,6 +121,7 @@ static int exec_armos_link(int argc, char **argv)
     real_argv[n++] = "/opt/tcc/lib/crt0_newlib.o";
     real_argv[n++] = "/opt/tcc/lib/syscall_raw.o";
     real_argv[n++] = "/opt/tcc/lib/syscalls_min.o";
+    real_argv[n++] = "/opt/tcc/lib/stdio_lock.o";
 
     for (i = 1; i < argc; i++) {
         if (arg_is(argv[i], "-lncurses") || arg_is(argv[i], "-lcurses"))

@@ -490,12 +490,11 @@ void wake_up_process_for_signal(task_t* proc)
  */
 bool has_pending_signals(task_t* proc)
 {
-    if (!proc || proc->type != TASK_TYPE_PROCESS || !proc->process){
-        KERROR("has_pending_signals: NULL PROC\n");
-         return false;
-    }
-    
-    return signal_deliverable_mask(proc) != 0;
+    task_t* leader = task_get_process_leader(proc);
+
+    if (!leader)
+        return false;
+    return signal_deliverable_mask(leader) != 0;
 }
 
 static uint32_t signal_deliverable_mask(task_t* proc)

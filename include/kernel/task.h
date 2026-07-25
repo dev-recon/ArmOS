@@ -180,6 +180,7 @@ typedef enum file_type {
     FILE_TYPE_PIPE,
     FILE_TYPE_NETECHO,
     FILE_TYPE_SOCKET,
+    FILE_TYPE_ARMOS_SOCKET,
     FILE_TYPE_FRAMEBUFFER,
     FILE_TYPE_NETCTL,
 } file_type_t;

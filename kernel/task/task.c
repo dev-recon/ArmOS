@@ -1305,14 +1305,16 @@ void switch_to_idle_stack(void)
 static int task_legacy_poll_wait(void *owner)
 {
     task_t *task = task_current_local();
+    task_t *leader;
 
     (void)owner;
     if (!task)
         return -EINTR;
+    leader = task_get_process_leader(task);
     task_set_interruptible_until(task, get_system_ticks() + 1);
     yield();
     task_set_wakeup_time(task, 0);
-    return has_pending_signals(task) ? -EINTR : 0;
+    return leader && has_pending_signals(leader) ? -EINTR : 0;
 }
 
 void init_task_system(void)

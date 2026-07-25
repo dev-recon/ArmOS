@@ -42,6 +42,7 @@
 #include <uapi/armos/time.h>
 #include <sys/mman.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -151,6 +152,7 @@ extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int 
 extern long sys_munmap(void *addr, unsigned long length);
 extern long sys_mprotect(void *addr, unsigned long length, int prot);
 extern long sys_socket(int domain, int type, int protocol);
+extern long sys_socketpair(int domain, int type, int protocol, int sockets[2]);
 extern long sys_bind(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_listen(int sockfd, int backlog);
 extern long sys_accept(int sockfd, void *addr, unsigned long *addrlen);
@@ -204,6 +206,7 @@ extern void __signal_return_trampoline(void);
 #define ARMOS_OPEN_MAX 256
 
 static const char *program_name = "program";
+static int cancel_state = PTHREAD_CANCEL_ENABLE;
 extern char **environ;
 
 struct os_stat {
@@ -229,6 +232,25 @@ static int ret_errno(long ret)
         return -1;
     }
     return (int)ret;
+}
+
+void __armos_runtime_init(void)
+{
+    /*
+     * TinyCC's minimal runtime is single-threaded and uses newlib's initial
+     * process reentrancy object.  The full runtime installs per-thread TLS.
+     */
+}
+
+int pthread_setcancelstate(int state, int *oldstate)
+{
+    if (state != PTHREAD_CANCEL_ENABLE &&
+        state != PTHREAD_CANCEL_DISABLE)
+        return EINVAL;
+    if (oldstate)
+        *oldstate = cancel_state;
+    cancel_state = state;
+    return 0;
 }
 
 void __armos_init_program_name(const char *argv0)
@@ -976,6 +998,11 @@ int dup2(int oldfd, int newfd)
 int socket(int domain, int type, int protocol)
 {
     return ret_errno(sys_socket(domain, type, protocol));
+}
+
+int socketpair(int domain, int type, int protocol, int sockets[2])
+{
+    return ret_errno(sys_socketpair(domain, type, protocol, sockets));
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)

@@ -180,6 +180,7 @@ RAW_SYSCALL sys_thread_exit, 330
 RAW_SYSCALL sys_futex, 331
 RAW_SYSCALL sys_set_tls, 332
 RAW_SYSCALL sys_get_tls_info, 333
+RAW_SYSCALL sys_socketpair, 334
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function
