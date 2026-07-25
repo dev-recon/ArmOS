@@ -96,6 +96,7 @@ static const block_device_ops_t virtio_block_ops = {
 
 static block_device_t virtio_block_dev = {
     .name = "virtio0",
+    .transport_name = "virtio-blk",
     .sector_size = 512,
     .ops = &virtio_block_ops,
 };

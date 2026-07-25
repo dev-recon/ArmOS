@@ -124,6 +124,7 @@ static const block_device_ops_t emmc_block_ops = {
 
 static block_device_t emmc_block_dev = {
     .name = "sd0",
+    .transport_name = "bcm2835-emmc",
     .sector_size = EMMC_BLOCK_SIZE,
     .capacity_sectors = EMMC_FALLBACK_SECTORS,
     .read_only = false,

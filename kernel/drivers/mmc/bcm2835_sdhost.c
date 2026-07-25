@@ -14,7 +14,10 @@
  * - Leave the Arasan SDHCI controller available for the Pi 3 SDIO radio.
  *
  * Notes:
- * - The controller is polling-only and uses conservative single-block PIO.
+ * - The controller is polling-only and uses PIO. Contiguous requests use
+ *   CMD18/CMD25 and an explicit CMD12 stop.
+ * - A failed multi-block request permanently falls back to the established
+ *   CMD17/CMD24 path for the rest of the boot.
  * - GPIO48-53 are selected as the documented ALT0 SDHOST pin group.
  * - The stable Arasan driver remains available as a platform fallback.
  */
@@ -27,6 +30,7 @@
 #include <kernel/kprintf.h>
 #include <kernel/mmc/bcm2835_sdhost.h>
 #include <kernel/spinlock.h>
+#include <kernel/string.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/types.h>
@@ -114,13 +118,16 @@ typedef struct {
     uint32_t rca;
     bool high_capacity;
     bool wide_bus;
+    bool multiblock;
     bool ready;
 } bcm2835_sdhost_state_t;
 
 static bcm2835_sdhost_state_t sdhost_state;
 static spinlock_t sdhost_lock = SPINLOCK_INIT("bcm_sdhost");
+static spinlock_t sdhost_stats_lock = SPINLOCK_INIT("bcm_sdhost_stats");
 static volatile bool sdhost_busy;
 static task_t *sdhost_owner;
+static block_transport_stats_t sdhost_transport_stats;
 
 static int sdhost_blockdev_read(block_device_t *dev, uint64_t lba,
                                 uint32_t count, void *buffer);
@@ -128,16 +135,20 @@ static int sdhost_blockdev_write(block_device_t *dev, uint64_t lba,
                                  uint32_t count, const void *buffer);
 static int sdhost_blockdev_flush(block_device_t *dev);
 static void sdhost_blockdev_shutdown(block_device_t *dev);
+static void sdhost_blockdev_get_transport_stats(
+    block_device_t *dev, block_transport_stats_t *stats);
 
 static const block_device_ops_t sdhost_block_ops = {
     .read_sectors = sdhost_blockdev_read,
     .write_sectors = sdhost_blockdev_write,
     .flush = sdhost_blockdev_flush,
     .shutdown = sdhost_blockdev_shutdown,
+    .get_transport_stats = sdhost_blockdev_get_transport_stats,
 };
 
 static block_device_t sdhost_block_dev = {
     .name = "sd0",
+    .transport_name = "bcm2835-sdhost",
     .sector_size = SDHOST_BLOCK_SIZE,
     .capacity_sectors = SDHOST_FALLBACK_SECTORS,
     .read_only = false,
@@ -279,15 +290,20 @@ static int sdhost_transfer_block(bool read, uint8_t *buffer)
         arch_cpu_relax();
     }
 
-    return sdhost_wait_transfer_complete();
+    return 0;
 }
 
-static int sdhost_send_command(uint32_t command, uint32_t argument,
-                               uint32_t flags, uint8_t *data,
-                               uint32_t response[4])
+static int sdhost_send_command_blocks(uint32_t command, uint32_t argument,
+                                      uint32_t flags, uint8_t *data,
+                                      uint32_t blocks,
+                                      uint32_t response[4])
 {
     uint32_t command_word = command & SDCMD_INDEX_MASK;
     uint32_t status;
+
+    if ((data && blocks == 0u) || (!data && blocks != 0u) ||
+        blocks > 0xffffu)
+        return -EINVAL;
 
     if (!sdhost_wait_command_idle())
         return -ETIMEDOUT;
@@ -309,7 +325,7 @@ static int sdhost_send_command(uint32_t command, uint32_t argument,
 
     if (data) {
         sdhost_write(SDHOST_SDHBCT, SDHOST_BLOCK_SIZE);
-        sdhost_write(SDHOST_SDHBLC, 1u);
+        sdhost_write(SDHOST_SDHBLC, blocks);
     }
     sdhost_write(SDHOST_SDARG, argument);
     sdhost_write(SDHOST_SDCMD, command_word | SDCMD_NEW);
@@ -341,10 +357,15 @@ static int sdhost_send_command(uint32_t command, uint32_t argument,
     }
 
     if (data) {
-        int ret = sdhost_transfer_block((flags & SDHOST_DATA_READ) != 0,
-                                        data);
-        if (ret < 0)
-            return ret;
+        bool read = (flags & SDHOST_DATA_READ) != 0;
+
+        for (uint32_t block = 0; block < blocks; block++) {
+            int ret = sdhost_transfer_block(
+                read, data + block * SDHOST_BLOCK_SIZE);
+
+            if (ret < 0)
+                return ret;
+        }
     }
 
     if (flags & SDHOST_RESP_BUSY) {
@@ -358,6 +379,18 @@ static int sdhost_send_command(uint32_t command, uint32_t argument,
         sdhost_write(SDHOST_SDHSTS, SDHSTS_BUSY);
     }
     return 0;
+}
+
+static int sdhost_send_command(uint32_t command, uint32_t argument,
+                               uint32_t flags, uint8_t *data,
+                               uint32_t response[4])
+{
+    int ret = sdhost_send_command_blocks(command, argument, flags, data,
+                                         data ? 1u : 0u, response);
+
+    if (ret == 0 && data)
+        ret = sdhost_wait_transfer_complete();
+    return ret;
 }
 
 static int sdhost_app_command(uint32_t rca, uint32_t command,
@@ -463,17 +496,95 @@ static void sdhost_release(void)
     spin_unlock_irqrestore(&sdhost_lock, irq_flags);
 }
 
+static void sdhost_account_data_command(bool read, uint32_t sectors, int ret)
+{
+    unsigned long irq_flags;
+
+    spin_lock_irqsave(&sdhost_stats_lock, &irq_flags);
+    if (read) {
+        sdhost_transport_stats.read_commands++;
+        sdhost_transport_stats.read_sectors += sectors;
+        if (ret < 0)
+            sdhost_transport_stats.read_errors++;
+        if (sectors > sdhost_transport_stats.max_read_sectors)
+            sdhost_transport_stats.max_read_sectors = sectors;
+    } else {
+        sdhost_transport_stats.write_commands++;
+        sdhost_transport_stats.write_sectors += sectors;
+        if (ret < 0)
+            sdhost_transport_stats.write_errors++;
+        if (sectors > sdhost_transport_stats.max_write_sectors)
+            sdhost_transport_stats.max_write_sectors = sectors;
+    }
+    spin_unlock_irqrestore(&sdhost_stats_lock, irq_flags);
+}
+
+static void sdhost_account_multiblock_fallback(void)
+{
+    unsigned long irq_flags;
+
+    spin_lock_irqsave(&sdhost_stats_lock, &irq_flags);
+    sdhost_transport_stats.multiblock_fallbacks++;
+    spin_unlock_irqrestore(&sdhost_stats_lock, irq_flags);
+}
+
+static int sdhost_data_command(uint32_t command, uint32_t argument,
+                               bool read, uint8_t *buffer, uint32_t blocks)
+{
+    uint32_t flags = read ? SDHOST_DATA_READ : SDHOST_DATA_WRITE;
+    int ret;
+
+    ret = sdhost_send_command_blocks(command, argument, flags, buffer,
+                                     blocks, NULL);
+    if (blocks > 1u) {
+        int stop_ret = sdhost_send_command(12u, 0u, SDHOST_RESP_BUSY,
+                                           NULL, NULL);
+        int complete_ret = sdhost_wait_transfer_complete();
+
+        if (ret == 0)
+            ret = stop_ret;
+        if (ret == 0)
+            ret = complete_ret;
+    } else if (ret == 0) {
+        ret = sdhost_wait_transfer_complete();
+    }
+
+    sdhost_account_data_command(read, blocks, ret);
+    return ret;
+}
+
 static int sdhost_transfer_sector(uint64_t lba, uint8_t *buffer, bool read)
 {
     uint32_t argument;
 
-    if (lba > 0xffffffffULL)
+    if (lba > 0xffffffffULL ||
+        (!sdhost_state.high_capacity &&
+         lba > 0xffffffffULL / SDHOST_BLOCK_SIZE))
         return -EINVAL;
     argument = sdhost_state.high_capacity ? (uint32_t)lba :
                (uint32_t)(lba * SDHOST_BLOCK_SIZE);
-    return sdhost_send_command(read ? 17u : 24u, argument,
-                               read ? SDHOST_DATA_READ : SDHOST_DATA_WRITE,
-                               buffer, NULL);
+    return sdhost_data_command(read ? 17u : 24u, argument, read, buffer, 1u);
+}
+
+static int sdhost_transfer_sectors(uint64_t lba, uint32_t count,
+                                   uint8_t *buffer, bool read)
+{
+    uint32_t argument;
+
+    if (!buffer || count < 2u || count > 0xffffu ||
+        lba > 0xffffffffULL ||
+        (uint64_t)count - 1u > 0xffffffffULL - lba)
+        return -EINVAL;
+    if (!sdhost_state.high_capacity &&
+        (lba > 0xffffffffULL / SDHOST_BLOCK_SIZE ||
+         (uint64_t)count - 1u >
+             0xffffffffULL / SDHOST_BLOCK_SIZE - lba))
+        return -EINVAL;
+
+    argument = sdhost_state.high_capacity ? (uint32_t)lba :
+               (uint32_t)(lba * SDHOST_BLOCK_SIZE);
+    return sdhost_data_command(read ? 18u : 25u, argument, read,
+                               buffer, count);
 }
 
 static int sdhost_blockdev_read(block_device_t *dev, uint64_t lba,
@@ -486,11 +597,22 @@ static int sdhost_blockdev_read(block_device_t *dev, uint64_t lba,
     if (!sdhost_state.ready || !bytes)
         return -ENODEV;
     sdhost_acquire();
-    for (uint32_t i = 0; i < count; i++) {
-        ret = sdhost_transfer_sector(lba + i,
-                                     bytes + i * SDHOST_BLOCK_SIZE, true);
-        if (ret < 0)
-            break;
+    if (count > 1u && sdhost_state.multiblock) {
+        ret = sdhost_transfer_sectors(lba, count, bytes, true);
+        if (ret < 0) {
+            sdhost_state.multiblock = false;
+            sdhost_account_multiblock_fallback();
+            KWARN("bcm_sdhost: multiblock read unavailable, using CMD17\n");
+        }
+    }
+    if (count == 1u || !sdhost_state.multiblock) {
+        ret = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            ret = sdhost_transfer_sector(lba + i,
+                                         bytes + i * SDHOST_BLOCK_SIZE, true);
+            if (ret < 0)
+                break;
+        }
     }
     sdhost_release();
     return ret;
@@ -506,11 +628,22 @@ static int sdhost_blockdev_write(block_device_t *dev, uint64_t lba,
     if (!sdhost_state.ready || !bytes)
         return -ENODEV;
     sdhost_acquire();
-    for (uint32_t i = 0; i < count; i++) {
-        ret = sdhost_transfer_sector(lba + i,
-                                     bytes + i * SDHOST_BLOCK_SIZE, false);
-        if (ret < 0)
-            break;
+    if (count > 1u && sdhost_state.multiblock) {
+        ret = sdhost_transfer_sectors(lba, count, bytes, false);
+        if (ret < 0) {
+            sdhost_state.multiblock = false;
+            sdhost_account_multiblock_fallback();
+            KWARN("bcm_sdhost: multiblock write unavailable, using CMD24\n");
+        }
+    }
+    if (count == 1u || !sdhost_state.multiblock) {
+        ret = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            ret = sdhost_transfer_sector(lba + i,
+                                         bytes + i * SDHOST_BLOCK_SIZE, false);
+            if (ret < 0)
+                break;
+        }
     }
     sdhost_release();
     return ret;
@@ -528,6 +661,19 @@ static void sdhost_blockdev_shutdown(block_device_t *dev)
     bcm2835_sdhost_shutdown();
 }
 
+static void sdhost_blockdev_get_transport_stats(
+    block_device_t *dev, block_transport_stats_t *stats)
+{
+    unsigned long irq_flags;
+
+    (void)dev;
+    if (!stats)
+        return;
+    spin_lock_irqsave(&sdhost_stats_lock, &irq_flags);
+    *stats = sdhost_transport_stats;
+    spin_unlock_irqrestore(&sdhost_stats_lock, irq_flags);
+}
+
 bool bcm2835_sdhost_init(void)
 {
     uint32_t response[4] = {0};
@@ -542,9 +688,11 @@ bool bcm2835_sdhost_init(void)
     sdhost_state.rca = 0u;
     sdhost_state.high_capacity = false;
     sdhost_state.wide_bus = false;
+    sdhost_state.multiblock = true;
     sdhost_state.ready = false;
     sdhost_busy = false;
     sdhost_owner = NULL;
+    memset(&sdhost_transport_stats, 0, sizeof(sdhost_transport_stats));
 
     if (!sdhost_configure_pins() || !sdhost_reset())
         return false;
@@ -605,7 +753,7 @@ bool bcm2835_sdhost_init(void)
         return false;
     }
 
-    KINFO("BCM SDHOST: rca=0x%04X %s %u-bit single-block capacity<=%uMB\n",
+    KINFO("BCM SDHOST: rca=0x%04X %s %u-bit multiblock capacity<=%uMB\n",
           sdhost_state.rca,
           sdhost_state.high_capacity ? "SDHC/SDXC" : "SDSC",
           sdhost_state.wide_bus ? 4u : 1u,

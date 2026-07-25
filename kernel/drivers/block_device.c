@@ -185,6 +185,13 @@ const char *blk_get_name(void)
     return dev && dev->name ? dev->name : "none";
 }
 
+const char *blk_get_transport_name(void)
+{
+    block_device_t *dev = blk_active();
+
+    return dev && dev->transport_name ? dev->transport_name : "unknown";
+}
+
 uint64_t blk_get_capacity_sectors(void)
 {
     block_device_t *dev = blk_active();
@@ -216,4 +223,34 @@ void blk_get_stats(block_device_stats_t *stats)
     spin_lock_irqsave(&block_lock, &flags);
     *stats = block_stats;
     spin_unlock_irqrestore(&block_lock, flags);
+}
+
+void blk_get_transport_stats(block_transport_stats_t *stats)
+{
+    block_device_t *dev;
+    block_device_stats_t logical;
+
+    if (!stats)
+        return;
+
+    dev = blk_active();
+    memset(stats, 0, sizeof(*stats));
+    if (dev && dev->ops && dev->ops->get_transport_stats) {
+        dev->ops->get_transport_stats(dev, stats);
+        return;
+    }
+
+    /*
+     * Most transports issue one hardware request for each block-layer
+     * request. Drivers that split or merge requests override this snapshot.
+     */
+    blk_get_stats(&logical);
+    stats->read_commands = logical.read_requests;
+    stats->read_sectors = logical.read_sectors;
+    stats->read_errors = logical.read_errors;
+    stats->write_commands = logical.write_requests;
+    stats->write_sectors = logical.write_sectors;
+    stats->write_errors = logical.write_errors;
+    stats->max_read_sectors = logical.max_read_sectors;
+    stats->max_write_sectors = logical.max_write_sectors;
 }

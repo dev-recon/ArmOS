@@ -108,13 +108,31 @@ Ext2 now:
 The syscall layer uses a bounded 64 KiB bounce buffer and automatically falls
 back to smaller buffers under kernel-memory pressure.
 
-The Raspberry Pi SD/eMMC driver now:
+The Raspberry Pi SD transports now:
 
 - negotiates the four-bit SD bus with ACMD6;
-- uses CMD18 and CMD25 for multi-sector transfers with automatic CMD12;
+- use CMD18 and CMD25 for multi-sector transfers;
+- terminate Arasan transfers with automatic CMD12 and BCM2835 SDHOST
+  transfers with an explicit CMD12;
 - serializes complete requests;
 - disables multi-block mode permanently after the first transfer failure and
   retries through the validated CMD17/CMD24 path.
+
+On Raspberry Pi 3, enabling Wi-Fi moves the system SD card from the Arasan
+controller to BCM2835 SDHOST so the Arasan controller can drive the CYW43455
+SDIO radio. The original SDHOST bring-up split every block-layer request into
+single-sector CMD17/CMD24 commands. This made `max_write_sectors` report the
+64 KiB ext2 request while the controller still issued 128 physical commands.
+The SDHOST path now preserves that request as one multi-block command.
+
+`/proc/diskstats` reports both views:
+
+- `read_requests`, `write_requests`, and `max_*_sectors` describe requests
+  submitted by the filesystems;
+- `transport`, `transport_*_commands`, and `transport_max_*_sectors` describe
+  the selected hardware backend and its physical data commands;
+- `transport_multiblock_fallbacks` records boots where a multi-block failure
+  forced the conservative single-block path.
 
 ## Raspberry Pi 3 Hardware Validation
 
@@ -140,3 +158,8 @@ sync
 After reboot, run read-only passes on both retained files. The final hardware
 table must record the SD card model and capacity because card controllers vary
 substantially.
+
+For a healthy Pi 3 Wi-Fi build, the post-test diagnostics should contain
+`transport bcm2835-sdhost`, a non-zero
+`transport_max_write_sectors` greater than 1, and
+`transport_multiblock_fallbacks 0`.

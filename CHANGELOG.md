@@ -5,6 +5,15 @@ Release tags use the bare version number starting with `0.7` (`0.7`, `0.7.1`,
 
 ## Unreleased
 
+### Raspberry Pi storage
+
+- Added CMD18/CMD25 multi-block PIO transfers to the BCM2835 SDHOST system-SD
+  path used when Raspberry Pi 3 Wi-Fi is enabled, with explicit CMD12
+  termination and permanent fallback to CMD17/CMD24 after the first failure.
+- Added block-transport identity and physical command counters to
+  `/proc/diskstats`, distinguishing block-layer request sizes from commands
+  actually issued by drivers that split requests.
+
 ### Release images
 
 - Added complete ARM32 and ARM64 QEMU Virt archives under `images/`, including

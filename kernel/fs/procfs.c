@@ -771,9 +771,12 @@ static void proc_fill_partitions(char* buf, size_t cap, size_t* len)
 static void proc_fill_diskstats(char* buf, size_t cap, size_t* len)
 {
     block_device_stats_t st;
+    block_transport_stats_t transport;
 
     blk_get_stats(&st);
+    blk_get_transport_stats(&transport);
     proc_append(buf, cap, len, "device %s\n", blk_get_name());
+    proc_append(buf, cap, len, "transport %s\n", blk_get_transport_name());
     proc_append(buf, cap, len, "sector_size %u\n", blk_get_sector_size());
     proc_append(buf, cap, len, "capacity_sectors %llu\n",
                 (unsigned long long)blk_get_capacity_sectors());
@@ -795,6 +798,24 @@ static void proc_fill_diskstats(char* buf, size_t cap, size_t* len)
                 (unsigned long long)st.flush_errors);
     proc_append(buf, cap, len, "max_read_sectors %u\n", st.max_read_sectors);
     proc_append(buf, cap, len, "max_write_sectors %u\n", st.max_write_sectors);
+    proc_append(buf, cap, len, "transport_read_commands %llu\n",
+                (unsigned long long)transport.read_commands);
+    proc_append(buf, cap, len, "transport_read_sectors %llu\n",
+                (unsigned long long)transport.read_sectors);
+    proc_append(buf, cap, len, "transport_read_errors %llu\n",
+                (unsigned long long)transport.read_errors);
+    proc_append(buf, cap, len, "transport_write_commands %llu\n",
+                (unsigned long long)transport.write_commands);
+    proc_append(buf, cap, len, "transport_write_sectors %llu\n",
+                (unsigned long long)transport.write_sectors);
+    proc_append(buf, cap, len, "transport_write_errors %llu\n",
+                (unsigned long long)transport.write_errors);
+    proc_append(buf, cap, len, "transport_multiblock_fallbacks %llu\n",
+                (unsigned long long)transport.multiblock_fallbacks);
+    proc_append(buf, cap, len, "transport_max_read_sectors %u\n",
+                transport.max_read_sectors);
+    proc_append(buf, cap, len, "transport_max_write_sectors %u\n",
+                transport.max_write_sectors);
 }
 
 static void proc_fill_usb(char* buf, size_t cap, size_t* len)
