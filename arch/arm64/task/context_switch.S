@@ -49,6 +49,8 @@ arm64_task_context_switch:
     str x2, [x0, #ARM64_TASK_SIMD_FPCR]
     mrs x2, fpsr
     str x2, [x0, #ARM64_TASK_SIMD_FPSR]
+    mrs x2, tpidr_el0
+    str x2, [x0, #ARM64_TASK_TLS]
     stp x19, x20, [x0, #ARM64_TASK_X19]
     stp x21, x22, [x0, #ARM64_TASK_X21]
     stp x23, x24, [x0, #ARM64_TASK_X23]
@@ -100,6 +102,9 @@ arm64_task_context_switch:
     msr fpcr, x2
     ldr x2, [x1, #ARM64_TASK_SIMD_FPSR]
     msr fpsr, x2
+    ldr x2, [x1, #ARM64_TASK_TLS]
+    msr tpidr_el0, x2
+    isb
     ldr x2, [x1, #ARM64_TASK_PC]
     br x2
 

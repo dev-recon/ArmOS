@@ -6,7 +6,7 @@ syscall ABI. POSIX specifies application-visible behavior; ArmOS remains free
 to implement that behavior with a smaller architecture-neutral kernel ABI and
 newlib wrappers.
 
-The current common dispatcher exposes 119 syscall entries. It already covers
+The current common dispatcher exposes 125 syscall entries. It already covers
 the central Unix process, VFS, descriptor, signal, virtual-memory, TTY, polling
 and identity contracts. The next stage is therefore semantic completion and a
 small number of missing primitives, not one syscall for every function listed
@@ -183,22 +183,28 @@ be changed, so applications do not receive a misleading successful update.
 
 ### P2 - Threads And POSIX Synchronization
 
-The generic task and SMP scheduler foundations already exist, but ArmOS does
-not yet expose a POSIX thread runtime. This axis should introduce a small
-kernel substrate instead of a syscall per `pthread_*` function.
+ArmOS exposes a userspace POSIX thread runtime over shared process state,
+scheduler-visible tasks, TLS, and futexes instead of a syscall per
+`pthread_*` function.
 
-Kernel primitives required:
+Implemented kernel primitives:
 
 - create and exit a thread sharing its process VM and descriptor table;
-- join or wait for thread termination;
+- wait for thread termination through clear-child-TID plus futex wake;
 - set and restore architecture-specific thread-local storage;
-- wait on and wake a user-memory word, with timeout and signal interruption;
-- preserve per-thread signal masks, CPU accounting and robust cleanup state.
+- wait on and wake a user-memory word, with timeout.
 
-Newlib can then implement mutexes, condition variables, read/write locks,
-barriers, `pthread_once`, thread-specific data and most semaphore operations in
-userspace. Named semaphores and process-shared objects may use VFS/shared-memory
-objects plus the same wait/wake primitive.
+Implemented userspace surface:
+
+- create, join, detach, attributes, once control, cleanup, TSD, and deferred
+  cancellation;
+- mutexes, condition variables, read/write locks, barriers, spin locks,
+  unnamed semaphores, timed waits, and robust owner-death recovery;
+- compiler TLS through ELF `PT_TLS` and `__thread` on ARM32 and ARM64.
+
+Remaining semantics include per-thread signal masks and pending signals,
+multithreaded `fork`/`exec`/exit rules, process-shared synchronization,
+priority protocols, asynchronous cancellation, and named semaphores.
 
 Acceptance criteria:
 

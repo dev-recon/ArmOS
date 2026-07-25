@@ -1142,6 +1142,13 @@ task_t* task_create_copy(task_t* parent, bool from_user)
             child->process->alarm_active = 0;
             child->process->leader = child;
             child->process->thread_count = 1u;
+            child->process->tls_image = parent->process->tls_image;
+            child->process->tls_file_size =
+                parent->process->tls_file_size;
+            child->process->tls_memory_size =
+                parent->process->tls_memory_size;
+            child->process->tls_alignment =
+                parent->process->tls_alignment;
             child->process->state = (proc_state_t)PROC_READY;
             strcpy(child->process->cwd, parent->process->cwd);    // Setting Current Working Directory
             strcpy(child->process->exe_path, parent->process->exe_path);
@@ -1205,6 +1212,8 @@ task_t* task_create_copy(task_t* parent, bool from_user)
     child->running_cpu = TASK_CPU_NONE;
     child->last_cpu = TASK_CPU_NONE;
     child->clear_child_tid = 0;
+    child->futex_wait_address = 0;
+    child->futex_wait_active = 0;
     child->magic = TASK_MAGIC_ALIVE;
 
     kernel_lifecycle_stats.tasks_created++;
@@ -1629,6 +1638,8 @@ task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint3
     task->running_cpu = TASK_CPU_NONE;
     task->last_cpu = TASK_CPU_NONE;
     task->clear_child_tid = 0;
+    task->futex_wait_address = 0;
+    task->futex_wait_active = 0;
     task->magic = TASK_MAGIC_ALIVE;
     task->process = NULL;  /* Par defaut, pas de processus associe */
 
@@ -1712,6 +1723,10 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
         task->process->alarm_active = 0;
         task->process->leader = task;
         task->process->thread_count = 1u;
+        task->process->tls_image = 0;
+        task->process->tls_file_size = 0;
+        task->process->tls_memory_size = 0;
+        task->process->tls_alignment = 0;
         task->process->state = (proc_state_t)PROC_READY;
         
         /* Creer l'espace memoire */
@@ -1767,6 +1782,7 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
 
 task_t* task_create_user_thread(task_t* creator, vaddr_t entry,
                                 vaddr_t argument, vaddr_t user_stack,
+                                vaddr_t tls_base,
                                 vaddr_t clear_child_tid)
 {
     process_t* process = task_get_process(creator);
@@ -1800,12 +1816,98 @@ task_t* task_create_user_thread(task_t* creator, vaddr_t entry,
         user_stack);
     arch_task_context_set_user_register(&thread->context, 0,
                                         (uintptr_t)argument);
+    arch_task_context_set_tls(&thread->context, (uintptr_t)tls_base);
 
     spin_lock_irqsave(&task_lock, &flags);
     process->thread_count++;
     spin_unlock_irqrestore(&task_lock, flags);
 
     return thread;
+}
+
+int task_futex_wait(task_t* task, vaddr_t address, uint32_t expected,
+                    uint32_t deadline)
+{
+    volatile uint32_t* user_word = (volatile uint32_t *)(uintptr_t)address;
+    unsigned long flags;
+    bool timed_out;
+
+    if (!task || !task_get_process(task) || !address)
+        return -EINVAL;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    /*
+     * The syscall faulted the page in before taking task_lock. This second
+     * comparison closes the lost-wakeup window against FUTEX_WAKE.
+     * Concurrent munmap remains forbidden until VM mutation locking lands.
+     */
+    if (__atomic_load_n(user_word, __ATOMIC_ACQUIRE) != expected) {
+        spin_unlock_irqrestore(&task_lock, flags);
+        return -EAGAIN;
+    }
+
+    runqueue_remove_locked(task);
+    scheduler_clear_nonrunnable_debt_locked(task, TASK_INTERRUPTIBLE);
+    task->futex_wait_address = address;
+    task->futex_wait_active = 1u;
+    task->wakeup_time = deadline;
+    task->state = TASK_INTERRUPTIBLE;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    yield();
+
+    spin_lock_irqsave(&task_lock, &flags);
+    timed_out = task->futex_wait_active && deadline != 0 &&
+        (int32_t)(get_system_ticks() - deadline) >= 0;
+    task->futex_wait_active = 0;
+    task->futex_wait_address = 0;
+    task->wakeup_time = 0;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    if (timed_out)
+        return -ETIMEDOUT;
+    if (task->type == TASK_TYPE_PROCESS && has_pending_signals(task))
+        return -EINTR;
+    return 0;
+}
+
+uint32_t task_futex_wake(process_t* process, vaddr_t address,
+                         uint32_t max_count)
+{
+    task_t* task;
+    task_t* start;
+    uint32_t woken = 0;
+    uint32_t scanned = 0;
+    unsigned long flags;
+
+    if (!process || !address || max_count == 0)
+        return 0;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    start = task_list_head;
+    task = start;
+    while (task && scanned < MAX_TASKS && woken < max_count) {
+        task_t* next = task->next;
+
+        if (task->process == process &&
+            task->futex_wait_active &&
+            task->futex_wait_address == address &&
+            (task->state == TASK_INTERRUPTIBLE ||
+             task->state == TASK_UNINTERRUPTIBLE)) {
+            task->futex_wait_active = 0;
+            task->futex_wait_address = 0;
+            task->wakeup_time = 0;
+            task_make_ready_under_lock(task);
+            woken++;
+        }
+
+        task = next;
+        scanned++;
+        if (task == start)
+            break;
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
+    return woken;
 }
 
 void task_publish_user_thread(task_t* thread)

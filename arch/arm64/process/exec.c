@@ -43,6 +43,7 @@ static int validate_image(const void *image, size_t image_size)
     uint32_t index;
     bool loadable = false;
     bool executable_entry = false;
+    bool tls_seen = false;
 
     if (!image || image_size < sizeof(*header))
         return -1;
@@ -67,6 +68,20 @@ static int validate_image(const void *image, size_t image_size)
         if (segment->type == ELF64_PT_DYNAMIC ||
             segment->type == ELF64_PT_INTERP)
             return -1;
+        if (segment->type == ELF64_PT_TLS) {
+            if (tls_seen || segment->memsz == 0 ||
+                segment->filesz > segment->memsz ||
+                add_overflows_u64(segment->offset, segment->filesz) ||
+                segment->offset + segment->filesz > image_size ||
+                add_overflows_u64(segment->vaddr, segment->memsz) ||
+                segment->vaddr < USER_SPACE_START ||
+                segment->vaddr + segment->memsz > USER_SPACE_END ||
+                (segment->align > 1 &&
+                 (segment->align & (segment->align - 1)) != 0))
+                return -1;
+            tls_seen = true;
+            continue;
+        }
         if (segment->type != ELF64_PT_LOAD)
             continue;
         loadable = true;
@@ -111,6 +126,13 @@ int arch_exec_parse_image(const void *image, size_t image_size,
             program_header(bytes, header, index);
         exec_image_segment_t *segment;
 
+        if (program->type == ELF64_PT_TLS) {
+            layout->tls_image = (vaddr_t)program->vaddr;
+            layout->tls_file_size = program->filesz;
+            layout->tls_memory_size = program->memsz;
+            layout->tls_alignment = program->align ? program->align : 1u;
+            continue;
+        }
         if (program->type != ELF64_PT_LOAD)
             continue;
         if (layout->segment_count >= EXEC_IMAGE_MAX_SEGMENTS)

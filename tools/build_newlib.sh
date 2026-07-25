@@ -29,10 +29,10 @@ export PATH="/opt/homebrew/Cellar/arm-none-eabi-gcc/15.1.0/bin:/opt/homebrew/bin
 
 case "$TARGET" in
     arm-none-eabi)
-        TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -Os $REPRODUCIBLE_FLAGS"
+        TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     aarch64-elf)
-        TARGET_CFLAGS="-mcpu=cortex-a53 -Os $REPRODUCIBLE_FLAGS"
+        TARGET_CFLAGS="-mcpu=cortex-a53 -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     *)
         echo "Error: unsupported newlib target: $TARGET" >&2
@@ -137,6 +137,7 @@ echo "=== Configuring newlib for $TARGET ==="
         --prefix="$INSTALL_ROOT" \
         --disable-multilib \
         --disable-newlib-supplied-syscalls \
+        --enable-newlib-multithread \
         --enable-newlib-reent-small \
         CFLAGS_FOR_TARGET="$TARGET_CFLAGS"
 )
@@ -146,6 +147,7 @@ make -C "$OBJ_DIR" all-target-newlib
 
 echo "=== Installing newlib into $SYSROOT ==="
 make -C "$OBJ_DIR" install-target-newlib
+cp "$ROOT_DIR/userland/include/semaphore.h" "$SYSROOT/include/semaphore.h"
 
 if [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: expected newlib sysroot files were not produced." >&2

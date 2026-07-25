@@ -25,6 +25,7 @@
 #define ELF64_PT_LOAD    1u
 #define ELF64_PT_DYNAMIC 2u
 #define ELF64_PT_INTERP  3u
+#define ELF64_PT_TLS     7u
 #define ELF64_PF_X       1u
 #define ELF64_PF_W       2u
 #define ELF64_PF_R       4u

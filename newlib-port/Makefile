@@ -28,11 +28,14 @@ NEWLIB_LIBC ?= $(shell $(CC) $(ARCH_FLAGS) --sysroot=$(NEWLIB_SYSROOT) -print-fi
 
 CFLAGS := $(ARCH_FLAGS) -std=gnu99 -ffreestanding -nostdlib -fno-builtin \
           $(REPRO_FLAGS) \
+          -D__DYNAMIC_REENT__ \
           -fno-stack-protector -ffunction-sections -fdata-sections \
           -Os -I../userland/include -I../include -I$(NEWLIB_INCLUDE)
 OBJECTS := $(BUILD_DIR)/crt0_newlib.o \
            $(BUILD_DIR)/syscall_raw.o \
-           $(BUILD_DIR)/syscalls.o
+           $(BUILD_DIR)/syscalls.o \
+           $(BUILD_DIR)/pthread.o \
+           $(BUILD_DIR)/pthread_sync.o
 
 .PHONY: all clean check-newlib
 

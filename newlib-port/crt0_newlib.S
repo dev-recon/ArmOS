@@ -32,6 +32,10 @@ _start:
     str r2, [r3]
 
     push {r0-r2}
+    bl __armos_runtime_init
+    pop {r0-r2}
+
+    push {r0-r2}
     cmp r0, #0
     beq 2f
     ldr r0, [r1]

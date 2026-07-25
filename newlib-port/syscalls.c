@@ -19,6 +19,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +29,7 @@
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/reent.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/times.h>
@@ -130,6 +132,10 @@ extern long sys_fork(void);
 extern long sys_clone(const armos_clone_args_t *args, size_t args_size);
 extern long sys_gettid(void);
 extern void sys_thread_exit(int status);
+extern long sys_futex(volatile uint32_t *address, int operation,
+                      uint32_t value, const armos_timespec_t *timeout);
+extern long sys_set_tls(unsigned long tls_base);
+extern long sys_get_tls_info(armos_tls_info_t *info);
 extern long sys_execve(const char *pathname, char *const argv[], char *const envp[]);
 extern long sys_waitpid(int pid, int *status, int options);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
@@ -1791,11 +1797,230 @@ int armos_gettid(void)
     return (int)sys_gettid();
 }
 
+int armos_futex_wait(volatile uint32_t *address, uint32_t expected,
+                     const armos_timespec_t *timeout)
+{
+    long result =
+        sys_futex(address, ARMOS_FUTEX_WAIT, expected, timeout);
+
+    if (result == ARMOS_FUTEX_RESULT_TIMEDOUT) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    return ret_errno(result);
+}
+
+int armos_futex_wake(volatile uint32_t *address, uint32_t count)
+{
+    return ret_errno(sys_futex(address, ARMOS_FUTEX_WAKE, count, NULL));
+}
+
+int armos_set_tls(void *tls_base)
+{
+    return ret_errno(sys_set_tls((unsigned long)(uintptr_t)tls_base));
+}
+
+int armos_get_tls_info(armos_tls_info_t *info)
+{
+    return ret_errno(sys_get_tls_info(info));
+}
+
 void armos_thread_exit(int status)
 {
     sys_thread_exit(status);
     for (;;)
         ;
+}
+
+static inline struct _reent *armos_current_reent(void)
+{
+    uintptr_t pointer;
+    uintptr_t *tcb;
+
+#if defined(__aarch64__)
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(pointer));
+#elif defined(__arm__)
+    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(pointer));
+#else
+    pointer = 0;
+#endif
+    tcb = (uintptr_t *)pointer;
+    return tcb && tcb[1] ? (struct _reent *)tcb[1] : _impure_ptr;
+}
+
+struct _reent *__getreent(void)
+{
+    return armos_current_reent();
+}
+
+void *armos_thread_reent_create(void)
+{
+    armos_tls_info_t info;
+    struct _reent *reent;
+    uintptr_t alignment;
+    uintptr_t tls_offset;
+    uintptr_t raw_address;
+    uintptr_t tcb_address;
+    uintptr_t *tcb;
+    void *raw;
+    size_t total;
+
+    memset(&info, 0, sizeof(info));
+    if (armos_get_tls_info(&info) < 0)
+        return NULL;
+
+    alignment = info.alignment;
+    if (alignment < sizeof(uintptr_t) * 2u)
+        alignment = sizeof(uintptr_t) * 2u;
+    if ((alignment & (alignment - 1u)) != 0)
+        return NULL;
+    tls_offset =
+        (sizeof(uintptr_t) * 2u + alignment - 1u) & ~(alignment - 1u);
+    if (info.memory_size > SIZE_MAX - tls_offset - alignment)
+        return NULL;
+    total = (size_t)(tls_offset + info.memory_size + alignment - 1u);
+
+    raw = calloc(1, total);
+    reent = calloc(1, sizeof(*reent));
+    if (!raw || !reent) {
+        free(reent);
+        free(raw);
+        return NULL;
+    }
+
+    raw_address = (uintptr_t)raw;
+    tcb_address = (raw_address + alignment - 1u) & ~(alignment - 1u);
+    tcb = (uintptr_t *)tcb_address;
+    tcb[0] = raw_address;
+    tcb[1] = (uintptr_t)reent;
+    if (info.file_size) {
+        memcpy((void *)(tcb_address + tls_offset),
+               (const void *)(uintptr_t)info.image,
+               (size_t)info.file_size);
+    }
+    _REENT_INIT_PTR(reent);
+    return tcb;
+}
+
+void armos_thread_reent_destroy(void *opaque)
+{
+    uintptr_t *tcb = (uintptr_t *)opaque;
+    struct _reent *reent;
+    void *raw;
+
+    if (!tcb)
+        return;
+    raw = (void *)tcb[0];
+    reent = (struct _reent *)tcb[1];
+    _reclaim_reent(reent);
+    free(reent);
+    free(raw);
+}
+
+void __armos_pthread_runtime_init(void *tcb) __attribute__((weak));
+
+void __armos_runtime_init(void)
+{
+    void *tcb = armos_thread_reent_create();
+
+    if (!tcb)
+        return;
+    if (armos_set_tls(tcb) < 0) {
+        armos_thread_reent_destroy(tcb);
+        return;
+    }
+    if (__armos_pthread_runtime_init)
+        __armos_pthread_runtime_init(tcb);
+}
+
+typedef struct {
+    volatile uint32_t word;
+    volatile uint32_t owner;
+    uint32_t depth;
+} armos_runtime_lock_t;
+
+static armos_runtime_lock_t armos_malloc_lock;
+static armos_runtime_lock_t armos_stdio_lock;
+static armos_runtime_lock_t armos_environment_lock;
+static armos_runtime_lock_t armos_timezone_lock;
+
+static void armos_runtime_lock_acquire(armos_runtime_lock_t *lock)
+{
+    uint32_t tid = (uint32_t)sys_gettid();
+
+    if (__atomic_load_n(&lock->owner, __ATOMIC_RELAXED) == tid) {
+        lock->depth++;
+        return;
+    }
+
+    for (;;) {
+        uint32_t expected = 0;
+
+        if (__atomic_compare_exchange_n(&lock->word, &expected, 1u, false,
+                                        __ATOMIC_ACQUIRE,
+                                        __ATOMIC_RELAXED))
+            break;
+        (void)sys_futex(&lock->word, ARMOS_FUTEX_WAIT, 1u, NULL);
+    }
+    __atomic_store_n(&lock->owner, tid, __ATOMIC_RELAXED);
+    lock->depth = 1u;
+}
+
+static void armos_runtime_lock_release(armos_runtime_lock_t *lock)
+{
+    if (lock->depth > 1u) {
+        lock->depth--;
+        return;
+    }
+
+    lock->depth = 0;
+    __atomic_store_n(&lock->owner, 0u, __ATOMIC_RELAXED);
+    __atomic_store_n(&lock->word, 0u, __ATOMIC_RELEASE);
+    (void)sys_futex(&lock->word, ARMOS_FUTEX_WAKE, 1u, NULL);
+}
+
+void __malloc_lock(struct _reent *reent)
+{
+    (void)reent;
+    armos_runtime_lock_acquire(&armos_malloc_lock);
+}
+
+void __malloc_unlock(struct _reent *reent)
+{
+    (void)reent;
+    armos_runtime_lock_release(&armos_malloc_lock);
+}
+
+void __sfp_lock_acquire(void)
+{
+    armos_runtime_lock_acquire(&armos_stdio_lock);
+}
+
+void __sfp_lock_release(void)
+{
+    armos_runtime_lock_release(&armos_stdio_lock);
+}
+
+void __env_lock(struct _reent *reent)
+{
+    (void)reent;
+    armos_runtime_lock_acquire(&armos_environment_lock);
+}
+
+void __env_unlock(struct _reent *reent)
+{
+    (void)reent;
+    armos_runtime_lock_release(&armos_environment_lock);
+}
+
+void __tz_lock(void)
+{
+    armos_runtime_lock_acquire(&armos_timezone_lock);
+}
+
+void __tz_unlock(void)
+{
+    armos_runtime_lock_release(&armos_timezone_lock);
 }
 
 static int clock_id_to_armos(clockid_t clock_id)

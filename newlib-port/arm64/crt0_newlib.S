@@ -33,6 +33,9 @@ _start:
 
     stp x0, x1, [sp, #-32]!
     str x2, [sp, #16]
+    bl __armos_runtime_init
+    ldp x0, x1, [sp]
+    ldr x2, [sp, #16]
     cbz x0, 1f
     ldr x0, [x1]
     bl __armos_init_program_name

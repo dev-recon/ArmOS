@@ -137,7 +137,31 @@ static int exec_map_segment(vm_space_t *vm, const void *image,
     return 0;
 }
 
-int exec_load_image(inode_t *inode, vm_space_t *vm, vaddr_t *entry)
+static bool exec_tls_layout_valid(const exec_image_layout_t *layout)
+{
+    uint32_t index;
+
+    if (!layout->tls_memory_size)
+        return true;
+    for (index = 0; index < layout->segment_count; index++) {
+        const exec_image_segment_t *segment = &layout->segments[index];
+        uint64_t offset;
+
+        if (layout->tls_image < segment->virtual_address ||
+            !(segment->flags & VMA_READ))
+            continue;
+        offset = (uint64_t)(layout->tls_image - segment->virtual_address);
+        if (offset <= segment->memory_size &&
+            layout->tls_memory_size <= segment->memory_size - offset &&
+            offset <= segment->file_size &&
+            layout->tls_file_size <= segment->file_size - offset)
+            return true;
+    }
+    return false;
+}
+
+int exec_load_image(inode_t *inode, vm_space_t *vm, vaddr_t *entry,
+                    exec_image_layout_t *loaded_layout)
 {
     exec_image_layout_t layout;
     void *image;
@@ -153,7 +177,8 @@ int exec_load_image(inode_t *inode, vm_space_t *vm, vaddr_t *entry)
 
     memset(&layout, 0, sizeof(layout));
     result = arch_exec_parse_image(image, image_size, &layout);
-    if (result < 0 || layout.segment_count == 0 || !layout.entry) {
+    if (result < 0 || layout.segment_count == 0 || !layout.entry ||
+        !exec_tls_layout_valid(&layout)) {
         kfree(image);
         return -ENOEXEC;
     }
@@ -168,6 +193,8 @@ int exec_load_image(inode_t *inode, vm_space_t *vm, vaddr_t *entry)
     }
 
     *entry = layout.entry;
+    if (loaded_layout)
+        *loaded_layout = layout;
     kfree(image);
     return 0;
 }

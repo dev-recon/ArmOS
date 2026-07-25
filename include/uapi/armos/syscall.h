@@ -71,6 +71,9 @@
 #define ARMOS_NR_UNLINKAT      328
 #define ARMOS_NR_RENAMEAT      329
 #define ARMOS_NR_THREAD_EXIT   330
+#define ARMOS_NR_FUTEX         331
+#define ARMOS_NR_SET_TLS       332
+#define ARMOS_NR_GET_TLS_INFO  333
 #define ARMOS_SYSCALL_MAX 512
 
 /* Values shared with the newlib _SC_* namespace used by ArmOS. */

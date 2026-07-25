@@ -368,6 +368,10 @@ typedef struct {
     uint32_t alarm_active;
     struct task* leader;
     uint32_t thread_count;
+    vaddr_t tls_image;
+    size_t tls_file_size;
+    size_t tls_memory_size;
+    size_t tls_alignment;
 
     proc_state_t state;
 
@@ -467,6 +471,8 @@ typedef struct task {
     uint64_t user_runtime;                  /* EL0 execution time in timer ticks */
     uint64_t system_runtime;                /* Kernel time charged to this task */
     vaddr_t clear_child_tid;                 /* User TID word cleared on thread exit */
+    vaddr_t futex_wait_address;              /* Active userspace wait key */
+    uint32_t futex_wait_active;
 
 } __attribute__((aligned(8))) task_t;
 
@@ -482,10 +488,15 @@ void cleanup_task_system(void);
 task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint32_t priority);
 task_t* task_create_process(const char* name, void (*entry)(void* arg), void* arg, uint32_t priority, task_type_t type);
 task_t* task_create_user_thread(task_t* creator, vaddr_t entry, vaddr_t argument,
-                                vaddr_t user_stack, vaddr_t clear_child_tid);
+                                vaddr_t user_stack, vaddr_t tls_base,
+                                vaddr_t clear_child_tid);
 void task_publish_user_thread(task_t* thread);
 void task_abort_user_thread(task_t* thread);
 void task_exit_current_thread(int status) __attribute__((noreturn));
+int task_futex_wait(task_t* task, vaddr_t address, uint32_t expected,
+                    uint32_t deadline);
+uint32_t task_futex_wake(process_t* process, vaddr_t address,
+                         uint32_t max_count);
 void task_destroy(task_t* task);
 void task_free_kernel_stack(task_t* task);
 

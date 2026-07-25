@@ -63,6 +63,8 @@ void arm64_emit_asm_offsets(void)
            offsetof(arm64_task_context_t, simd.fpcr));
     DEFINE(ARM64_TASK_SIMD_FPSR,
            offsetof(arm64_task_context_t, simd.fpsr));
+    DEFINE(ARM64_TASK_TLS,
+           offsetof(arm64_task_context_t, tls_base));
     DEFINE(ARM64_TASK_TTBR0,
            offsetof(arm64_task_context_t, ttbr0));
     DEFINE(ARM64_TASK_ASID,

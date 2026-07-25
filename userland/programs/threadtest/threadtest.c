@@ -13,8 +13,7 @@
  * - Verify shared process memory, distinct TIDs and independent user stacks.
  *
  * Notes:
- * - Workers deliberately avoid libc calls because newlib reentrancy and TLS
- *   are part of the next pthread milestone.
+ * - Workers verify per-thread newlib reentrancy and clear-child-TID futex wake.
  */
 
 #include <armos/thread.h>
@@ -29,19 +28,26 @@
 #define THREAD_COUNT 4u
 #define THREAD_STACK_SIZE (64u * 1024u)
 #define THREAD_STACK_ALIGNMENT 16u
-#define THREAD_WAIT_LIMIT 1000000u
+#define FUTEX_WAKE_ATTEMPTS 10000u
 
 extern int sched_yield(void);
 
 typedef struct {
     unsigned int index;
-    volatile unsigned int alive_tid;
+    volatile uint32_t alive_tid;
+    volatile uint32_t futex_gate;
+    volatile unsigned int futex_ready;
     volatile unsigned int done;
-    volatile unsigned int observed_tid;
-    unsigned int created_tid;
+    volatile uint32_t observed_tid;
+    uint32_t created_tid;
     volatile int observed_pid;
     volatile uintptr_t observed_stack;
+    volatile int observed_errno;
+    volatile int futex_wait_result;
+    volatile int futex_wait_errno;
+    volatile unsigned int malloc_ok;
     void *allocation;
+    void *reent;
     uintptr_t stack_base;
     uintptr_t stack_top;
 } worker_state_t;
@@ -52,26 +58,104 @@ static void thread_worker(void *opaque)
 {
     worker_state_t *state = (worker_state_t *)opaque;
     unsigned int stack_local = state->index;
+    armos_timespec_t timeout = {
+        .sec = 5,
+        .nsec = 0,
+    };
+    size_t scratch_size = 128u + state->index;
+    void *scratch;
 
     state->observed_tid = (unsigned int)armos_gettid();
     state->observed_pid = getpid();
     state->observed_stack = (uintptr_t)&stack_local;
+    errno = 100 + (int)state->index;
+
+    scratch = malloc(scratch_size);
+    if (scratch) {
+        memset(scratch, (int)state->index, scratch_size);
+        free(scratch);
+        state->malloc_ok = 1u;
+    }
+
+    __atomic_store_n(&state->futex_ready, 1u, __ATOMIC_RELEASE);
+    state->futex_wait_result =
+        armos_futex_wait(&state->futex_gate, 0u, &timeout);
+    state->futex_wait_errno =
+        state->futex_wait_result < 0 ? errno : 0;
+    sched_yield();
+    state->observed_errno = errno;
     __atomic_store_n(&state->done, 1u, __ATOMIC_RELEASE);
     armos_thread_exit(0);
 }
 
 static int wait_for_worker(worker_state_t *state)
 {
-    for (unsigned int spin = 0; spin < THREAD_WAIT_LIMIT; spin++) {
+    armos_timespec_t timeout = {
+        .sec = 5,
+        .nsec = 0,
+    };
+
+    for (;;) {
         unsigned int done = __atomic_load_n(&state->done, __ATOMIC_ACQUIRE);
-        unsigned int alive =
+        uint32_t alive =
             __atomic_load_n(&state->alive_tid, __ATOMIC_ACQUIRE);
 
         if (done && alive == 0u)
             return 0;
+        if (alive != 0u &&
+            armos_futex_wait(&state->alive_tid, alive, &timeout) < 0 &&
+            errno != EAGAIN && errno != EINTR)
+            return -1;
+    }
+}
+
+static int wake_worker(worker_state_t *state)
+{
+    for (unsigned int attempt = 0;
+         attempt < FUTEX_WAKE_ATTEMPTS;
+         attempt++) {
+        int woken;
+
+        if (!__atomic_load_n(&state->futex_ready, __ATOMIC_ACQUIRE)) {
+            sched_yield();
+            continue;
+        }
+
+        woken = armos_futex_wake(&state->futex_gate, 1u);
+        if (woken == 1)
+            return 0;
+        if (woken < 0)
+            return -1;
         sched_yield();
     }
+
+    errno = ETIMEDOUT;
     return -1;
+}
+
+static int validate_futex_errors(void)
+{
+    volatile uint32_t word = 1u;
+    armos_timespec_t timeout = {
+        .sec = 0,
+        .nsec = 5 * 1000 * 1000,
+    };
+
+    errno = 0;
+    if (armos_futex_wait(&word, 0u, NULL) != -1 || errno != EAGAIN) {
+        printf("threadtest: futex mismatch result invalid errno=%d\n", errno);
+        return -1;
+    }
+
+    __atomic_store_n(&word, 0u, __ATOMIC_RELEASE);
+    errno = 0;
+    if (armos_futex_wait(&word, 0u, &timeout) != -1 ||
+        errno != ETIMEDOUT) {
+        printf("threadtest: futex timeout result invalid errno=%d\n", errno);
+        return -1;
+    }
+
+    return 0;
 }
 
 int main(void)
@@ -93,8 +177,9 @@ int main(void)
         state->index = i;
         state->allocation =
             malloc(THREAD_STACK_SIZE + THREAD_STACK_ALIGNMENT);
-        if (!state->allocation) {
-            printf("threadtest: stack allocation %u failed\n", i);
+        state->reent = armos_thread_reent_create();
+        if (!state->allocation || !state->reent) {
+            printf("threadtest: runtime allocation %u failed\n", i);
             failures++;
             break;
         }
@@ -113,6 +198,7 @@ int main(void)
         args.stack_size = THREAD_STACK_SIZE;
         args.entry = (unsigned long)(uintptr_t)thread_worker;
         args.argument = (unsigned long)(uintptr_t)state;
+        args.tls = (unsigned long)(uintptr_t)state->reent;
         args.child_tid = (unsigned long)(uintptr_t)&state->alive_tid;
 
         tid = armos_clone(&args);
@@ -125,6 +211,14 @@ int main(void)
         created++;
         printf("threadtest: created worker=%u tid=%d stack=%p-%p\n",
                i, tid, (void *)state->stack_base, (void *)state->stack_top);
+    }
+
+    for (unsigned int i = 0; i < created; i++) {
+        if (wake_worker(&workers[i]) < 0) {
+            printf("threadtest: worker %u futex wake failed errno=%d\n",
+                   i, errno);
+            failures++;
+        }
     }
 
     for (unsigned int i = 0; i < created; i++) {
@@ -153,6 +247,20 @@ int main(void)
                    i, (void *)state->observed_stack);
             failures++;
         }
+        if (state->observed_errno != 100 + (int)i) {
+            printf("threadtest: worker %u errno mismatch got=%d expected=%d\n",
+                   i, state->observed_errno, 100 + (int)i);
+            failures++;
+        }
+        if (state->futex_wait_result != 0) {
+            printf("threadtest: worker %u futex wait failed result=%d errno=%d\n",
+                   i, state->futex_wait_result, state->futex_wait_errno);
+            failures++;
+        }
+        if (!state->malloc_ok) {
+            printf("threadtest: worker %u malloc failed\n", i);
+            failures++;
+        }
     }
 
     for (unsigned int i = 0; i < created; i++) {
@@ -170,8 +278,13 @@ int main(void)
         }
     }
 
-    for (unsigned int i = 0; i < THREAD_COUNT; i++)
+    if (validate_futex_errors() < 0)
+        failures++;
+
+    for (unsigned int i = 0; i < THREAD_COUNT; i++) {
+        armos_thread_reent_destroy(workers[i].reent);
         free(workers[i].allocation);
+    }
 
     if (failures) {
         printf("threadtest: failed (%d failure%s)\n",

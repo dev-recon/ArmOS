@@ -38,10 +38,14 @@ typedef struct exec_image_segment {
 typedef struct exec_image_layout {
     vaddr_t entry;
     uint32_t segment_count;
+    vaddr_t tls_image;
+    uint64_t tls_file_size;
+    uint64_t tls_memory_size;
+    uint64_t tls_alignment;
     exec_image_segment_t segments[EXEC_IMAGE_MAX_SEGMENTS];
 } exec_image_layout_t;
 
 int exec_load_image(struct inode *inode, struct vm_space *vm,
-                    vaddr_t *entry);
+                    vaddr_t *entry, exec_image_layout_t *loaded_layout);
 
 #endif /* _KERNEL_EXEC_H */

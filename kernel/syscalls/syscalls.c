@@ -48,6 +48,8 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_exit] = (syscall_func_t)sys_exit,
     [__NR_fork] = (syscall_func_t)sys_fork,
     [__NR_clone] = (syscall_func_t)sys_clone,
+    [__NR_set_tls] = (syscall_func_t)sys_set_tls,
+    [__NR_get_tls_info] = (syscall_func_t)sys_get_tls_info,
     [__NR_read] = (syscall_func_t)sys_read,
     [__NR_write] = (syscall_func_t)sys_write,
     [__NR_open] = (syscall_func_t)sys_open,
@@ -167,6 +169,7 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_socket_shutdown] = (syscall_func_t)sys_socket_shutdown,
     [__NR_resolve]   = (syscall_func_t)sys_resolve,
     [__NR_thread_exit] = (syscall_func_t)sys_thread_exit,
+    [__NR_futex]       = (syscall_func_t)sys_futex,
 
 };
 
@@ -428,6 +431,7 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     uid_t exec_uid;
     gid_t exec_gid;
     mode_t exec_mode;
+    exec_image_layout_t image_layout;
     uint32_t argc = 0;
     uint32_t envpc = 0;
     int result;
@@ -516,7 +520,8 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     }
 
     /* Load through the common VFS/VM path and active ELF ABI parser. */
-    if (exec_load_image(exe_inode, new_vm, &entry) < 0) {
+    memset(&image_layout, 0, sizeof(image_layout));
+    if (exec_load_image(exe_inode, new_vm, &entry, &image_layout) < 0) {
         KERROR("sys_execve: Failed to load ELF segments\n");
         destroy_vm_space(new_vm);
         put_inode(exe_inode);
@@ -543,6 +548,13 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
         spin_lock_irqsave(&task_lock, &vm_flags);
         old_vm = proc->process->vm;
         proc->process->vm = new_vm;
+        proc->process->tls_image = image_layout.tls_image;
+        proc->process->tls_file_size =
+            (size_t)image_layout.tls_file_size;
+        proc->process->tls_memory_size =
+            (size_t)image_layout.tls_memory_size;
+        proc->process->tls_alignment =
+            (size_t)image_layout.tls_alignment;
         spin_unlock_irqrestore(&task_lock, vm_flags);
     }
     init_process_signals(proc);

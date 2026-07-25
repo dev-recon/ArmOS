@@ -25,11 +25,13 @@
 #include <kernel/signal.h>  /* Pour sig_handler_t et sigaction_t */
 #include <kernel/dirent.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/syscall.h>
 #include <uapi/armos/thread.h>
 #include <uapi/armos/time.h>
+#include <uapi/armos/tls.h>
 
 /* Forward declarations */
 struct process;
@@ -165,6 +167,9 @@ struct process;
 #define __NR_socket_shutdown    ARMOS_NR_SOCKET_SHUTDOWN
 #define __NR_resolve            ARMOS_NR_RESOLVE
 #define __NR_thread_exit        ARMOS_NR_THREAD_EXIT
+#define __NR_futex              ARMOS_NR_FUTEX
+#define __NR_set_tls            ARMOS_NR_SET_TLS
+#define __NR_get_tls_info       ARMOS_NR_GET_TLS_INFO
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -350,6 +355,10 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms);
 
 int sys_fork(void);
 int sys_clone(const armos_clone_args_t* args, size_t args_size);
+int sys_futex(uint32_t* address, int operation, uint32_t value,
+              const armos_timespec_t* timeout);
+int sys_set_tls(unsigned long tls_base);
+int sys_get_tls_info(armos_tls_info_t* info);
 int sys_execve(const char* filename, char* const argv[], char* const envp[]);
 void sys_exit(int status);
 void sys_thread_exit(int status) __attribute__((noreturn));

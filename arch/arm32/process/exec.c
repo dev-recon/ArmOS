@@ -30,6 +30,7 @@ int arch_exec_parse_image(const void *image, size_t image_size,
     const uint8_t *bytes = image;
     const elf32_ehdr_t *header = image;
     uint32_t index;
+    bool tls_seen = false;
 
     if (!image || !layout || image_size < sizeof(*header) ||
         header->e_ident[0] != 0x7f || header->e_ident[1] != 'E' ||
@@ -51,6 +52,24 @@ int arch_exec_parse_image(const void *image, size_t image_size,
                 bytes + header->e_phoff + index * sizeof(*program));
         exec_image_segment_t *segment;
 
+        if (program->p_type == PT_TLS) {
+            if (tls_seen || program->p_memsz == 0 ||
+                program->p_filesz > program->p_memsz ||
+                program->p_offset > image_size ||
+                program->p_filesz > image_size - program->p_offset ||
+                program->p_vaddr + program->p_memsz < program->p_vaddr ||
+                program->p_vaddr + program->p_memsz > USER_SPACE_END ||
+                (program->p_align > 1u &&
+                 (program->p_align & (program->p_align - 1u)) != 0))
+                return -1;
+            tls_seen = true;
+            layout->tls_image = program->p_vaddr;
+            layout->tls_file_size = program->p_filesz;
+            layout->tls_memory_size = program->p_memsz;
+            layout->tls_alignment =
+                program->p_align ? program->p_align : 1u;
+            continue;
+        }
         if (program->p_type != PT_LOAD)
             continue;
         if (layout->segment_count >= EXEC_IMAGE_MAX_SEGMENTS ||
