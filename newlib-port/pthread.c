@@ -11,6 +11,10 @@
  * Responsibilities:
  * - Build the pthread lifecycle API on the native clone/futex/TLS ABI.
  * - Keep joins, cancellation state, cleanup handlers and TSD in userspace.
+ *
+ * Notes:
+ * - Kernel code only creates scheduler-visible tasks and provides wait/wake.
+ * - Process-shared objects and asynchronous cancellation are not advertised.
  */
 
 #include "pthread_internal.h"

@@ -1,9 +1,20 @@
 /*
- * ArmOS pthread feature wrapper.
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
  *
- * Newlib ships the portable pthread declarations but only enables them for
- * operating systems that publish their feature set.  ArmOS supplies the
- * implementation in newlib-port/pthread.c.
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: userland/include/pthread.h
+ * Layer: Userland / C library compatibility
+ *
+ * Responsibilities:
+ * - Enable newlib's portable pthread declarations for ArmOS.
+ * - Publish ArmOS-supported feature levels and robust mutex extensions.
+ *
+ * Notes:
+ * - The implementation lives in the architecture-neutral newlib port.
+ * - Process-shared synchronization is deliberately reported unsupported.
  */
 
 #ifndef _ARMOS_PTHREAD_WRAPPER_H

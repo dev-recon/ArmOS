@@ -11,6 +11,10 @@
  * Responsibilities:
  * - Expose the native thread primitives used to bootstrap libpthread.
  * - Keep applications away from raw syscall entry symbols.
+ *
+ * Notes:
+ * - This interface is native ArmOS API, not Linux clone compatibility.
+ * - POSIX applications should normally include pthread.h instead.
  */
 
 #ifndef _ARMOS_THREAD_H

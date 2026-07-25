@@ -1,5 +1,20 @@
 /*
- * ArmOS pthread, synchronization and compiler TLS validation.
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: userland/programs/pthreadtest/pthreadtest.c
+ * Layer: Userland / pthread validation
+ *
+ * Responsibilities:
+ * - Validate the POSIX thread lifecycle and synchronization surface.
+ * - Exercise compiler TLS, cancellation cleanup and robust owner recovery.
+ *
+ * Notes:
+ * - The same source is executed on ARM32 and ARM64 SMP configurations.
+ * - A failure is reported through both diagnostics and process status.
  */
 
 #include <errno.h>
