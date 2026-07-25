@@ -47,6 +47,9 @@ typedef syscall_word_t (*syscall_func_t)(
 static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_exit] = (syscall_func_t)sys_exit,
     [__NR_fork] = (syscall_func_t)sys_fork,
+    [__NR_clone] = (syscall_func_t)sys_clone,
+    [__NR_set_tls] = (syscall_func_t)sys_set_tls,
+    [__NR_get_tls_info] = (syscall_func_t)sys_get_tls_info,
     [__NR_read] = (syscall_func_t)sys_read,
     [__NR_write] = (syscall_func_t)sys_write,
     [__NR_open] = (syscall_func_t)sys_open,
@@ -64,6 +67,7 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_pause] = (syscall_func_t)sys_pause,
     [__NR_utime] = (syscall_func_t)sys_utime,
     [__NR_getpid] = (syscall_func_t)sys_getpid,
+    [__NR_gettid] = (syscall_func_t)sys_gettid,
     [__NR_getppid] = (syscall_func_t)sys_getppid,
     [__NR_setuid] = (syscall_func_t)sys_setuid,
     [__NR_getuid] = (syscall_func_t)sys_getuid,
@@ -164,6 +168,8 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_recvfrom]  = (syscall_func_t)sys_recvfrom,
     [__NR_socket_shutdown] = (syscall_func_t)sys_socket_shutdown,
     [__NR_resolve]   = (syscall_func_t)sys_resolve,
+    [__NR_thread_exit] = (syscall_func_t)sys_thread_exit,
+    [__NR_futex]       = (syscall_func_t)sys_futex,
 
 };
 
@@ -425,6 +431,7 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     uid_t exec_uid;
     gid_t exec_gid;
     mode_t exec_mode;
+    exec_image_layout_t image_layout;
     uint32_t argc = 0;
     uint32_t envpc = 0;
     int result;
@@ -513,7 +520,8 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     }
 
     /* Load through the common VFS/VM path and active ELF ABI parser. */
-    if (exec_load_image(exe_inode, new_vm, &entry) < 0) {
+    memset(&image_layout, 0, sizeof(image_layout));
+    if (exec_load_image(exe_inode, new_vm, &entry, &image_layout) < 0) {
         KERROR("sys_execve: Failed to load ELF segments\n");
         destroy_vm_space(new_vm);
         put_inode(exe_inode);
@@ -540,6 +548,13 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
         spin_lock_irqsave(&task_lock, &vm_flags);
         old_vm = proc->process->vm;
         proc->process->vm = new_vm;
+        proc->process->tls_image = image_layout.tls_image;
+        proc->process->tls_file_size =
+            (size_t)image_layout.tls_file_size;
+        proc->process->tls_memory_size =
+            (size_t)image_layout.tls_memory_size;
+        proc->process->tls_alignment =
+            (size_t)image_layout.tls_alignment;
         spin_unlock_irqrestore(&task_lock, vm_flags);
     }
     init_process_signals(proc);
@@ -682,6 +697,10 @@ void sys_exit(int status)
         KERROR("sys_exit: No current task\n");
         KERROR("sys_exit: NULL Proc\n");
         return;
+    }
+
+    if (proc->type == TASK_TYPE_THREAD) {
+        sys_thread_exit(status);
     }
 
     if (proc->type != TASK_TYPE_PROCESS || !proc->process) {
@@ -1161,21 +1180,24 @@ int syscall_handler(uint32_t syscall_num, uint32_t arg1, uint32_t arg2,
 int sys_getpid(void)
 {
     task_t *proc = task_current_local();
+    process_t *process = task_get_process(proc);
 
-    if (proc && proc->type == TASK_TYPE_PROCESS && proc->process) {
-        return proc->process->pid;
-    }
-    return 0;
+    return process ? process->pid : 0;
+}
+
+int sys_gettid(void)
+{
+    task_t *task = task_current_local();
+
+    return task ? (int)task->task_id : 0;
 }
 
 int sys_getppid(void)
 {
     task_t *proc = task_current_local();
+    process_t *process = task_get_process(proc);
 
-    if (proc && proc->type == TASK_TYPE_PROCESS && proc->process) {
-        return proc->process->ppid;
-    }
-    return 0;
+    return process ? process->ppid : 0;
 }
 
 int sys_getuid(void)

@@ -3104,13 +3104,7 @@ int sys_clock_nanosleep(int clock_id, int flags,
 
 static process_t *task_process_for_sysinfo(task_t *task)
 {
-    if (!task) return NULL;
-    if (task->type == TASK_TYPE_PROCESS)
-        return task->process;
-    if (task->type == TASK_TYPE_THREAD && task->thread.process &&
-        task->thread.process->type == TASK_TYPE_PROCESS)
-        return task->thread.process->process;
-    return NULL;
+    return task_get_process(task);
 }
 
 int sys_sysinfo(struct sysinfo_response *resp)

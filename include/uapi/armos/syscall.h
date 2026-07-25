@@ -42,6 +42,7 @@
 #define ARMOS_NR_FCHMOD     94
 #define ARMOS_NR_FCHOWN     95
 #define ARMOS_NR_GETPPID    119
+#define ARMOS_NR_CLONE      120
 #define ARMOS_NR_FDATASYNC  148
 #define ARMOS_NR_SCHED_YIELD 158
 #define ARMOS_NR_NANOSLEEP  162
@@ -52,6 +53,7 @@
 #define ARMOS_NR_MMAP       195
 #define ARMOS_NR_MUNMAP     196
 #define ARMOS_NR_SYSCONF    197
+#define ARMOS_NR_GETTID     224
 #define ARMOS_NR_CLOCK_GETTIME 263
 #define ARMOS_NR_CLOCK_GETRES  264
 #define ARMOS_NR_CLOCK_NANOSLEEP 265
@@ -68,6 +70,10 @@
 #define ARMOS_NR_FSTATAT       327
 #define ARMOS_NR_UNLINKAT      328
 #define ARMOS_NR_RENAMEAT      329
+#define ARMOS_NR_THREAD_EXIT   330
+#define ARMOS_NR_FUTEX         331
+#define ARMOS_NR_SET_TLS       332
+#define ARMOS_NR_GET_TLS_INFO  333
 #define ARMOS_SYSCALL_MAX 512
 
 /* Values shared with the newlib _SC_* namespace used by ArmOS. */

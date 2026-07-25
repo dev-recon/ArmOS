@@ -55,6 +55,7 @@ typedef struct task_context {
     uint32_t svc_sp_top;
     uint32_t svc_sp;
     uint32_t svc_lr_saved;
+    uint32_t tls_base;
 } __attribute__((aligned(8))) task_context_t;
 
 typedef struct arch_task_user_context {
@@ -211,6 +212,18 @@ static inline void arch_task_context_set_address_space(task_context_t *ctx,
 {
     ctx->ttbr0 = (uint32_t)address_space;
     ctx->asid = asid;
+}
+
+static inline void arch_task_context_set_tls(task_context_t *ctx,
+                                             uintptr_t tls_base)
+{
+    ctx->tls_base = (uint32_t)tls_base;
+}
+
+static inline void arch_task_set_user_tls_current(uintptr_t tls_base)
+{
+    __asm__ volatile("mcr p15, 0, %0, c13, c0, 3\n\tisb"
+                     : : "r"((uint32_t)tls_base) : "memory");
 }
 
 static inline uint32_t arch_task_context_user_cpsr(uint32_t cpsr)

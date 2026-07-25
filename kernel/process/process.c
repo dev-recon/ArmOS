@@ -369,10 +369,5 @@ task_t* get_current_task(void)
  */
 process_t* get_current_process(void)
 {
-    task_t *task = task_current_local();
-
-    if (task && task->type == TASK_TYPE_PROCESS && task->process) {
-        return task->process;
-    }
-    return NULL;
+    return task_get_process(task_current_local());
 }

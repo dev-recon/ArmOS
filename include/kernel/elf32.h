@@ -52,6 +52,7 @@ typedef struct __attribute__((packed)) {
 } elf32_phdr_t  ;
 
 #define PT_LOAD 1
+#define PT_TLS  7
 #define PF_X    1
 #define PF_W    2
 #define PF_R    4

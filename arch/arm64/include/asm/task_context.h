@@ -44,6 +44,7 @@ typedef struct arm64_task_context {
     arm64_kernel_context_t kernel;
     arm64_user_context_t user;
     arm64_simd_context_t simd;
+    uint64_t tls_base;
     paddr_t ttbr0;
     uint32_t asid;
     uint32_t flags;
@@ -66,7 +67,7 @@ _Static_assert(sizeof(arm64_kernel_context_t) == 112,
                "AArch64 kernel context ABI size changed");
 _Static_assert(sizeof(arm64_simd_context_t) == 528,
                "AArch64 SIMD context ABI size changed");
-_Static_assert(sizeof(arm64_task_context_t) == 928,
+_Static_assert(sizeof(arm64_task_context_t) == 944,
                "AArch64 task context ABI size changed");
 
 void arm64_task_context_switch(arm64_task_context_t *previous,
@@ -209,6 +210,18 @@ static inline void arch_task_context_set_address_space(task_context_t *ctx,
 {
     ctx->ttbr0 = (paddr_t)address_space;
     ctx->asid = asid;
+}
+
+static inline void arch_task_context_set_tls(task_context_t *ctx,
+                                             uintptr_t tls_base)
+{
+    ctx->tls_base = (uint64_t)tls_base;
+}
+
+static inline void arch_task_set_user_tls_current(uintptr_t tls_base)
+{
+    __asm__ volatile("msr tpidr_el0, %0\n\tisb"
+                     : : "r"((uint64_t)tls_base) : "memory");
 }
 
 static inline void arch_task_context_set_user_register(task_context_t *ctx,

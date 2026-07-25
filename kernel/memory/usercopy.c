@@ -28,11 +28,11 @@
 static vm_space_t *current_user_vm(void)
 {
     task_t *task = task_current_local();
+    process_t *process = task_get_process(task);
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process ||
-        !task->process->vm)
+    if (!process || !process->vm)
         return NULL;
-    return task->process->vm;
+    return process->vm;
 }
 
 static void note_resolved_fault(bool lazy)

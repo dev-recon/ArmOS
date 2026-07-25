@@ -24,3 +24,7 @@ Current patch:
   the `:C` variable modifier from its own `share/mk` files. The patch does not
   enable all POSIX directory routines, which would currently pull unsupported
   `dirent.h` internals into the libc build.
+- `0002-expose-armos-pthread-features.patch`: publishes the pthread,
+  synchronization, timeout, and robust-mutex declarations implemented by the
+  ArmOS userspace runtime. Process-shared synchronization remains advertised
+  as unsupported.

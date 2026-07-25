@@ -24,7 +24,7 @@
 
 _Static_assert(offsetof(task_t, context) == 48,
                "task_t.context offset must match ARM32 assembly");
-_Static_assert(sizeof(task_context_t) == 168,
+_Static_assert(sizeof(task_context_t) == 176,
                "task_context_t layout must match ARM32 assembly");
 
 void arm_os_emit_asm_offsets(void)
@@ -74,5 +74,6 @@ void arm_os_emit_asm_offsets(void)
     DEFINE(CTX_SVC_SP_TOP, offsetof(task_context_t, svc_sp_top));
     DEFINE(CTX_SVC_SP, offsetof(task_context_t, svc_sp));
     DEFINE(CTX_SVC_LR_SAVED, offsetof(task_context_t, svc_lr_saved));
+    DEFINE(CTX_TLS, offsetof(task_context_t, tls_base));
     DEFINE(CTX_SIZE, sizeof(task_context_t));
 }

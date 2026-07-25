@@ -105,6 +105,8 @@ __user_ctx:
     mov     r2, #0
     str     r2, [r0, #CTX_FIRST]           // is_first_run = 0
     str     r2, [r0, #CTX_RET_TO_USER]     // force __restore_to_kernel on resume
+    mrc     p15, 0, r2, c13, c0, 3         // TPIDRURO
+    str     r2, [r0, #CTX_TLS]
 
     /* usr_r[] is owned by SVC entry; do not refresh it from kernel registers. */
     //add     r3, r0, #CTX_USR_R0
@@ -129,6 +131,8 @@ __load_new_context:
     dsb
     mcr     p15, 0, r2, c2,  c0, 0         // TTBR0
     mcr     p15, 0, r3, c13, c0, 1         // ASID
+    ldr     r2, [r12, #CTX_TLS]
+    mcr     p15, 0, r2, c13, c0, 3         // TPIDRURO
     /* Keep the proven full local flush while the ASID path is validated. */
     mov     r2, #0
     mcr     p15, 0, r2, c8,  c7, 0         // TLBIALL

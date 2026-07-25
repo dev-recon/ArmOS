@@ -25,10 +25,13 @@
 #include <kernel/signal.h>  /* Pour sig_handler_t et sigaction_t */
 #include <kernel/dirent.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/syscall.h>
+#include <uapi/armos/thread.h>
 #include <uapi/armos/time.h>
+#include <uapi/armos/tls.h>
 
 /* Forward declarations */
 struct process;
@@ -122,6 +125,7 @@ struct process;
 #define __NR_uname              122
 #define __NR_sigprocmask        126
 #define __NR_getppid            119  /* Moved to avoid conflicts */
+#define __NR_clone              ARMOS_NR_CLONE
 #define __NR_print              121
 #define __NR_getdents           141
 #define __NR_select             142
@@ -144,6 +148,7 @@ struct process;
 #define __NR_mmap               195
 #define __NR_munmap             196
 #define __NR_sysconf            ARMOS_NR_SYSCONF
+#define __NR_gettid             ARMOS_NR_GETTID
 #define __NR_clock_gettime      ARMOS_NR_CLOCK_GETTIME
 #define __NR_clock_getres       ARMOS_NR_CLOCK_GETRES
 #define __NR_clock_nanosleep    ARMOS_NR_CLOCK_NANOSLEEP
@@ -161,6 +166,10 @@ struct process;
 #define __NR_recvfrom           ARMOS_NR_RECVFROM
 #define __NR_socket_shutdown    ARMOS_NR_SOCKET_SHUTDOWN
 #define __NR_resolve            ARMOS_NR_RESOLVE
+#define __NR_thread_exit        ARMOS_NR_THREAD_EXIT
+#define __NR_futex              ARMOS_NR_FUTEX
+#define __NR_set_tls            ARMOS_NR_SET_TLS
+#define __NR_get_tls_info       ARMOS_NR_GET_TLS_INFO
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -345,8 +354,14 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms);
 #define WUNTRACED  2
 
 int sys_fork(void);
+int sys_clone(const armos_clone_args_t* args, size_t args_size);
+int sys_futex(uint32_t* address, int operation, uint32_t value,
+              const armos_timespec_t* timeout);
+int sys_set_tls(unsigned long tls_base);
+int sys_get_tls_info(armos_tls_info_t* info);
 int sys_execve(const char* filename, char* const argv[], char* const envp[]);
 void sys_exit(int status);
+void sys_thread_exit(int status) __attribute__((noreturn));
 int sys_waitpid(pid_t pid, int* status, int options);
 int sys_wait4(pid_t pid, int* status, int options, struct rusage_kernel* rusage);
 int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent);
@@ -357,6 +372,7 @@ int sys_gtty(int cmd, uint32_t arg);
 
 /* Process info syscalls */
 int sys_getpid(void);
+int sys_gettid(void);
 int sys_getppid(void);
 int sys_setuid(uid_t uid);
 int sys_getuid(void);

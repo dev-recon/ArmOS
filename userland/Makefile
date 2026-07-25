@@ -47,15 +47,18 @@ CFLAGS := $(ARCH_FLAGS) -std=gnu99 -Os -ffreestanding -fno-builtin \
           $(REPRO_FLAGS) \
           -ffunction-sections -fdata-sections \
           -fno-stack-protector -DARM_OS_NEWLIB \
+          -D__DYNAMIC_REENT__ \
           -DARMOS_USER_TEXT_ADDRESS=$(USER_TEXT_ADDRESS) \
-          -Iinclude -I$(NEWLIB_SYSROOT)/include
+          -Iinclude -I../include -I$(NEWLIB_SYSROOT)/include
 LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static \
            -Wl,-Ttext=$(USER_TEXT_ADDRESS) -Wl,-e,_start -Wl,--gc-sections \
            -Wl,--allow-multiple-definition
 
 PORT_OBJECTS := $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/crt0_newlib.o \
                 $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscall_raw.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscalls.o
+                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscalls.o \
+                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread.o \
+                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread_sync.o
 
 COREUTIL_SRCS := $(wildcard coreutils/src/*.c)
 COREUTILS := $(sort $(patsubst coreutils/src/%.c,%,$(COREUTIL_SRCS)))

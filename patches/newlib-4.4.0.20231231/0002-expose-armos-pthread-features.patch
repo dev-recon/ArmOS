@@ -1,0 +1,48 @@
+diff --git a/newlib/libc/include/sys/features.h b/newlib/libc/include/sys/features.h
+--- a/newlib/libc/include/sys/features.h
++++ b/newlib/libc/include/sys/features.h
+@@ -413,6 +413,24 @@
+ #define _POSIX_THREAD_PRIORITY_SCHEDULING	1
+ #endif
+
++/*
++ * The repo-local bare-metal sysroot is ArmOS-specific even though the
++ * compiler triplets remain arm-none-eabi and aarch64-elf.
++ */
++#ifndef _POSIX_THREADS
++#define _POSIX_THREADS				200809L
++#define _POSIX_THREAD_ATTR_STACKADDR		200809L
++#define _POSIX_THREAD_ATTR_STACKSIZE		200809L
++#define _POSIX_THREAD_PROCESS_SHARED		-1
++#define _POSIX_THREAD_SAFE_FUNCTIONS		200809L
++#define _POSIX_TIMEOUTS				200809L
++#define _POSIX_SEMAPHORES			200809L
++#define _POSIX_BARRIERS				200809L
++#define _POSIX_READER_WRITER_LOCKS		200809L
++#define _POSIX_SPIN_LOCKS			200809L
++#define _UNIX98_THREAD_MUTEX_ATTRIBUTES		1
++#endif
++
+
+ #ifdef __svr4__
+ # define _POSIX_JOB_CONTROL     1
+diff --git a/newlib/libc/include/pthread.h b/newlib/libc/include/pthread.h
+--- a/newlib/libc/include/pthread.h
++++ b/newlib/libc/include/pthread.h
+@@ -368,6 +368,16 @@
+   } while (0)
+ #endif /* __GNU_VISIBLE */
+
++/*
++ * POSIX robust mutexes are supplied by the ArmOS userspace pthread runtime.
++ */
++#define PTHREAD_MUTEX_STALLED 0
++#define PTHREAD_MUTEX_ROBUST  1
++
++int pthread_mutexattr_getrobust(const pthread_mutexattr_t *, int *);
++int pthread_mutexattr_setrobust(pthread_mutexattr_t *, int);
++int pthread_mutex_consistent(pthread_mutex_t *);
++
+ #if defined(_POSIX_THREAD_CPUTIME)
+
+ /* Accessing a Thread CPU-time Clock, P1003.4b/D8, p. 58 */

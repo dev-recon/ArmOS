@@ -26,6 +26,26 @@ task_t* current_tasks[ARMOS_MAX_CPUS];
 static task_poll_wait_handler_t poll_wait_handler;
 static void *poll_wait_owner;
 
+process_t* task_get_process(task_t* task)
+{
+    if (!task || (task->type != TASK_TYPE_PROCESS &&
+                  task->type != TASK_TYPE_THREAD))
+        return NULL;
+    return task->process;
+}
+
+task_t* task_get_process_leader(task_t* task)
+{
+    process_t* process = task_get_process(task);
+
+    return process ? process->leader : NULL;
+}
+
+bool task_is_user_context(task_t* task)
+{
+    return task_get_process(task) != NULL;
+}
+
 int task_register_poll_wait_handler(task_poll_wait_handler_t handler,
                                     void *owner)
 {
@@ -43,16 +63,16 @@ int task_poll_wait_once(void)
 
 uid_t current_uid(void)
 {
-    task_t* task = task_current_local();
+    process_t* process = task_get_process(task_current_local());
 
-    return task && task->process ? task->process->uid : 0;
+    return process ? process->uid : 0;
 }
 
 gid_t current_gid(void)
 {
-    task_t* task = task_current_local();
+    process_t* process = task_get_process(task_current_local());
 
-    return task && task->process ? task->process->gid : 0;
+    return process ? process->gid : 0;
 }
 
 static bool current_task_header_valid(task_t* task)

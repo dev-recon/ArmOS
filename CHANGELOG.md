@@ -5,6 +5,24 @@ Release tags use the bare version number starting with `0.7` (`0.7`, `0.7.1`,
 
 ## Unreleased
 
+### Native threads
+
+- Added the first scheduler-visible user-thread foundation with shared process
+  state, distinct TIDs and stacks, a native clone argument block, and deferred
+  SMP-safe thread reclamation.
+- Added `threadtest` to validate shared memory, PID/TID identity, stack
+  isolation, per-thread `errno`, concurrent newlib allocation, blocking futex
+  wake/timeout paths, futex-based join, and clear-on-exit TID publication.
+- Added native per-task TLS context switching and dynamically selected newlib
+  `_reent` state on ARM32 and ARM64.
+- Added futex wait/wake with relative timeouts, clear-child-TID wakeup, and
+  futex-backed locking for newlib's principal global state.
+- Added the POSIX pthread lifecycle, mutexes, condition variables, once
+  control, TSD, read/write locks, barriers, spin locks, unnamed semaphores,
+  deferred cancellation, and robust mutex recovery.
+- Added ELF `PT_TLS` loading and compiler-managed `__thread` storage on ARM32
+  and ARM64, validated by the new `pthreadtest` regression program.
+
 ### Raspberry Pi storage
 
 - Added CMD18/CMD25 multi-block PIO transfers to the BCM2835 SDHOST system-SD
