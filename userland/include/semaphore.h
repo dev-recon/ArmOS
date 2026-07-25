@@ -1,5 +1,20 @@
 /*
- * ArmOS unnamed POSIX semaphores.
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: userland/include/semaphore.h
+ * Layer: Userland / C library compatibility
+ *
+ * Responsibilities:
+ * - Declare the unnamed POSIX semaphore surface implemented by ArmOS.
+ * - Keep semaphore storage compatible across the common userspace runtime.
+ *
+ * Notes:
+ * - Named and process-shared semaphores are not currently implemented.
+ * - Waiting is delegated to the common futex-backed pthread runtime.
  */
 
 #ifndef _ARMOS_SEMAPHORE_H

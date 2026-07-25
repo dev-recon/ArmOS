@@ -7,6 +7,15 @@
  *
  * File: include/uapi/armos/futex.h
  * Layer: UAPI / userspace synchronization
+ *
+ * Responsibilities:
+ * - Define the architecture-neutral futex operations shared by the kernel
+ *   and userspace runtimes.
+ * - Preserve stable raw result values at the syscall boundary.
+ *
+ * Notes:
+ * - Libc translates raw kernel errors into its native errno values.
+ * - The initial ABI supports process-private wait and wake operations.
  */
 
 #ifndef _UAPI_ARMOS_FUTEX_H

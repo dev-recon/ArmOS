@@ -7,6 +7,15 @@
  *
  * File: newlib-port/pthread_sync.c
  * Layer: Userspace / POSIX synchronization
+ *
+ * Responsibilities:
+ * - Implement process-private pthread synchronization over futex wait/wake.
+ * - Provide mutexes, conditions, rwlocks, barriers, spinlocks and unnamed
+ *   semaphores without architecture-specific code.
+ *
+ * Notes:
+ * - Public objects contain stable handles into bounded userspace tables.
+ * - Process-shared objects and priority protocols return explicit errors.
  */
 
 #include "pthread_internal.h"

@@ -1,5 +1,21 @@
 /*
- * ArmOS userspace pthread internals.
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: newlib-port/pthread_internal.h
+ * Layer: Userspace / POSIX threads internals
+ *
+ * Responsibilities:
+ * - Share private pthread control structures across lifecycle and
+ *   synchronization translation units.
+ * - Centralize cancellation, cleanup and futex helper contracts.
+ *
+ * Notes:
+ * - This header is private to the ArmOS newlib port.
+ * - Its structures are not part of the public pthread ABI.
  */
 
 #ifndef _ARMOS_PTHREAD_INTERNAL_H
