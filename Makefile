@@ -167,6 +167,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/usb/core.o \
 	kernel/timer/timer.o \
 	kernel/syscalls/syscalls.o \
+	kernel/syscalls/thread.o \
 	kernel/syscalls/file.o \
 	kernel/syscalls/shm.o \
 	kernel/syscalls/process_syscalls.o

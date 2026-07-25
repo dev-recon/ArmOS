@@ -366,6 +366,8 @@ typedef struct {
     uint32_t rlimit_nofile_max;
     uint32_t alarm_expire_tick;
     uint32_t alarm_active;
+    struct task* leader;
+    uint32_t thread_count;
 
     proc_state_t state;
 
@@ -440,8 +442,13 @@ typedef struct task {
     union {
         process_t* process;
         struct {
-            struct task* process;   /* Processus proprietaire */
-            void* thread_data;      /* Donnees thread */
+            /*
+             * Keep the shared process pointer first: task->process is then a
+             * valid common view for both leaders and member threads without
+             * changing the established union size or assembly-visible offsets.
+             */
+            process_t* process;
+            struct task* leader;
         } thread;
     };
 
@@ -459,6 +466,7 @@ typedef struct task {
     uint32_t magic;                         /* Object lifetime guard for SMP diagnostics */
     uint64_t user_runtime;                  /* EL0 execution time in timer ticks */
     uint64_t system_runtime;                /* Kernel time charged to this task */
+    vaddr_t clear_child_tid;                 /* User TID word cleared on thread exit */
 
 } __attribute__((aligned(8))) task_t;
 
@@ -473,6 +481,11 @@ void cleanup_task_system(void);
 /* Creation et destruction */
 task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint32_t priority);
 task_t* task_create_process(const char* name, void (*entry)(void* arg), void* arg, uint32_t priority, task_type_t type);
+task_t* task_create_user_thread(task_t* creator, vaddr_t entry, vaddr_t argument,
+                                vaddr_t user_stack, vaddr_t clear_child_tid);
+void task_publish_user_thread(task_t* thread);
+void task_abort_user_thread(task_t* thread);
+void task_exit_current_thread(int status) __attribute__((noreturn));
 void task_destroy(task_t* task);
 void task_free_kernel_stack(task_t* task);
 
@@ -549,6 +562,9 @@ extern task_t* init_process;
 
 task_t* task_current_on_cpu(uint32_t cpu_id);
 task_t* task_current_local(void);
+process_t* task_get_process(task_t* task);
+task_t* task_get_process_leader(task_t* task);
+bool task_is_user_context(task_t* task);
 int task_current_publish(uint32_t cpu_id, task_t* task);
 void task_current_clear_all(void);
 task_t* task_idle_on_cpu(uint32_t cpu_id);

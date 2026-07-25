@@ -1140,6 +1140,8 @@ task_t* task_create_copy(task_t* parent, bool from_user)
             child->process->rlimit_nofile_max = parent->process->rlimit_nofile_max;
             child->process->alarm_expire_tick = 0;
             child->process->alarm_active = 0;
+            child->process->leader = child;
+            child->process->thread_count = 1u;
             child->process->state = (proc_state_t)PROC_READY;
             strcpy(child->process->cwd, parent->process->cwd);    // Setting Current Working Directory
             strcpy(child->process->exe_path, parent->process->exe_path);
@@ -1202,6 +1204,7 @@ task_t* task_create_copy(task_t* parent, bool from_user)
     child->sched_debt = 0;
     child->running_cpu = TASK_CPU_NONE;
     child->last_cpu = TASK_CPU_NONE;
+    child->clear_child_tid = 0;
     child->magic = TASK_MAGIC_ALIVE;
 
     kernel_lifecycle_stats.tasks_created++;
@@ -1625,6 +1628,7 @@ task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint3
     task->sched_debt = 0;
     task->running_cpu = TASK_CPU_NONE;
     task->last_cpu = TASK_CPU_NONE;
+    task->clear_child_tid = 0;
     task->magic = TASK_MAGIC_ALIVE;
     task->process = NULL;  /* Par defaut, pas de processus associe */
 
@@ -1706,6 +1710,8 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
         task->process->rlimit_nofile_max = MAX_FILES;
         task->process->alarm_expire_tick = 0;
         task->process->alarm_active = 0;
+        task->process->leader = task;
+        task->process->thread_count = 1u;
         task->process->state = (proc_state_t)PROC_READY;
         
         /* Creer l'espace memoire */
@@ -1757,6 +1763,102 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
     }
     
     return task;
+}
+
+task_t* task_create_user_thread(task_t* creator, vaddr_t entry,
+                                vaddr_t argument, vaddr_t user_stack,
+                                vaddr_t clear_child_tid)
+{
+    process_t* process = task_get_process(creator);
+    task_t* leader = task_get_process_leader(creator);
+    task_t* thread;
+    unsigned long flags;
+
+    if (!process || !process->vm || !leader || !entry || !user_stack ||
+        !arch_task_context_returns_to_user(&creator->context))
+        return NULL;
+
+    thread = task_create("thread", NULL, NULL, creator->priority);
+    if (!thread)
+        return NULL;
+
+    snprintf(thread->name, sizeof(thread->name), "thr%u", thread->task_id);
+    thread->type = TASK_TYPE_THREAD;
+    thread->thread.process = process;
+    thread->thread.leader = leader;
+    thread->clear_child_tid = clear_child_tid;
+    thread->entry_point = (void (*)(void*))(uintptr_t)entry;
+    thread->entry_arg = (void *)(uintptr_t)argument;
+
+    memset(&thread->context, 0, sizeof(thread->context));
+    arch_task_context_init_user_entry(
+        &thread->context,
+        (uintptr_t)process->vm->pgdir,
+        process->vm->asid,
+        task_stack_addr(thread->stack_top),
+        entry,
+        user_stack);
+    arch_task_context_set_user_register(&thread->context, 0,
+                                        (uintptr_t)argument);
+
+    spin_lock_irqsave(&task_lock, &flags);
+    process->thread_count++;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    return thread;
+}
+
+void task_publish_user_thread(task_t* thread)
+{
+    if (!thread || thread->type != TASK_TYPE_THREAD ||
+        thread->state != TASK_BLOCKED || !thread->process)
+        return;
+    add_to_ready_queue(thread);
+}
+
+void task_abort_user_thread(task_t* thread)
+{
+    unsigned long flags;
+
+    if (!thread || thread->type != TASK_TYPE_THREAD ||
+        thread->next || thread->prev)
+        return;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    if (thread->process && thread->process->thread_count > 1u)
+        thread->process->thread_count--;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    thread->magic = TASK_MAGIC_DEAD;
+    task_free_kernel_stack(thread);
+    kfree(thread);
+    kernel_lifecycle_stats.tasks_destroyed++;
+}
+
+void task_exit_current_thread(int status)
+{
+    task_t* thread = task_current_local();
+    unsigned long flags;
+
+    (void)status;
+    if (!thread || thread->type != TASK_TYPE_THREAD || !thread->process)
+        panic("task_exit_current_thread called outside a user thread");
+
+    disable_interrupts_save();
+    spin_lock_irqsave(&task_lock, &flags);
+    runqueue_remove_locked(thread);
+    thread->sched_debt = 0;
+    thread->ready_since_tick = 0;
+    thread->state = TASK_ZOMBIE;
+    /*
+     * Give the context switch one timer boundary to publish running_cpu=NONE
+     * before another CPU reclaims this task and its private kernel stack.
+     */
+    thread->wakeup_time = get_system_ticks() + 1u;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    switch_to_idle();
+    __builtin_unreachable();
 }
 
 
@@ -1811,7 +1913,7 @@ void task_destroy(task_t* task)
         runqueue_remove_locked(task);
         task->state = TASK_ZOMBIE;
         task->running_cpu = TASK_CPU_NONE;
-        if (task->process)
+        if (task->type == TASK_TYPE_PROCESS && task->process)
             task->process->state = (proc_state_t)PROC_ZOMBIE;
         kernel_lifecycle_stats.zombies_created++;
     }
@@ -1833,7 +1935,8 @@ void task_destroy(task_t* task)
     /* Liberer les ressources */
     task_free_kernel_stack(task);
 
-    kfree(task->process);
+    if (task->type == TASK_TYPE_PROCESS)
+        kfree(task->process);
 
     kfree(task);
     kernel_lifecycle_stats.tasks_destroyed++;
@@ -2113,7 +2216,21 @@ void task_start_secondary_scheduler(uint32_t cpu_id)
 }
 
 #define SCHED_ALARM_BATCH 16
+#define SCHED_THREAD_REAP_BATCH 16
 #define SCHED_SLEEP_OVERSHOOT_TRACE_TICKS 50u
+
+static void task_reap_terminated_thread(task_t* thread)
+{
+    if (!thread || thread->type != TASK_TYPE_THREAD ||
+        thread->state != TASK_TERMINATED)
+        return;
+
+    remove_task_from_list(thread);
+    thread->magic = TASK_MAGIC_DEAD;
+    task_free_kernel_stack(thread);
+    kfree(thread);
+    kernel_lifecycle_stats.tasks_destroyed++;
+}
 
 static void scheduler_scan_waiters(task_t* current)
 {
@@ -2121,9 +2238,11 @@ static void scheduler_scan_waiters(task_t* current)
     task_t* start;
     task_t* alarm_tasks[SCHED_ALARM_BATCH];
     task_t* zombie_wake_tasks[SCHED_ALARM_BATCH];
+    task_t* thread_reap_tasks[SCHED_THREAD_REAP_BATCH];
     uint32_t current_time = get_system_ticks();
     uint32_t alarm_count = 0;
     uint32_t zombie_wake_count = 0;
+    uint32_t thread_reap_count = 0;
     unsigned long flags;
     int count = 0;
 
@@ -2206,6 +2325,7 @@ static void scheduler_scan_waiters(task_t* current)
         if (task->state == TASK_ZOMBIE &&
             task->type == TASK_TYPE_PROCESS &&
             task->process &&
+            task->process->thread_count <= 1u &&
             task->running_cpu == TASK_CPU_NONE &&
             task->wakeup_time > 0 &&
             current_time >= task->wakeup_time) {
@@ -2213,6 +2333,25 @@ static void scheduler_scan_waiters(task_t* current)
                 task->wakeup_time = 0;
                 zombie_wake_tasks[zombie_wake_count++] = task;
             }
+        }
+
+        /*
+         * User threads have no waitpid-visible zombie. Once the context switch
+         * has released their private kernel stack, claim them under task_lock
+         * and reclaim them after dropping the lock.
+         */
+        if (task->state == TASK_ZOMBIE &&
+            task->type == TASK_TYPE_THREAD &&
+            task->process &&
+            task->running_cpu == TASK_CPU_NONE &&
+            task->wakeup_time > 0 &&
+            current_time >= task->wakeup_time &&
+            thread_reap_count < SCHED_THREAD_REAP_BATCH) {
+            task->state = TASK_TERMINATED;
+            task->wakeup_time = 0;
+            if (task->process->thread_count > 1u)
+                task->process->thread_count--;
+            thread_reap_tasks[thread_reap_count++] = task;
         }
 
         task = task->next;
@@ -2223,6 +2362,13 @@ static void scheduler_scan_waiters(task_t* current)
 
     for (uint32_t i = 0; i < alarm_count; i++)
         send_signal(alarm_tasks[i], SIGALRM);
+
+    /*
+     * Remove the last member thread before waking a parent that may reap and
+     * free the shared process object immediately on another CPU.
+     */
+    for (uint32_t i = 0; i < thread_reap_count; i++)
+        task_reap_terminated_thread(thread_reap_tasks[i]);
 
     for (uint32_t i = 0; i < zombie_wake_count; i++) {
         task_t* zombie = zombie_wake_tasks[i];

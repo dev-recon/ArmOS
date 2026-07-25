@@ -199,13 +199,7 @@ static char proc_task_state_char(task_state_t state)
 
 static process_t* proc_task_process(task_t* task)
 {
-    if (!task) return NULL;
-    if (task->type == TASK_TYPE_PROCESS)
-        return task->process;
-    if (task->type == TASK_TYPE_THREAD && task->thread.process &&
-        task->thread.process->type == TASK_TYPE_PROCESS)
-        return task->thread.process->process;
-    return NULL;
+    return task_get_process(task);
 }
 
 static task_t* proc_find_task_locked(pid_t pid)

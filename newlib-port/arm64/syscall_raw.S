@@ -105,6 +105,7 @@ RAW_SYSCALL sys_wait4, 114
 RAW_SYSCALL sys_sysinfo, 116
 RAW_SYSCALL sys_fsync, 118
 RAW_SYSCALL sys_getppid, 119
+RAW_SYSCALL sys_clone, 120
 RAW_SYSCALL sys_uname, 122
 RAW_SYSCALL sys_mprotect, 125
 RAW_SYSCALL sys_sigprocmask, 126
@@ -128,6 +129,7 @@ RAW_SYSCALL sys_shutdown, 194
 RAW_SYSCALL sys_mmap, 195
 RAW_SYSCALL sys_munmap, 196
 RAW_SYSCALL sys_sysconf, 197
+RAW_SYSCALL sys_gettid, 224
 RAW_SYSCALL sys_clock_gettime, 263
 RAW_SYSCALL sys_clock_getres, 264
 RAW_SYSCALL sys_clock_nanosleep, 265
@@ -145,6 +147,7 @@ RAW_SYSCALL sys_mkdirat, 323
 RAW_SYSCALL sys_fstatat, 327
 RAW_SYSCALL sys_unlinkat, 328
 RAW_SYSCALL sys_renameat, 329
+RAW_SYSCALL sys_thread_exit, 330
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function

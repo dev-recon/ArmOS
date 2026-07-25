@@ -383,10 +383,9 @@ uint32_t vm_virtual_kb(vm_space_t *space)
 static vm_space_t *current_user_vm(void)
 {
     task_t *task = task_current_local();
+    process_t *process = task_get_process(task);
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process)
-        return NULL;
-    return task->process->vm;
+    return process ? process->vm : NULL;
 }
 
 int handle_lazy_anon_fault(vaddr_t address, bool write)

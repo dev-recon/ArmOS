@@ -48,7 +48,7 @@ CFLAGS := $(ARCH_FLAGS) -std=gnu99 -Os -ffreestanding -fno-builtin \
           -ffunction-sections -fdata-sections \
           -fno-stack-protector -DARM_OS_NEWLIB \
           -DARMOS_USER_TEXT_ADDRESS=$(USER_TEXT_ADDRESS) \
-          -Iinclude -I$(NEWLIB_SYSROOT)/include
+          -Iinclude -I../include -I$(NEWLIB_SYSROOT)/include
 LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static \
            -Wl,-Ttext=$(USER_TEXT_ADDRESS) -Wl,-e,_start -Wl,--gc-sections \
            -Wl,--allow-multiple-definition

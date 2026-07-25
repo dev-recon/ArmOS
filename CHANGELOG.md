@@ -5,6 +5,15 @@ Release tags use the bare version number starting with `0.7` (`0.7`, `0.7.1`,
 
 ## Unreleased
 
+### Native threads
+
+- Added the first scheduler-visible user-thread foundation with shared process
+  state, distinct TIDs and stacks, a native clone argument block, and deferred
+  SMP-safe thread reclamation.
+- Added `threadtest` to validate shared memory, PID/TID identity, stack
+  isolation, and clear-on-exit TID publication before the pthread and futex
+  layers are introduced.
+
 ### Raspberry Pi storage
 
 - Added CMD18/CMD25 multi-block PIO transfers to the BCM2835 SDHOST system-SD

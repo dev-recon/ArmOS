@@ -35,6 +35,7 @@
 #include <time.h>
 #include <utime.h>
 #include <unistd.h>
+#include <armos/thread.h>
 #include <uapi/armos/file.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/statvfs.h>
@@ -126,6 +127,9 @@ extern long sys_utimensat(int dirfd, const char *pathname,
                           const armos_timespec_t *times, int flags);
 extern long sys_futimens(int fd, const armos_timespec_t *times);
 extern long sys_fork(void);
+extern long sys_clone(const armos_clone_args_t *args, size_t args_size);
+extern long sys_gettid(void);
+extern void sys_thread_exit(int status);
 extern long sys_execve(const char *pathname, char *const argv[], char *const envp[]);
 extern long sys_waitpid(int pid, int *status, int options);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
@@ -1775,6 +1779,23 @@ int getsysinfo(void *resp)
 int sched_yield(void)
 {
     return ret_errno(sys_sched_yield());
+}
+
+int armos_clone(const armos_clone_args_t *args)
+{
+    return ret_errno(sys_clone(args, sizeof(*args)));
+}
+
+int armos_gettid(void)
+{
+    return (int)sys_gettid();
+}
+
+void armos_thread_exit(int status)
+{
+    sys_thread_exit(status);
+    for (;;)
+        ;
 }
 
 static int clock_id_to_armos(clockid_t clock_id)
