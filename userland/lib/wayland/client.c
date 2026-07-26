@@ -51,6 +51,7 @@ struct wl_proxy {
     void (**listener)(void);
     void *listener_data;
     struct wl_display *display;
+    struct wl_event_queue *queue;
 };
 
 struct wl_pending_event {
@@ -59,6 +60,16 @@ struct wl_pending_event {
     uint16_t opcode;
     uint32_t size;
     uint8_t *payload;
+    int fds[WL_CLIENT_MAX_PENDING_FDS];
+    size_t fd_count;
+};
+
+struct wl_event_queue {
+    struct wl_display *display;
+    struct wl_event_queue *next;
+    struct wl_pending_event *pending_head;
+    struct wl_pending_event *pending_tail;
+    bool is_default;
 };
 
 struct wl_display {
@@ -69,8 +80,10 @@ struct wl_display {
     int pending_fds[WL_CLIENT_MAX_PENDING_FDS];
     size_t pending_fd_count;
     struct wl_proxy *objects[WL_CLIENT_MAX_OBJECTS];
-    struct wl_pending_event *pending_head;
-    struct wl_pending_event *pending_tail;
+    struct wl_event_queue default_queue;
+    struct wl_event_queue *queues;
+    struct wl_event_queue *prepared_queue;
+    struct wl_pending_event *dispatch_event;
     bool read_prepared;
 };
 
@@ -301,20 +314,71 @@ static int wl_display_read_full(struct wl_display *display, void *buffer,
 
 static int wl_display_take_fd(struct wl_display *display)
 {
+    struct wl_pending_event *event;
     int fd;
 
-    if (!display || display->pending_fd_count == 0u) {
+    if (!display || !(event = display->dispatch_event) ||
+        event->fd_count == 0u) {
         errno = EPROTO;
         return -1;
     }
-    fd = display->pending_fds[0];
-    display->pending_fd_count--;
-    if (display->pending_fd_count > 0u) {
-        memmove(display->pending_fds, display->pending_fds + 1,
-                display->pending_fd_count *
-                    sizeof(display->pending_fds[0]));
+    fd = event->fds[0];
+    event->fd_count--;
+    if (event->fd_count > 0u) {
+        memmove(event->fds, event->fds + 1,
+                event->fd_count * sizeof(event->fds[0]));
     }
     return fd;
+}
+
+static void wl_pending_event_destroy(struct wl_pending_event *event)
+{
+    if (!event)
+        return;
+    for (size_t index = 0; index < event->fd_count; index++)
+        close(event->fds[index]);
+    free(event->payload);
+    free(event);
+}
+
+static void wl_event_queue_clear(struct wl_event_queue *queue)
+{
+    struct wl_pending_event *event;
+
+    if (!queue)
+        return;
+    while ((event = queue->pending_head) != NULL) {
+        queue->pending_head = event->next;
+        wl_pending_event_destroy(event);
+    }
+    queue->pending_tail = NULL;
+}
+
+static void wl_event_queue_remove_object(struct wl_event_queue *queue,
+                                         uint32_t object_id)
+{
+    struct wl_pending_event **link;
+
+    if (!queue)
+        return;
+    link = &queue->pending_head;
+    while (*link) {
+        struct wl_pending_event *event = *link;
+
+        if (event->object_id != object_id) {
+            link = &event->next;
+            continue;
+        }
+        *link = event->next;
+        if (queue->pending_tail == event)
+            queue->pending_tail = NULL;
+        wl_pending_event_destroy(event);
+    }
+    if (queue->pending_head && !queue->pending_tail) {
+        queue->pending_tail = queue->pending_head;
+        while (queue->pending_tail->next)
+            queue->pending_tail = queue->pending_tail->next;
+    }
 }
 
 static int wl_write_full(int fd, const void *buffer, size_t size)
@@ -334,15 +398,15 @@ static int wl_write_full(int fd, const void *buffer, size_t size)
     return 0;
 }
 
-static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
-                                           size_t size,
-                                           const struct wl_interface *interface,
-                                           uint32_t version)
+static struct wl_proxy *wl_proxy_allocate(struct wl_proxy *parent, size_t size,
+                                          const struct wl_interface *interface,
+                                          uint32_t version)
 {
+    struct wl_display *display;
     struct wl_proxy *proxy;
     uint32_t id;
 
-    if (!display || size < sizeof(*proxy)) {
+    if (!parent || !(display = parent->display) || size < sizeof(*proxy)) {
         errno = EINVAL;
         return NULL;
     }
@@ -366,6 +430,7 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
     proxy->version = version;
     proxy->interface = interface;
     proxy->display = display;
+    proxy->queue = parent->queue;
     if (wl_proxy_store(display, proxy) < 0) {
         free(proxy);
         return NULL;
@@ -374,12 +439,14 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
 }
 
 static struct wl_proxy *wl_proxy_allocate_server(
-    struct wl_display *display, size_t size,
+    struct wl_proxy *parent, size_t size,
     const struct wl_interface *interface, uint32_t version, uint32_t id)
 {
+    struct wl_display *display;
     struct wl_proxy *proxy;
 
-    if (!display || !interface || size < sizeof(*proxy) ||
+    if (!parent || !(display = parent->display) || !interface ||
+        size < sizeof(*proxy) ||
         id < 0xff000000u || wl_proxy_find(display, id)) {
         errno = EPROTO;
         return NULL;
@@ -391,6 +458,7 @@ static struct wl_proxy *wl_proxy_allocate_server(
     proxy->version = version;
     proxy->interface = interface;
     proxy->display = display;
+    proxy->queue = parent->queue;
     if (wl_proxy_store(display, proxy) < 0) {
         free(proxy);
         return NULL;
@@ -661,6 +729,10 @@ struct wl_display *wl_display_connect(const char *name)
     display->proxy.version = 1u;
     display->proxy.interface = &wl_display_interface;
     display->proxy.display = display;
+    display->proxy.queue = &display->default_queue;
+    display->default_queue.display = display;
+    display->default_queue.is_default = true;
+    display->queues = &display->default_queue;
     display->fd = fd;
     display->next_id = 2u;
     display->objects[0] = &display->proxy;
@@ -669,7 +741,7 @@ struct wl_display *wl_display_connect(const char *name)
 
 void wl_display_disconnect(struct wl_display *display)
 {
-    struct wl_pending_event *event;
+    struct wl_event_queue *queue;
 
     if (!display)
         return;
@@ -681,10 +753,14 @@ void wl_display_disconnect(struct wl_display *display)
         if (display->objects[index] != &display->proxy)
             free(display->objects[index]);
     }
-    while ((event = display->pending_head) != NULL) {
-        display->pending_head = event->next;
-        free(event->payload);
-        free(event);
+    queue = display->queues;
+    while (queue) {
+        struct wl_event_queue *next = queue->next;
+
+        wl_event_queue_clear(queue);
+        if (!queue->is_default)
+            free(queue);
+        queue = next;
     }
     free(display);
 }
@@ -753,7 +829,7 @@ struct wl_proxy *wl_proxy_marshal_flags(
     }
     display = proxy->display;
     if (interface) {
-        constructed = wl_proxy_allocate(display, sizeof(*constructed),
+        constructed = wl_proxy_allocate(proxy, sizeof(*constructed),
                                          interface, version);
         if (!constructed)
             return NULL;
@@ -904,6 +980,10 @@ void wl_proxy_destroy(struct wl_proxy *proxy)
         return;
     display = proxy->display;
     if (display) {
+        struct wl_event_queue *queue;
+
+        for (queue = display->queues; queue; queue = queue->next)
+            wl_event_queue_remove_object(queue, proxy->id);
         for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
             if (display->objects[index] == proxy) {
                 display->objects[index] = NULL;
@@ -946,7 +1026,7 @@ struct wl_registry *wl_display_get_registry(struct wl_display *display)
     uint32_t id;
 
     registry = (struct wl_registry *)wl_proxy_allocate(
-        display, sizeof(*registry), &wl_registry_interface, 1u);
+        &display->proxy, sizeof(*registry), &wl_registry_interface, 1u);
     if (!registry)
         return NULL;
     id = registry->proxy.id;
@@ -963,7 +1043,7 @@ struct wl_callback *wl_display_sync(struct wl_display *display)
     uint32_t id;
 
     callback = (struct wl_callback *)wl_proxy_allocate(
-        display, sizeof(*callback), &wl_callback_interface, 1u);
+        &display->proxy, sizeof(*callback), &wl_callback_interface, 1u);
     if (!callback)
         return NULL;
     id = callback->proxy.id;
@@ -1000,7 +1080,8 @@ void *wl_registry_bind(struct wl_registry *registry, uint32_t name,
     display = registry->proxy.display;
     if ((int)version > interface->version)
         version = (uint32_t)interface->version;
-    proxy = wl_proxy_allocate(display, sizeof(*proxy), interface, version);
+    proxy = wl_proxy_allocate(&registry->proxy, sizeof(*proxy), interface,
+                              version);
     if (!proxy)
         return NULL;
     text_size = (uint32_t)strlen(interface->name) + 1u;
@@ -1066,7 +1147,7 @@ static struct wl_proxy *wl_create_object(struct wl_proxy *factory,
         return NULL;
     version = factory->version < (uint32_t)interface->version ?
         factory->version : (uint32_t)interface->version;
-    if (!(proxy = wl_proxy_allocate(factory->display, size, interface,
+    if (!(proxy = wl_proxy_allocate(factory, size, interface,
                                     version)))
         return NULL;
     id = proxy->id;
@@ -1117,7 +1198,7 @@ struct wl_shm_pool *wl_shm_create_pool(struct wl_shm *shm, int fd,
         return NULL;
     }
     pool = (struct wl_shm_pool *)wl_proxy_allocate(
-        shm->proxy.display, sizeof(*pool), &wl_shm_pool_interface, 1u);
+        &shm->proxy, sizeof(*pool), &wl_shm_pool_interface, 1u);
     if (!pool)
         return NULL;
     words[0] = pool->proxy.id;
@@ -1149,7 +1230,7 @@ struct wl_buffer *wl_shm_pool_create_buffer(struct wl_shm_pool *pool,
         return NULL;
     }
     buffer = (struct wl_buffer *)wl_proxy_allocate(
-        pool->proxy.display, sizeof(*buffer), &wl_buffer_interface, 1u);
+        &pool->proxy, sizeof(*buffer), &wl_buffer_interface, 1u);
     if (!buffer)
         return NULL;
     words[0] = buffer->proxy.id;
@@ -1438,7 +1519,7 @@ struct wl_data_device *wl_data_device_manager_get_data_device(
         return NULL;
     }
     device = (struct wl_data_device *)wl_proxy_allocate(
-        manager->proxy.display, sizeof(*device),
+        &manager->proxy, sizeof(*device),
         &wl_data_device_interface, manager->proxy.version);
     if (!device)
         return NULL;
@@ -1569,7 +1650,7 @@ struct xdg_surface *xdg_wm_base_get_xdg_surface(
         return NULL;
     }
     xdg_surface = (struct xdg_surface *)wl_proxy_allocate(
-        xdg_wm_base->proxy.display, sizeof(*xdg_surface),
+        &xdg_wm_base->proxy, sizeof(*xdg_surface),
         &xdg_surface_interface, 1u);
     if (!xdg_surface)
         return NULL;
@@ -2068,7 +2149,7 @@ static int wl_dispatch_data_device_event(struct wl_proxy *proxy,
     if (opcode == 0u && size == 4u) {
         struct wl_data_offer *offer =
             (struct wl_data_offer *)wl_proxy_allocate_server(
-                display, sizeof(*offer), &wl_data_offer_interface,
+                proxy, sizeof(*offer), &wl_data_offer_interface,
                 proxy->version, wl_load_u32(payload));
 
         if (!offer)
@@ -2270,6 +2351,7 @@ static int wl_display_dispatch_event(struct wl_display *display,
 
     if (!(proxy = wl_proxy_find(display, event->object_id)))
         goto protocol_error;
+    display->dispatch_event = event;
     if (wl_proxy_is(proxy, &wl_registry_interface))
         result = wl_dispatch_registry_event(proxy, opcode, payload, size);
     else if (wl_proxy_is(proxy, &wl_callback_interface) &&
@@ -2324,11 +2406,13 @@ static int wl_display_dispatch_event(struct wl_display *display,
         result = wl_dispatch_xdg_toplevel_event(proxy, opcode, payload, size);
     } else if (proxy == &display->proxy)
         result = wl_dispatch_display_event(display, opcode, payload, size);
+    display->dispatch_event = NULL;
     if (result < 0)
         goto protocol_error;
     return 0;
 
 protocol_error:
+    display->dispatch_event = NULL;
     display->error = EPROTO;
     errno = EPROTO;
     return -1;
@@ -2338,9 +2422,13 @@ static int wl_display_queue_event(struct wl_display *display)
 {
     uint8_t header[WL_WIRE_HEADER_SIZE];
     struct wl_pending_event *event;
+    struct wl_event_queue *queue;
+    struct wl_proxy *proxy;
+    size_t initial_fd_count;
     uint32_t word;
     uint32_t wire_size;
 
+    initial_fd_count = display->pending_fd_count;
     if (wl_display_read_full(display, header, sizeof(header)) < 0)
         goto transport_error;
     word = wl_load_u32(header + 4u);
@@ -2350,15 +2438,15 @@ static int wl_display_queue_event(struct wl_display *display)
         goto protocol_error;
     event = calloc(1, sizeof(*event));
     if (!event)
-        return -1;
+        goto allocation_error;
     event->object_id = wl_load_u32(header);
     event->opcode = (uint16_t)(word & 0xffffu);
     event->size = wire_size - WL_WIRE_HEADER_SIZE;
     if (event->size != 0u) {
         event->payload = malloc(event->size);
         if (!event->payload) {
-            free(event);
-            return -1;
+            wl_pending_event_destroy(event);
+            goto allocation_error;
         }
         if (wl_display_read_full(display, event->payload,
                                  event->size) < 0) {
@@ -2367,25 +2455,107 @@ static int wl_display_queue_event(struct wl_display *display)
             goto transport_error;
         }
     }
-    if (display->pending_tail)
-        display->pending_tail->next = event;
+    if (!(proxy = wl_proxy_find(display, event->object_id)))
+        goto event_protocol_error;
+    queue = proxy == &display->proxy && display->prepared_queue ?
+        display->prepared_queue : proxy->queue;
+    if (!queue)
+        goto event_protocol_error;
+    event->fd_count = display->pending_fd_count - initial_fd_count;
+    if (event->fd_count != 0u) {
+        memcpy(event->fds, display->pending_fds + initial_fd_count,
+               event->fd_count * sizeof(event->fds[0]));
+        display->pending_fd_count = initial_fd_count;
+    }
+    if (queue->pending_tail)
+        queue->pending_tail->next = event;
     else
-        display->pending_head = event;
-    display->pending_tail = event;
+        queue->pending_head = event;
+    queue->pending_tail = event;
     return 0;
 
 transport_error:
+    while (display->pending_fd_count > initial_fd_count)
+        close(display->pending_fds[--display->pending_fd_count]);
     display->error = errno ? errno : EPIPE;
     return -1;
+allocation_error:
+    while (display->pending_fd_count > initial_fd_count)
+        close(display->pending_fds[--display->pending_fd_count]);
+    display->error = ENOMEM;
+    errno = ENOMEM;
+    return -1;
+event_protocol_error:
+    while (display->pending_fd_count > initial_fd_count)
+        close(display->pending_fds[--display->pending_fd_count]);
+    wl_pending_event_destroy(event);
 protocol_error:
     display->error = EPROTO;
     errno = EPROTO;
     return -1;
 }
 
-int wl_display_prepare_read(struct wl_display *display)
+struct wl_event_queue *wl_display_create_queue(struct wl_display *display)
 {
-    if (!display || display->fd < 0) {
+    struct wl_event_queue *queue;
+
+    if (!display) {
+        errno = EINVAL;
+        return NULL;
+    }
+    queue = calloc(1, sizeof(*queue));
+    if (!queue)
+        return NULL;
+    queue->display = display;
+    queue->next = display->queues;
+    display->queues = queue;
+    return queue;
+}
+
+void wl_event_queue_destroy(struct wl_event_queue *queue)
+{
+    struct wl_display *display;
+    struct wl_event_queue **link;
+
+    if (!queue || queue->is_default || !(display = queue->display))
+        return;
+    if (display->prepared_queue == queue) {
+        display->read_prepared = false;
+        display->prepared_queue = NULL;
+    }
+    for (size_t index = 0; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        struct wl_proxy *proxy = display->objects[index];
+
+        if (proxy && proxy->queue == queue)
+            proxy->queue = &display->default_queue;
+    }
+    for (link = &display->queues; *link; link = &(*link)->next) {
+        if (*link == queue) {
+            *link = queue->next;
+            break;
+        }
+    }
+    wl_event_queue_clear(queue);
+    queue->display = NULL;
+    free(queue);
+}
+
+void wl_proxy_set_queue(struct wl_proxy *proxy, struct wl_event_queue *queue)
+{
+    if (!proxy || !proxy->display)
+        return;
+    if (queue && queue->display != proxy->display) {
+        errno = EINVAL;
+        return;
+    }
+    proxy->queue = queue ? queue : &proxy->display->default_queue;
+}
+
+int wl_display_prepare_read_queue(struct wl_display *display,
+                                  struct wl_event_queue *queue)
+{
+    if (!display || display->fd < 0 || !queue ||
+        queue->display != display) {
         errno = EINVAL;
         return -1;
     }
@@ -2393,67 +2563,105 @@ int wl_display_prepare_read(struct wl_display *display)
         errno = EBUSY;
         return -1;
     }
-    if (display->pending_head) {
+    if (queue->pending_head) {
         errno = EAGAIN;
         return -1;
     }
     display->read_prepared = true;
+    display->prepared_queue = queue;
     return 0;
+}
+
+int wl_display_prepare_read(struct wl_display *display)
+{
+    return display ?
+        wl_display_prepare_read_queue(display, &display->default_queue) :
+        (errno = EINVAL, -1);
 }
 
 int wl_display_read_events(struct wl_display *display)
 {
+    int result;
+
     if (!display || display->fd < 0 || !display->read_prepared) {
         errno = EINVAL;
         return -1;
     }
+    result = wl_display_queue_event(display);
     display->read_prepared = false;
-    return wl_display_queue_event(display);
+    display->prepared_queue = NULL;
+    return result;
 }
 
 void wl_display_cancel_read(struct wl_display *display)
 {
-    if (display)
+    if (display) {
         display->read_prepared = false;
+        display->prepared_queue = NULL;
+    }
 }
 
-int wl_display_dispatch_pending(struct wl_display *display)
+int wl_display_dispatch_queue_pending(struct wl_display *display,
+                                      struct wl_event_queue *queue)
 {
     int dispatched = 0;
 
-    if (!display) {
+    if (!display || !queue || queue->display != display) {
         errno = EINVAL;
         return -1;
     }
-    while (display->pending_head) {
-        struct wl_pending_event *event = display->pending_head;
+    while (queue->pending_head) {
+        struct wl_pending_event *event = queue->pending_head;
 
-        display->pending_head = event->next;
-        if (!display->pending_head)
-            display->pending_tail = NULL;
+        queue->pending_head = event->next;
+        if (!queue->pending_head)
+            queue->pending_tail = NULL;
         if (wl_display_dispatch_event(display, event) < 0) {
-            free(event->payload);
-            free(event);
+            wl_pending_event_destroy(event);
             return -1;
         }
-        free(event->payload);
-        free(event);
+        wl_pending_event_destroy(event);
         dispatched++;
     }
     return dispatched;
 }
 
-int wl_display_dispatch(struct wl_display *display)
+int wl_display_dispatch_pending(struct wl_display *display)
 {
-    int dispatched = wl_display_dispatch_pending(display);
+    if (!display) {
+        errno = EINVAL;
+        return -1;
+    }
+    return wl_display_dispatch_queue_pending(display,
+                                             &display->default_queue);
+}
 
+int wl_display_dispatch_queue(struct wl_display *display,
+                              struct wl_event_queue *queue)
+{
+    int dispatched;
+
+    dispatched = wl_display_dispatch_queue_pending(display, queue);
     if (dispatched != 0)
         return dispatched;
-    if (wl_display_prepare_read(display) < 0)
+    for (;;) {
+        if (wl_display_prepare_read_queue(display, queue) < 0)
+            return -1;
+        if (wl_display_read_events(display) < 0)
+            return -1;
+        dispatched = wl_display_dispatch_queue_pending(display, queue);
+        if (dispatched != 0)
+            return dispatched;
+    }
+}
+
+int wl_display_dispatch(struct wl_display *display)
+{
+    if (!display) {
+        errno = EINVAL;
         return -1;
-    if (wl_display_read_events(display) < 0)
-        return -1;
-    return wl_display_dispatch_pending(display);
+    }
+    return wl_display_dispatch_queue(display, &display->default_queue);
 }
 
 struct wl_roundtrip_state {
@@ -2470,7 +2678,8 @@ static void wl_roundtrip_done(void *data, struct wl_callback *callback,
     state->done = 1;
 }
 
-int wl_display_roundtrip(struct wl_display *display)
+int wl_display_roundtrip_queue(struct wl_display *display,
+                               struct wl_event_queue *queue)
 {
     static const struct wl_callback_listener listener = {
         wl_roundtrip_done
@@ -2478,19 +2687,31 @@ int wl_display_roundtrip(struct wl_display *display)
     struct wl_roundtrip_state state = { 0 };
     struct wl_callback *callback;
 
+    if (!display || !queue || queue->display != display) {
+        errno = EINVAL;
+        return -1;
+    }
     callback = wl_display_sync(display);
     if (!callback)
         return -1;
+    wl_proxy_set_queue(&callback->proxy, queue);
     if (wl_callback_add_listener(callback, &listener, &state) < 0) {
         wl_callback_destroy(callback);
         return -1;
     }
     while (!state.done) {
-        if (wl_display_dispatch(display) < 0) {
+        if (wl_display_dispatch_queue(display, queue) < 0) {
             wl_callback_destroy(callback);
             return -1;
         }
     }
     wl_callback_destroy(callback);
     return 0;
+}
+
+int wl_display_roundtrip(struct wl_display *display)
+{
+    return display ?
+        wl_display_roundtrip_queue(display, &display->default_queue) :
+        (errno = EINVAL, -1);
 }

@@ -491,6 +491,7 @@ static int test_registry(void)
     };
     struct registry_state state = { 0 };
     struct wl_display *display;
+    struct wl_event_queue *event_queue = NULL;
     struct wl_registry *registry;
     struct wl_compositor *compositor = NULL;
     struct wl_surface *surface = NULL;
@@ -525,18 +526,20 @@ static int test_registry(void)
         perror("wayland-lib-test: connect");
         return 1;
     }
+    event_queue = wl_display_create_queue(display);
     registry = wl_display_get_registry(display);
-    if (!registry ||
+    if (!event_queue || !registry ||
         wl_registry_add_listener(registry, &listener, &state) < 0) {
         perror("wayland-lib-test: registry");
         wl_registry_destroy(registry);
         wl_display_disconnect(display);
         return 1;
     }
-    if (wl_display_prepare_read(display) < 0)
+    wl_proxy_set_queue((struct wl_proxy *)registry, event_queue);
+    if (wl_display_prepare_read_queue(display, event_queue) < 0)
         goto protocol_failed;
     wl_display_cancel_read(display);
-    if (wl_display_prepare_read(display) < 0)
+    if (wl_display_prepare_read_queue(display, event_queue) < 0)
         goto protocol_failed;
     wayland_poll.fd = wl_display_get_fd(display);
     wayland_poll.events = POLLIN;
@@ -548,10 +551,12 @@ static int test_registry(void)
         goto protocol_failed;
     }
     errno = 0;
-    if (wl_display_prepare_read(display) == 0 || errno != EAGAIN)
+    if (wl_display_prepare_read_queue(display, event_queue) == 0 ||
+        errno != EAGAIN)
         goto protocol_failed;
-    if (wl_display_dispatch_pending(display) <= 0 ||
-        wl_display_roundtrip(display) < 0)
+    if (wl_display_dispatch_pending(display) != 0 ||
+        wl_display_dispatch_queue_pending(display, event_queue) <= 0 ||
+        wl_display_roundtrip_queue(display, event_queue) < 0)
         goto protocol_failed;
     valid = state.globals == 6u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u &&
@@ -634,7 +639,7 @@ static int test_registry(void)
     wl_surface_attach(surface, buffer, 0, 0);
     wl_surface_damage(surface, 0, 0, 16, 16);
     wl_surface_commit(surface);
-    if (wl_display_roundtrip(display) < 0 ||
+    if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
         state.formats != 2u || state.releases != 1u ||
         state.seat_capabilities !=
             (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
@@ -652,7 +657,7 @@ static int test_registry(void)
                           clipboard_pipe[1]);
     close(clipboard_pipe[1]);
     clipboard_pipe[1] = -1;
-    if (wl_display_roundtrip(display) < 0 ||
+    if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
         read(clipboard_pipe[0], clipboard_buffer,
              sizeof(clipboard_buffer)) !=
             (ssize_t)sizeof(clipboard_buffer) ||
@@ -663,7 +668,7 @@ static int test_registry(void)
     close(clipboard_pipe[0]);
     clipboard_pipe[0] = -1;
     for (unsigned int iteration = 0; iteration < 600u; iteration++) {
-        if (wl_display_roundtrip(display) < 0)
+        if (wl_display_roundtrip_queue(display, event_queue) < 0)
             goto protocol_failed;
     }
 
@@ -686,6 +691,7 @@ static int test_registry(void)
     wl_output_destroy(output);
     wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);
+    wl_event_queue_destroy(event_queue);
     wl_display_disconnect(display);
     printf("wayland-lib-test: registry, SHM, input, clipboard and xdg-shell passed\n");
     return 0;
@@ -740,6 +746,7 @@ protocol_failed:
     if (compositor)
         wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);
+    wl_event_queue_destroy(event_queue);
     wl_display_disconnect(display);
     return 1;
 }
