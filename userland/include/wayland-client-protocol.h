@@ -25,6 +25,8 @@
 struct wl_registry;
 struct wl_callback;
 struct wl_compositor;
+struct wl_subcompositor;
+struct wl_subsurface;
 struct wl_surface;
 struct wl_region;
 struct wl_shm;
@@ -44,6 +46,8 @@ extern const struct wl_interface wl_display_interface;
 extern const struct wl_interface wl_registry_interface;
 extern const struct wl_interface wl_callback_interface;
 extern const struct wl_interface wl_compositor_interface;
+extern const struct wl_interface wl_subcompositor_interface;
+extern const struct wl_interface wl_subsurface_interface;
 extern const struct wl_interface wl_surface_interface;
 extern const struct wl_interface wl_region_interface;
 extern const struct wl_interface wl_shm_interface;
@@ -246,6 +250,21 @@ struct wl_surface *wl_compositor_create_surface(
 struct wl_region *wl_compositor_create_region(
     struct wl_compositor *compositor);
 void wl_compositor_destroy(struct wl_compositor *compositor);
+
+struct wl_subsurface *wl_subcompositor_get_subsurface(
+    struct wl_subcompositor *subcompositor, struct wl_surface *surface,
+    struct wl_surface *parent);
+void wl_subcompositor_destroy(struct wl_subcompositor *subcompositor);
+
+void wl_subsurface_set_position(struct wl_subsurface *subsurface,
+                                int32_t x, int32_t y);
+void wl_subsurface_place_above(struct wl_subsurface *subsurface,
+                               struct wl_surface *sibling);
+void wl_subsurface_place_below(struct wl_subsurface *subsurface,
+                               struct wl_surface *sibling);
+void wl_subsurface_set_sync(struct wl_subsurface *subsurface);
+void wl_subsurface_set_desync(struct wl_subsurface *subsurface);
+void wl_subsurface_destroy(struct wl_subsurface *subsurface);
 
 int wl_shm_add_listener(struct wl_shm *shm,
                         const struct wl_shm_listener *listener, void *data);

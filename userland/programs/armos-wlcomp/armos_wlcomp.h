@@ -52,6 +52,7 @@
 #define WL_GLOBAL_XDG_SHELL  4u
 #define WL_GLOBAL_OUTPUT     5u
 #define WL_GLOBAL_DATA_DEVICE 6u
+#define WL_GLOBAL_SUBCOMPOSITOR 7u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -62,6 +63,8 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_REGISTRY,
     WL_SERVER_OBJECT_CALLBACK,
     WL_SERVER_OBJECT_COMPOSITOR,
+    WL_SERVER_OBJECT_SUBCOMPOSITOR,
+    WL_SERVER_OBJECT_SUBSURFACE,
     WL_SERVER_OBJECT_REGION,
     WL_SERVER_OBJECT_SHM,
     WL_SERVER_OBJECT_SHM_POOL,
@@ -136,6 +139,11 @@ struct wl_server_surface {
     bool used;
     uint32_t object_id;
     uint64_t z_order;
+    bool is_subsurface;
+    bool subsurface_synchronized;
+    int32_t subsurface_x;
+    int32_t subsurface_y;
+    struct wl_server_surface *parent;
     struct wl_server_buffer *pending_buffer;
     bool pending_attach;
     bool mapped;

@@ -192,6 +192,9 @@ static int wl_dispatch_display(struct wl_server *server,
         if (wl_client_send_global(client, new_id, WL_GLOBAL_DATA_DEVICE,
                                   "wl_data_device_manager", 1u) < 0)
             return -1;
+        if (wl_client_send_global(client, new_id, WL_GLOBAL_SUBCOMPOSITOR,
+                                  "wl_subcompositor", 1u) < 0)
+            return -1;
         return 0;
     }
     return wl_protocol_fail(client, WL_DISPLAY_ID,
@@ -262,6 +265,12 @@ static int wl_dispatch_registry(struct wl_server *server,
         strcmp(interface_name, "wl_data_device_manager") == 0) {
         return wl_client_add_object(
             client, new_id, WL_SERVER_OBJECT_DATA_DEVICE_MANAGER, 1u, NULL);
+    }
+    if (name == WL_GLOBAL_SUBCOMPOSITOR &&
+        strcmp(interface_name, "wl_subcompositor") == 0) {
+        return wl_client_add_object(client, new_id,
+                                    WL_SERVER_OBJECT_SUBCOMPOSITOR,
+                                    1u, NULL);
     }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_OBJECT,
@@ -458,6 +467,128 @@ static int wl_dispatch_compositor(struct wl_server *server,
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,
                             "unsupported wl_compositor request");
+}
+
+static int wl_dispatch_subcompositor(
+    struct wl_server_client *client, struct wl_server_object *object,
+    uint16_t opcode, struct wl_request *request)
+{
+    uint32_t new_id;
+    uint32_t surface_id;
+    uint32_t parent_id;
+    struct wl_server_object *surface_object;
+    struct wl_server_object *parent_object;
+    struct wl_server_surface *surface;
+    struct wl_server_surface *parent;
+    struct wl_server_surface *ancestor;
+    size_t depth;
+
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode != 1u ||
+        wl_request_u32(request, &new_id) < 0 ||
+        wl_request_u32(request, &surface_id) < 0 ||
+        wl_request_u32(request, &parent_id) < 0 ||
+        !wl_request_complete(request) || surface_id == parent_id)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "malformed wl_subcompositor request");
+    surface_object = wl_client_find_object(client, surface_id);
+    parent_object = wl_client_find_object(client, parent_id);
+    if (!surface_object || !parent_object ||
+        surface_object->type != WL_SERVER_OBJECT_SURFACE ||
+        parent_object->type != WL_SERVER_OBJECT_SURFACE)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "subsurface needs two wl_surfaces");
+    surface = surface_object->resource;
+    parent = parent_object->resource;
+    if (!surface || !parent || surface->is_subsurface)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "wl_surface already has a role");
+    ancestor = parent;
+    for (depth = 0u; ancestor && depth < WL_SERVER_MAX_SURFACES; depth++) {
+        if (ancestor == surface)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "cyclic subsurface hierarchy");
+        ancestor = ancestor->parent;
+    }
+    if (ancestor)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                "subsurface hierarchy is too deep");
+    surface->is_subsurface = true;
+    surface->subsurface_synchronized = true;
+    surface->parent = parent;
+    surface->subsurface_x = 0;
+    surface->subsurface_y = 0;
+    if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_SUBSURFACE,
+                             1u, surface) < 0) {
+        surface->is_subsurface = false;
+        surface->parent = NULL;
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "invalid wl_subsurface object id");
+    }
+    return 0;
+}
+
+static int wl_dispatch_subsurface(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    struct wl_server_surface *surface = object->resource;
+
+    if (!surface || !surface->used || !surface->is_subsurface ||
+        !surface->parent || !surface->parent->used)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "wl_subsurface lost its surface");
+    if (opcode == 0u && wl_request_complete(request)) {
+        surface->is_subsurface = false;
+        surface->subsurface_synchronized = false;
+        surface->parent = NULL;
+        surface->mapped = false;
+        wl_client_remove_object(client, object->id, true);
+        return wl_renderer_compose(server);
+    }
+    if (opcode == 1u && request->size == 8u) {
+        uint32_t x;
+        uint32_t y;
+
+        if (wl_request_u32(request, &x) < 0 ||
+            wl_request_u32(request, &y) < 0)
+            return -1;
+        surface->subsurface_x = (int32_t)x;
+        surface->subsurface_y = (int32_t)y;
+        return 0;
+    }
+    if ((opcode == 2u || opcode == 3u) && request->size == 4u) {
+        uint32_t sibling_id;
+        struct wl_server_object *sibling;
+
+        if (wl_request_u32(request, &sibling_id) < 0)
+            return -1;
+        sibling = wl_client_find_object(client, sibling_id);
+        if (!sibling || sibling->type != WL_SERVER_OBJECT_SURFACE)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "unknown subsurface sibling");
+        return 0;
+    }
+    if ((opcode == 4u || opcode == 5u) &&
+        wl_request_complete(request)) {
+        surface->subsurface_synchronized = opcode == 4u;
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported wl_subsurface request");
 }
 
 static int wl_dispatch_region(struct wl_server_client *client,
@@ -687,6 +818,21 @@ static int wl_dispatch_surface(struct wl_server *server,
             server->move_client = NULL;
             server->move_surface = NULL;
             server->move_damage_pending = false;
+        }
+        for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
+            struct wl_server_surface *child = &client->surfaces[index];
+
+            if (child->used && child->parent == surface) {
+                child->parent = NULL;
+                child->is_subsurface = false;
+            }
+        }
+        for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
+            struct wl_server_object *role = &client->objects[index];
+
+            if (role->type == WL_SERVER_OBJECT_SUBSURFACE &&
+                role->resource == surface)
+                wl_client_remove_object(client, role->id, false);
         }
         free(surface->pixels);
         memset(surface, 0, sizeof(*surface));
@@ -1169,6 +1315,11 @@ int wl_server_dispatch_message(struct wl_server *server,
                                     &request);
     case WL_SERVER_OBJECT_COMPOSITOR:
         return wl_dispatch_compositor(server, client, object, opcode,
+                                      &request);
+    case WL_SERVER_OBJECT_SUBCOMPOSITOR:
+        return wl_dispatch_subcompositor(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_SUBSURFACE:
+        return wl_dispatch_subsurface(server, client, object, opcode,
                                       &request);
     case WL_SERVER_OBJECT_REGION:
         return wl_dispatch_region(client, object, opcode, &request);

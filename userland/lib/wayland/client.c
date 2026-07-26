@@ -96,6 +96,8 @@ struct wl_callback {
 };
 
 struct wl_compositor { struct wl_proxy proxy; };
+struct wl_subcompositor { struct wl_proxy proxy; };
+struct wl_subsurface { struct wl_proxy proxy; };
 struct wl_surface { struct wl_proxy proxy; };
 struct wl_region { struct wl_proxy proxy; };
 struct wl_shm { struct wl_proxy proxy; };
@@ -127,6 +129,14 @@ const struct wl_interface wl_callback_interface = {
 
 const struct wl_interface wl_compositor_interface = {
     "wl_compositor", 4, 2, NULL, 0, NULL
+};
+
+const struct wl_interface wl_subcompositor_interface = {
+    "wl_subcompositor", 1, 2, NULL, 0, NULL
+};
+
+const struct wl_interface wl_subsurface_interface = {
+    "wl_subsurface", 1, 6, NULL, 0, NULL
 };
 
 const struct wl_interface wl_surface_interface = {
@@ -1178,6 +1188,99 @@ void wl_compositor_destroy(struct wl_compositor *compositor)
 {
     if (compositor)
         wl_proxy_destroy(&compositor->proxy);
+}
+
+struct wl_subsurface *wl_subcompositor_get_subsurface(
+    struct wl_subcompositor *subcompositor, struct wl_surface *surface,
+    struct wl_surface *parent)
+{
+    struct wl_subsurface *subsurface;
+    uint32_t words[3];
+
+    if (!subcompositor || !surface || !parent || surface == parent) {
+        errno = EINVAL;
+        return NULL;
+    }
+    subsurface = (struct wl_subsurface *)wl_proxy_allocate(
+        &subcompositor->proxy, sizeof(*subsurface),
+        &wl_subsurface_interface, 1u);
+    if (!subsurface)
+        return NULL;
+    words[0] = subsurface->proxy.id;
+    words[1] = surface->proxy.id;
+    words[2] = parent->proxy.id;
+    if (wl_send_words(subcompositor->proxy.display,
+                      subcompositor->proxy.id, 1u, words, 3u) < 0) {
+        wl_proxy_destroy(&subsurface->proxy);
+        return NULL;
+    }
+    return subsurface;
+}
+
+void wl_subcompositor_destroy(struct wl_subcompositor *subcompositor)
+{
+    if (!subcompositor)
+        return;
+    (void)wl_send_words(subcompositor->proxy.display,
+                        subcompositor->proxy.id, 0u, NULL, 0u);
+    wl_proxy_destroy(&subcompositor->proxy);
+}
+
+void wl_subsurface_set_position(struct wl_subsurface *subsurface,
+                                int32_t x, int32_t y)
+{
+    uint32_t words[2] = { (uint32_t)x, (uint32_t)y };
+
+    if (subsurface)
+        (void)wl_send_words(subsurface->proxy.display,
+                            subsurface->proxy.id, 1u, words, 2u);
+}
+
+static void wl_subsurface_place(struct wl_subsurface *subsurface,
+                                struct wl_surface *sibling, uint16_t opcode)
+{
+    uint32_t sibling_id;
+
+    if (!subsurface || !sibling)
+        return;
+    sibling_id = sibling->proxy.id;
+    (void)wl_send_words(subsurface->proxy.display, subsurface->proxy.id,
+                        opcode, &sibling_id, 1u);
+}
+
+void wl_subsurface_place_above(struct wl_subsurface *subsurface,
+                               struct wl_surface *sibling)
+{
+    wl_subsurface_place(subsurface, sibling, 2u);
+}
+
+void wl_subsurface_place_below(struct wl_subsurface *subsurface,
+                               struct wl_surface *sibling)
+{
+    wl_subsurface_place(subsurface, sibling, 3u);
+}
+
+void wl_subsurface_set_sync(struct wl_subsurface *subsurface)
+{
+    if (subsurface)
+        (void)wl_send_words(subsurface->proxy.display,
+                            subsurface->proxy.id, 4u, NULL, 0u);
+}
+
+void wl_subsurface_set_desync(struct wl_subsurface *subsurface)
+{
+    if (subsurface)
+        (void)wl_send_words(subsurface->proxy.display,
+                            subsurface->proxy.id, 5u, NULL, 0u);
+}
+
+void wl_subsurface_destroy(struct wl_subsurface *subsurface)
+{
+    if (!subsurface)
+        return;
+    (void)wl_send_words(subsurface->proxy.display, subsurface->proxy.id,
+                        0u, NULL, 0u);
+    wl_proxy_destroy(&subsurface->proxy);
 }
 
 int wl_shm_add_listener(struct wl_shm *shm,

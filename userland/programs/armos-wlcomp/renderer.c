@@ -229,6 +229,30 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
     uint32_t frame_width = surface->width;
     uint32_t frame_height = surface->height + WL_WINDOW_TITLE_HEIGHT;
     int32_t content_y = surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT;
+    int32_t content_x = surface->x;
+
+    if (surface->is_subsurface) {
+        const struct wl_server_surface *ancestor = surface;
+        size_t depth = 0u;
+
+        content_x = surface->subsurface_x;
+        content_y = surface->subsurface_y;
+        while (ancestor->is_subsurface && ancestor->parent &&
+               depth++ < WL_SERVER_MAX_SURFACES) {
+            ancestor = ancestor->parent;
+            if (ancestor->is_subsurface) {
+                content_x += ancestor->subsurface_x;
+                content_y += ancestor->subsurface_y;
+            } else {
+                content_x += ancestor->x;
+                content_y += ancestor->y +
+                    (int32_t)WL_WINDOW_TITLE_HEIGHT;
+            }
+        }
+        if (depth > WL_SERVER_MAX_SURFACES)
+            return;
+        goto draw_content;
+    }
 
     /* Soft multi-pass shadow, generated rather than sourced from an asset. */
     for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
@@ -257,6 +281,7 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
     wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
                        5u, 0xff28c840u);
 
+draw_content:
     for (uint32_t source_y = 0; source_y < surface->height; source_y++) {
         int32_t target_y = content_y + (int32_t)source_y;
 
@@ -264,7 +289,7 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
             (uint32_t)target_y >= renderer->framebuffer.height)
             continue;
         for (uint32_t source_x = 0; source_x < surface->width; source_x++) {
-            int32_t target_x = surface->x + (int32_t)source_x;
+            int32_t target_x = content_x + (int32_t)source_x;
             uint32_t source;
 
             if (target_x < 0 ||

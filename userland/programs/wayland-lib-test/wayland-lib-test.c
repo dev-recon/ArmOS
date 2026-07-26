@@ -38,6 +38,7 @@ struct registry_state {
     unsigned int seat;
     unsigned int shell;
     unsigned int data_device_manager;
+    unsigned int subcompositor;
     uint32_t compositor_name;
     uint32_t compositor_version;
     uint32_t shm_name;
@@ -46,6 +47,8 @@ struct registry_state {
     uint32_t shell_name;
     uint32_t data_device_manager_name;
     uint32_t output_name;
+    uint32_t subcompositor_name;
+    uint32_t subcompositor_version;
     unsigned int formats;
     unsigned int releases;
     uint32_t seat_capabilities;
@@ -129,6 +132,11 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, "wl_data_device_manager") == 0) {
         state->data_device_manager++;
         state->data_device_manager_name = name;
+    }
+    if (strcmp(interface, "wl_subcompositor") == 0) {
+        state->subcompositor++;
+        state->subcompositor_name = name;
+        state->subcompositor_version = version;
     }
     if (strcmp(interface, "wl_output") == 0)
         state->output_name = name;
@@ -513,6 +521,9 @@ static int test_registry(void)
     struct wl_registry *registry;
     struct wl_compositor *compositor = NULL;
     struct wl_surface *surface = NULL;
+    struct wl_surface *child_surface = NULL;
+    struct wl_subcompositor *subcompositor = NULL;
+    struct wl_subsurface *subsurface = NULL;
     struct wl_shm *shm = NULL;
     struct wl_shm_pool *pool = NULL;
     struct wl_buffer *buffer = NULL;
@@ -576,10 +587,12 @@ static int test_registry(void)
         wl_display_dispatch_queue_pending(display, event_queue) <= 0 ||
         wl_display_roundtrip_queue(display, event_queue) < 0)
         goto protocol_failed;
-    valid = state.globals == 6u && state.compositor == 1u &&
+    valid = state.globals == 7u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u &&
         state.data_device_manager == 1u &&
-        state.compositor_version >= 4u && state.seat_version >= 5u;
+        state.subcompositor == 1u &&
+        state.compositor_version >= 4u && state.seat_version >= 5u &&
+        state.subcompositor_version >= 1u;
     if (!valid)
         goto protocol_failed;
     compositor = wl_registry_bind(registry, state.compositor_name,
@@ -595,8 +608,11 @@ static int test_registry(void)
     data_device_manager = wl_registry_bind(
         registry, state.data_device_manager_name,
         &wl_data_device_manager_interface, 1u);
+    subcompositor = wl_registry_bind(
+        registry, state.subcompositor_name,
+        &wl_subcompositor_interface, 1u);
     if (!compositor || !shm || !seat || !wm_base || !output ||
-        !data_device_manager ||
+        !data_device_manager || !subcompositor ||
         wl_seat_add_listener(seat, &seat_listener, &state) < 0 ||
         wl_shm_add_listener(shm, &shm_listener, &state) < 0 ||
         wl_output_add_listener(output, &output_listener, &state) < 0 ||
@@ -623,6 +639,14 @@ static int test_registry(void)
     if (!surface ||
         wl_surface_add_listener(surface, &surface_listener, &state) < 0)
         goto protocol_failed;
+    child_surface = wl_compositor_create_surface(compositor);
+    subsurface = child_surface ? wl_subcompositor_get_subsurface(
+        subcompositor, child_surface, surface) : NULL;
+    if (!subsurface)
+        goto protocol_failed;
+    wl_subsurface_set_position(subsurface, 2, 3);
+    wl_subsurface_set_desync(subsurface);
+    wl_subsurface_set_sync(subsurface);
     xdg_surface = surface ?
         xdg_wm_base_get_xdg_surface(wm_base, surface) : NULL;
     if (!xdg_surface ||
@@ -674,6 +698,12 @@ static int test_registry(void)
         state.clipboard_offers != 1u ||
         state.clipboard_selections == 0u || !state.selection_offer)
         goto protocol_failed;
+    wl_surface_attach(child_surface, buffer, 0, 0);
+    wl_surface_damage_buffer(child_surface, 0, 0, 16, 16);
+    wl_surface_commit(child_surface);
+    if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
+        state.releases != 2u)
+        goto protocol_failed;
     if (pipe(clipboard_pipe) < 0)
         goto protocol_failed;
     wl_data_offer_receive(state.selection_offer, clipboard_mime,
@@ -705,6 +735,9 @@ static int test_registry(void)
     xdg_toplevel_destroy(xdg_toplevel);
     xdg_surface_destroy(xdg_surface);
     xdg_wm_base_destroy(wm_base);
+    wl_subsurface_destroy(subsurface);
+    wl_surface_destroy(child_surface);
+    wl_subcompositor_destroy(subcompositor);
     wl_surface_destroy(surface);
     wl_buffer_destroy(buffer);
     wl_shm_pool_destroy(pool);
