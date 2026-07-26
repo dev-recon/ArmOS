@@ -178,11 +178,11 @@ static int wl_dispatch_display(struct wl_server *server,
                                     WL_PROTOCOL_ERROR_INVALID_OBJECT,
                                     "invalid registry object id");
         if (wl_client_send_global(client, new_id, WL_GLOBAL_COMPOSITOR,
-                                  "wl_compositor", 1u) < 0 ||
+                                  "wl_compositor", 4u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_SHM,
                                   "wl_shm", 1u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_SEAT,
-                                  "wl_seat", 4u) < 0 ||
+                                  "wl_seat", 5u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_XDG_SHELL,
                                   "xdg_wm_base", 1u) < 0)
             return -1;
@@ -221,8 +221,12 @@ static int wl_dispatch_registry(struct wl_server *server,
 
     if (name == WL_GLOBAL_COMPOSITOR &&
         strcmp(interface_name, "wl_compositor") == 0) {
+        uint32_t version = requested_version < 4u ?
+            requested_version : 4u;
+
         return wl_client_add_object(client, new_id,
-                                    WL_SERVER_OBJECT_COMPOSITOR, 1u, NULL);
+                                    WL_SERVER_OBJECT_COMPOSITOR,
+                                    version, NULL);
     }
     if (name == WL_GLOBAL_SHM && strcmp(interface_name, "wl_shm") == 0) {
         uint32_t format;
@@ -238,8 +242,8 @@ static int wl_dispatch_registry(struct wl_server *server,
     }
     if (name == WL_GLOBAL_SEAT && strcmp(interface_name, "wl_seat") == 0) {
         uint32_t capabilities = 3u;
-        uint32_t version = requested_version < 4u ?
-            requested_version : 4u;
+        uint32_t version = requested_version < 5u ?
+            requested_version : 5u;
 
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_SEAT,
                                  version, NULL) < 0)
@@ -435,7 +439,7 @@ static int wl_dispatch_compositor(struct wl_server *server,
                                     "surface limit reached");
         surface->object_id = new_id;
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_SURFACE,
-                                 1u, surface) < 0) {
+                                 object->version, surface) < 0) {
             memset(surface, 0, sizeof(*surface));
             return wl_protocol_fail(client, object->id,
                                     WL_PROTOCOL_ERROR_INVALID_OBJECT,
@@ -751,6 +755,32 @@ static int wl_dispatch_surface(struct wl_server *server,
             return -1;
         return 0;
     }
+    if (opcode == 7u && object->version >= 2u &&
+        request->size == 4u) {
+        uint32_t transform;
+
+        if (wl_request_u32(request, &transform) < 0 ||
+            transform != 0u)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "unsupported buffer transform");
+        return 0;
+    }
+    if (opcode == 8u && object->version >= 3u &&
+        request->size == 4u) {
+        uint32_t scale;
+
+        if (wl_request_u32(request, &scale) < 0 || scale == 0u)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "invalid buffer scale");
+        return 0;
+    }
+    if (opcode == 9u && object->version >= 4u &&
+        request->size == 16u) {
+        request->cursor = request->size;
+        return 0;
+    }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,
                             "unsupported wl_surface request");
@@ -762,6 +792,11 @@ static int wl_dispatch_seat(struct wl_server_client *client,
 {
     uint32_t new_id;
 
+    if (opcode == 3u && object->version >= 5u &&
+        wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
     if (opcode > 2u || wl_request_u32(request, &new_id) < 0 ||
         !wl_request_complete(request))
         return wl_protocol_fail(client, object->id,

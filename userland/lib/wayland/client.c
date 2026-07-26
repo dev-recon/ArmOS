@@ -126,11 +126,11 @@ const struct wl_interface wl_callback_interface = {
 };
 
 const struct wl_interface wl_compositor_interface = {
-    "wl_compositor", 1, 2, NULL, 0, NULL
+    "wl_compositor", 4, 2, NULL, 0, NULL
 };
 
 const struct wl_interface wl_surface_interface = {
-    "wl_surface", 1, 7, NULL, 2, NULL
+    "wl_surface", 4, 10, NULL, 2, NULL
 };
 
 const struct wl_interface wl_region_interface = {
@@ -150,15 +150,15 @@ const struct wl_interface wl_buffer_interface = {
 };
 
 const struct wl_interface wl_seat_interface = {
-    "wl_seat", 4, 3, NULL, 2, NULL
+    "wl_seat", 5, 4, NULL, 2, NULL
 };
 
 const struct wl_interface wl_pointer_interface = {
-    "wl_pointer", 4, 2, NULL, 5, NULL
+    "wl_pointer", 5, 2, NULL, 9, NULL
 };
 
 const struct wl_interface wl_keyboard_interface = {
-    "wl_keyboard", 4, 1, NULL, 6, NULL
+    "wl_keyboard", 5, 1, NULL, 6, NULL
 };
 
 const struct wl_interface wl_output_interface = {
@@ -1346,6 +1346,38 @@ void wl_surface_set_input_region(struct wl_surface *surface,
     wl_surface_set_region(surface, region, 5u);
 }
 
+void wl_surface_set_buffer_scale(struct wl_surface *surface, int32_t scale)
+{
+    uint32_t word = (uint32_t)scale;
+
+    if (surface && surface->proxy.version >= 3u && scale > 0)
+        (void)wl_send_words(surface->proxy.display, surface->proxy.id, 8u,
+                            &word, 1u);
+}
+
+void wl_surface_damage_buffer(struct wl_surface *surface, int32_t x,
+                              int32_t y, int32_t width, int32_t height)
+{
+    uint32_t words[4] = {
+        (uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height
+    };
+
+    if (surface && surface->proxy.version >= 4u)
+        (void)wl_send_words(surface->proxy.display, surface->proxy.id, 9u,
+                            words, 4u);
+}
+
+void wl_surface_set_user_data(struct wl_surface *surface, void *user_data)
+{
+    if (surface)
+        wl_proxy_set_user_data(&surface->proxy, user_data);
+}
+
+void *wl_surface_get_user_data(struct wl_surface *surface)
+{
+    return surface ? wl_proxy_get_user_data(&surface->proxy) : NULL;
+}
+
 void wl_surface_commit(struct wl_surface *surface)
 {
     if (surface)
@@ -1430,6 +1462,16 @@ void wl_seat_destroy(struct wl_seat *seat)
         wl_proxy_destroy(&seat->proxy);
 }
 
+void wl_seat_release(struct wl_seat *seat)
+{
+    if (!seat)
+        return;
+    if (seat->proxy.version >= 5u)
+        (void)wl_send_words(seat->proxy.display, seat->proxy.id, 3u,
+                            NULL, 0u);
+    wl_proxy_destroy(&seat->proxy);
+}
+
 int wl_pointer_add_listener(struct wl_pointer *pointer,
                             const struct wl_pointer_listener *listener,
                             void *data)
@@ -1464,6 +1506,11 @@ void wl_pointer_destroy(struct wl_pointer *pointer)
     wl_proxy_destroy(&pointer->proxy);
 }
 
+void wl_pointer_release(struct wl_pointer *pointer)
+{
+    wl_pointer_destroy(pointer);
+}
+
 int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
                              const struct wl_keyboard_listener *listener,
                              void *data)
@@ -1482,6 +1529,11 @@ void wl_keyboard_destroy(struct wl_keyboard *keyboard)
     wl_proxy_destroy(&keyboard->proxy);
 }
 
+void wl_keyboard_release(struct wl_keyboard *keyboard)
+{
+    wl_keyboard_destroy(keyboard);
+}
+
 int wl_output_add_listener(struct wl_output *output,
                            const struct wl_output_listener *listener,
                            void *data)
@@ -1494,6 +1546,16 @@ void wl_output_destroy(struct wl_output *output)
 {
     if (output)
         wl_proxy_destroy(&output->proxy);
+}
+
+void wl_output_release(struct wl_output *output)
+{
+    if (!output)
+        return;
+    if (output->proxy.version >= 3u)
+        (void)wl_send_words(output->proxy.display, output->proxy.id, 0u,
+                            NULL, 0u);
+    wl_proxy_destroy(&output->proxy);
 }
 
 struct wl_data_source *wl_data_device_manager_create_data_source(
@@ -1589,6 +1651,16 @@ void wl_data_device_destroy(struct wl_data_device *device)
 {
     if (device)
         wl_proxy_destroy(&device->proxy);
+}
+
+void wl_data_device_release(struct wl_data_device *device)
+{
+    if (!device)
+        return;
+    if (device->proxy.version >= 2u)
+        (void)wl_send_words(device->proxy.display, device->proxy.id, 2u,
+                            NULL, 0u);
+    wl_proxy_destroy(&device->proxy);
 }
 
 int wl_data_offer_add_listener(

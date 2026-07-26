@@ -39,8 +39,10 @@ struct registry_state {
     unsigned int shell;
     unsigned int data_device_manager;
     uint32_t compositor_name;
+    uint32_t compositor_version;
     uint32_t shm_name;
     uint32_t seat_name;
+    uint32_t seat_version;
     uint32_t shell_name;
     uint32_t data_device_manager_name;
     uint32_t output_name;
@@ -71,7 +73,7 @@ static const struct wl_message generated_compositor_methods[] = {
 };
 
 static const struct wl_interface generated_compositor_interface = {
-    "wl_compositor", 1, 2, generated_compositor_methods, 0, NULL
+    "wl_compositor", 4, 2, generated_compositor_methods, 0, NULL
 };
 
 static const struct wl_message generated_shm_methods[] = {
@@ -109,6 +111,7 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, "wl_compositor") == 0) {
         state->compositor++;
         state->compositor_name = name;
+        state->compositor_version = version;
     }
     if (strcmp(interface, "wl_shm") == 0) {
         state->shm++;
@@ -117,6 +120,7 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, "wl_seat") == 0) {
         state->seat++;
         state->seat_name = name;
+        state->seat_version = version;
     }
     if (strcmp(interface, "xdg_wm_base") == 0) {
         state->shell++;
@@ -574,15 +578,16 @@ static int test_registry(void)
         goto protocol_failed;
     valid = state.globals == 6u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u &&
-        state.data_device_manager == 1u;
+        state.data_device_manager == 1u &&
+        state.compositor_version >= 4u && state.seat_version >= 5u;
     if (!valid)
         goto protocol_failed;
     compositor = wl_registry_bind(registry, state.compositor_name,
-                                  &generated_compositor_interface, 1u);
+                                  &generated_compositor_interface, 4u);
     shm = wl_registry_bind(registry, state.shm_name,
                            &generated_shm_interface, 1u);
     seat = wl_registry_bind(registry, state.seat_name, &wl_seat_interface,
-                            4u);
+                            5u);
     wm_base = wl_registry_bind(registry, state.shell_name,
                                &xdg_wm_base_interface, 1u);
     output = wl_registry_bind(registry, state.output_name,
@@ -613,7 +618,7 @@ static int test_registry(void)
     wl_data_source_offer(data_source, clipboard_mime);
     wl_data_device_set_selection(data_device, data_source, 1u);
     surface = (struct wl_surface *)wl_proxy_marshal_flags(
-        (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 1u, 0u,
+        (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 4u, 0u,
         NULL);
     if (!surface ||
         wl_surface_add_listener(surface, &surface_listener, &state) < 0)
@@ -651,7 +656,11 @@ static int test_registry(void)
         wl_buffer_add_listener(buffer, &buffer_listener, &state) < 0)
         goto protocol_failed;
     wl_surface_attach(surface, buffer, 0, 0);
-    wl_surface_damage(surface, 0, 0, 16, 16);
+    wl_surface_set_buffer_scale(surface, 1);
+    wl_surface_damage_buffer(surface, 0, 0, 16, 16);
+    wl_surface_set_user_data(surface, &state);
+    if (wl_surface_get_user_data(surface) != &state)
+        goto protocol_failed;
     wl_surface_commit(surface);
     if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
         state.formats != 2u || state.releases != 1u ||
@@ -690,9 +699,9 @@ static int test_registry(void)
     wl_data_device_destroy(data_device);
     wl_data_source_destroy(data_source);
     wl_data_device_manager_destroy(data_device_manager);
-    wl_keyboard_destroy(keyboard);
-    wl_pointer_destroy(pointer);
-    wl_seat_destroy(seat);
+    wl_keyboard_release(keyboard);
+    wl_pointer_release(pointer);
+    wl_seat_release(seat);
     xdg_toplevel_destroy(xdg_toplevel);
     xdg_surface_destroy(xdg_surface);
     xdg_wm_base_destroy(wm_base);

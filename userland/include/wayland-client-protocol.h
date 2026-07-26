@@ -103,6 +103,13 @@ struct wl_pointer_listener {
                    uint32_t time, uint32_t button, uint32_t state);
     void (*axis)(void *data, struct wl_pointer *pointer, uint32_t time,
                  uint32_t axis, wl_fixed_t value);
+    void (*frame)(void *data, struct wl_pointer *pointer);
+    void (*axis_source)(void *data, struct wl_pointer *pointer,
+                        uint32_t axis_source);
+    void (*axis_stop)(void *data, struct wl_pointer *pointer,
+                      uint32_t time, uint32_t axis);
+    void (*axis_discrete)(void *data, struct wl_pointer *pointer,
+                          uint32_t axis, int32_t discrete);
 };
 
 struct wl_keyboard_listener {
@@ -206,6 +213,15 @@ enum wl_output_transform {
     WL_OUTPUT_TRANSFORM_NORMAL = 0
 };
 
+#define WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION 3
+#define WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION    4
+#define WL_POINTER_RELEASE_SINCE_VERSION          3
+#define WL_KEYBOARD_RELEASE_SINCE_VERSION         3
+#define WL_SEAT_RELEASE_SINCE_VERSION             5
+#define WL_SHM_RELEASE_SINCE_VERSION              2
+#define WL_OUTPUT_RELEASE_SINCE_VERSION           3
+#define WL_DATA_DEVICE_RELEASE_SINCE_VERSION      2
+
 struct wl_registry *wl_display_get_registry(struct wl_display *display);
 struct wl_callback *wl_display_sync(struct wl_display *display);
 int wl_display_dispatch(struct wl_display *display);
@@ -261,6 +277,11 @@ void wl_surface_set_opaque_region(struct wl_surface *surface,
                                   struct wl_region *region);
 void wl_surface_set_input_region(struct wl_surface *surface,
                                  struct wl_region *region);
+void wl_surface_set_buffer_scale(struct wl_surface *surface, int32_t scale);
+void wl_surface_damage_buffer(struct wl_surface *surface, int32_t x,
+                              int32_t y, int32_t width, int32_t height);
+void wl_surface_set_user_data(struct wl_surface *surface, void *user_data);
+void *wl_surface_get_user_data(struct wl_surface *surface);
 void wl_surface_commit(struct wl_surface *surface);
 void wl_surface_destroy(struct wl_surface *surface);
 
@@ -274,6 +295,7 @@ int wl_seat_add_listener(struct wl_seat *seat,
                          const struct wl_seat_listener *listener, void *data);
 struct wl_pointer *wl_seat_get_pointer(struct wl_seat *seat);
 struct wl_keyboard *wl_seat_get_keyboard(struct wl_seat *seat);
+void wl_seat_release(struct wl_seat *seat);
 void wl_seat_destroy(struct wl_seat *seat);
 
 int wl_pointer_add_listener(struct wl_pointer *pointer,
@@ -283,16 +305,19 @@ void wl_pointer_set_cursor(struct wl_pointer *pointer, uint32_t serial,
                            struct wl_surface *surface, int32_t hotspot_x,
                            int32_t hotspot_y);
 void wl_pointer_destroy(struct wl_pointer *pointer);
+void wl_pointer_release(struct wl_pointer *pointer);
 
 int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
                              const struct wl_keyboard_listener *listener,
                              void *data);
 void wl_keyboard_destroy(struct wl_keyboard *keyboard);
+void wl_keyboard_release(struct wl_keyboard *keyboard);
 
 int wl_output_add_listener(struct wl_output *output,
                            const struct wl_output_listener *listener,
                            void *data);
 void wl_output_destroy(struct wl_output *output);
+void wl_output_release(struct wl_output *output);
 
 struct wl_data_source *wl_data_device_manager_create_data_source(
     struct wl_data_device_manager *manager);
@@ -314,6 +339,7 @@ void wl_data_device_set_selection(struct wl_data_device *device,
                                   struct wl_data_source *source,
                                   uint32_t serial);
 void wl_data_device_destroy(struct wl_data_device *device);
+void wl_data_device_release(struct wl_data_device *device);
 
 int wl_data_offer_add_listener(
     struct wl_data_offer *offer,

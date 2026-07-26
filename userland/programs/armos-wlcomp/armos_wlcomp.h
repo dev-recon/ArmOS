@@ -15,7 +15,7 @@
  *
  * Notes:
  * - Names beginning with wl_ are public Wayland protocol names.
- * - The implementation intentionally starts with core protocol version 1.
+ * - Core protocol versions advance only with matching client/server tests.
  */
 
 #ifndef ARMOS_WLCOMP_H
