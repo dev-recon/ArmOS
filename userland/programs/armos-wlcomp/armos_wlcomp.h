@@ -170,6 +170,8 @@ struct wl_server_renderer {
     struct armos_fb_info framebuffer;
     uint32_t *canvas;
     size_t canvas_size;
+    uint32_t pointer_backing[12u * 16u];
+    bool pointer_backing_valid;
 };
 
 struct wl_server {
@@ -182,6 +184,9 @@ struct wl_server {
     struct wl_event_source *render_timer;
     bool render_pending;
     bool fatal_error;
+    bool pointer_presented;
+    int32_t presented_pointer_x;
+    int32_t presented_pointer_y;
     uint32_t serial;
     uint32_t next_surface_position;
     int32_t pointer_x;
@@ -247,6 +252,7 @@ void wl_server_disconnect_client(struct wl_server *server,
 int wl_renderer_init(struct wl_server_renderer *renderer, bool headless);
 void wl_renderer_destroy(struct wl_server_renderer *renderer);
 int wl_renderer_compose(struct wl_server *server);
+int wl_renderer_compose_pointer(struct wl_server *server);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);

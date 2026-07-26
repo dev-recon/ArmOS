@@ -52,6 +52,9 @@ static const char *const wl_pointer_shape[] = {
     "......XX...."
 };
 
+#define WL_POINTER_WIDTH  12u
+#define WL_POINTER_HEIGHT 16u
+
 static int wl_write_full(int fd, const void *buffer, size_t size)
 {
     const uint8_t *cursor = (const uint8_t *)buffer;
@@ -269,7 +272,75 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
     }
 }
 
-int wl_renderer_compose(struct wl_server *server)
+static void wl_renderer_capture_pointer(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    uint32_t canvas_width = renderer->framebuffer.pitch / sizeof(uint32_t);
+
+    for (uint32_t row = 0u; row < WL_POINTER_HEIGHT; row++) {
+        for (uint32_t column = 0u; column < WL_POINTER_WIDTH; column++) {
+            int32_t x = server->pointer_x + (int32_t)column;
+            int32_t y = server->pointer_y + (int32_t)row;
+            uint32_t pixel = WL_BACKGROUND;
+
+            if (x >= 0 && y >= 0 &&
+                (uint32_t)x < renderer->framebuffer.width &&
+                (uint32_t)y < renderer->framebuffer.height)
+                pixel = renderer->canvas[(uint32_t)y * canvas_width +
+                                         (uint32_t)x];
+            renderer->pointer_backing[row * WL_POINTER_WIDTH + column] =
+                pixel;
+        }
+    }
+    renderer->pointer_backing_valid = true;
+}
+
+static void wl_renderer_restore_pointer(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    uint32_t canvas_width = renderer->framebuffer.pitch / sizeof(uint32_t);
+
+    if (!renderer->pointer_backing_valid)
+        return;
+    for (uint32_t row = 0u; row < WL_POINTER_HEIGHT; row++) {
+        for (uint32_t column = 0u; column < WL_POINTER_WIDTH; column++) {
+            int32_t x = server->presented_pointer_x + (int32_t)column;
+            int32_t y = server->presented_pointer_y + (int32_t)row;
+
+            if (x >= 0 && y >= 0 &&
+                (uint32_t)x < renderer->framebuffer.width &&
+                (uint32_t)y < renderer->framebuffer.height) {
+                renderer->canvas[(uint32_t)y * canvas_width + (uint32_t)x] =
+                    renderer->pointer_backing[
+                        row * WL_POINTER_WIDTH + column];
+            }
+        }
+    }
+}
+
+static void wl_renderer_draw_pointer(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    int32_t x = server->pointer_x;
+    int32_t y = server->pointer_y;
+
+    wl_renderer_capture_pointer(server);
+    for (size_t row = 0;
+         row < sizeof(wl_pointer_shape) / sizeof(wl_pointer_shape[0]);
+         row++) {
+        for (size_t column = 0;
+             wl_pointer_shape[row][column] != '\0'; column++) {
+            char pixel = wl_pointer_shape[row][column];
+
+            if (pixel != '.')
+                wl_renderer_put_pixel(
+                    renderer, x + (int32_t)column, y + (int32_t)row,
+                    pixel == 'X' ? 0xff101010u : 0xfffafafau);
+        }
+    }
+}
+
+static int wl_renderer_build_canvas(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
     uint32_t canvas_width;
@@ -297,31 +368,91 @@ int wl_renderer_compose(struct wl_server *server)
         }
     }
 
-    if (!renderer->headless) {
-        int32_t x = server->pointer_x;
-        int32_t y = server->pointer_y;
+    if (!renderer->headless)
+        wl_renderer_draw_pointer(server);
 
-        for (size_t row = 0;
-             row < sizeof(wl_pointer_shape) / sizeof(wl_pointer_shape[0]);
-             row++) {
-            for (size_t column = 0;
-                 wl_pointer_shape[row][column] != '\0'; column++) {
-                char pixel = wl_pointer_shape[row][column];
+    return 0;
+}
 
-                if (pixel != '.')
-                    wl_renderer_put_pixel(
-                        renderer, x + (int32_t)column, y + (int32_t)row,
-                        pixel == 'X' ? 0xff101010u : 0xfffafafau);
-            }
-        }
+static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
+                                    int32_t x, int32_t y,
+                                    uint32_t width, uint32_t height)
+{
+    int32_t x1;
+    int32_t y1;
+
+    if (!renderer || renderer->headless || width == 0u || height == 0u)
+        return 0;
+    x1 = x + (int32_t)width;
+    y1 = y + (int32_t)height;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x1 > (int32_t)renderer->framebuffer.width)
+        x1 = (int32_t)renderer->framebuffer.width;
+    if (y1 > (int32_t)renderer->framebuffer.height)
+        y1 = (int32_t)renderer->framebuffer.height;
+    if (x >= x1 || y >= y1)
+        return 0;
+    width = (uint32_t)(x1 - x);
+    for (int32_t row = y; row < y1; row++) {
+        off_t offset = (off_t)(uint32_t)row * renderer->framebuffer.pitch +
+            (off_t)(uint32_t)x * sizeof(uint32_t);
+        const uint8_t *source = (const uint8_t *)renderer->canvas + offset;
+
+        if (lseek(renderer->framebuffer_fd, offset, SEEK_SET) < 0 ||
+            wl_write_full(renderer->framebuffer_fd, source,
+                          (size_t)width * sizeof(uint32_t)) < 0)
+            return -1;
     }
+    return 0;
+}
 
+int wl_renderer_compose(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer;
+
+    if (wl_renderer_build_canvas(server) < 0)
+        return -1;
+    renderer = &server->renderer;
+    server->pointer_presented = true;
+    server->presented_pointer_x = server->pointer_x;
+    server->presented_pointer_y = server->pointer_y;
     if (renderer->headless)
         return 0;
     if (lseek(renderer->framebuffer_fd, 0, SEEK_SET) < 0)
         return -1;
     return wl_write_full(renderer->framebuffer_fd, renderer->canvas,
                          renderer->canvas_size);
+}
+
+int wl_renderer_compose_pointer(struct wl_server *server)
+{
+    int32_t old_x;
+    int32_t old_y;
+
+    if (!server)
+        return -1;
+    if (!server->pointer_presented)
+        return wl_renderer_compose(server);
+    old_x = server->presented_pointer_x;
+    old_y = server->presented_pointer_y;
+    wl_renderer_restore_pointer(server);
+    wl_renderer_draw_pointer(server);
+    if (wl_renderer_present_rect(&server->renderer, old_x, old_y,
+                                 WL_POINTER_WIDTH,
+                                 WL_POINTER_HEIGHT) < 0)
+        return -1;
+    if ((old_x != server->pointer_x || old_y != server->pointer_y) &&
+        wl_renderer_present_rect(&server->renderer,
+                                 server->pointer_x, server->pointer_y,
+                                 WL_POINTER_WIDTH,
+                                 WL_POINTER_HEIGHT) < 0)
+        return -1;
+    server->presented_pointer_x = server->pointer_x;
+    server->presented_pointer_y = server->pointer_y;
+    return 0;
 }
 
 static int wl_surface_buffer_valid(const struct wl_server_buffer *buffer)

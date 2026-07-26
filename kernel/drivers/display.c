@@ -1830,6 +1830,7 @@ static ssize_t fb0_write(file_t* file, const void* buffer, size_t count)
     uint32_t offset;
     uint32_t available;
     uint32_t to_copy;
+    uint32_t dirty_offset;
 
     if (!file || !buffer)
         return -EINVAL;
@@ -1875,10 +1876,32 @@ static ssize_t fb0_write(file_t* file, const void* buffer, size_t count)
 
     available = fb_size - offset;
     to_copy = MIN(count, available);
+    dirty_offset = offset;
     memcpy(framebuffer_base + offset, buffer, to_copy);
     file->offset += to_copy;
 
-    framebuffer_mark_dirty(0, 0, display.width, display.height);
+    if (to_copy != 0u) {
+        uint32_t first_row = dirty_offset / display.pitch;
+        uint32_t last_offset = dirty_offset + to_copy - 1u;
+        uint32_t last_row = last_offset / display.pitch;
+
+        if (first_row == last_row) {
+            uint32_t first_x =
+                (dirty_offset % display.pitch) / sizeof(uint32_t);
+            uint32_t last_x =
+                (last_offset % display.pitch) / sizeof(uint32_t);
+
+            if (first_x < display.width) {
+                if (last_x >= display.width)
+                    last_x = display.width - 1u;
+                framebuffer_mark_dirty(first_x, first_row,
+                                       last_x - first_x + 1u, 1u);
+            }
+        } else {
+            framebuffer_mark_dirty(0u, first_row, display.width,
+                                   last_row - first_row + 1u);
+        }
+    }
     spin_unlock(&display_geometry_lock);
     display_request_flush();
     return (ssize_t)to_copy;

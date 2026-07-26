@@ -32,8 +32,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#define WL_FRAME_INTERVAL_MS 16u
-
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
 static void wl_server_usage(const char *program)
@@ -127,7 +125,9 @@ static int wl_server_render_event(void *data)
     struct wl_server *server = data;
 
     server->render_pending = false;
-    if (wl_renderer_compose(server) < 0) {
+    if ((server->drag_surface ?
+            wl_renderer_compose(server) :
+            wl_renderer_compose_pointer(server)) < 0) {
         server->fatal_error = true;
         return -1;
     }
@@ -154,7 +154,7 @@ static int wl_server_input_event(int fd, uint32_t mask, void *data)
     if (result > 0 && !server->render_pending) {
         server->render_pending = true;
         if (wl_event_source_timer_update(
-                server->render_timer, (int)WL_FRAME_INTERVAL_MS) < 0) {
+                server->render_timer, 0) < 0) {
             server->fatal_error = true;
             return -1;
         }
