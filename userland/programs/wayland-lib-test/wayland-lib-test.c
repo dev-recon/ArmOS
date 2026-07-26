@@ -918,7 +918,6 @@ done:
 
 struct server_loop_test_state {
     int pipe_events;
-    int accepted;
     int timer_events;
     int idle_events;
     int resource_destroys;
@@ -936,21 +935,6 @@ static int server_pipe_event(int fd, uint32_t mask, void *data)
     if ((mask & WL_EVENT_READABLE) == 0u || read(fd, &byte, 1u) != 1)
         return -1;
     state->pipe_events++;
-    return -1;
-}
-
-static int server_accept_event(int fd, uint32_t mask, void *data)
-{
-    struct server_loop_test_state *state = data;
-    int accepted;
-
-    if ((mask & WL_EVENT_READABLE) == 0u)
-        return -1;
-    accepted = accept(fd, NULL, NULL);
-    if (accepted < 0)
-        return -1;
-    close(accepted);
-    state->accepted++;
     return -1;
 }
 
@@ -1134,9 +1118,14 @@ failed:
 
 static int test_transport(void)
 {
+    static const struct wl_registry_listener transport_registry_listener = {
+        .global = registry_global,
+        .global_remove = registry_global_remove
+    };
     struct wl_display *server;
     struct wl_event_loop *event_loop;
     struct wl_event_source *source;
+    struct wl_global *transport_global;
     struct server_loop_test_state loop_state = { 0 };
     char path[64];
     int pipe_fds[2] = { -1, -1 };
@@ -1244,19 +1233,26 @@ static int test_transport(void)
     close(pipe_fds[1]);
     pipe_fds[0] = -1;
     pipe_fds[1] = -1;
-    source = wl_event_loop_add_fd(
-        event_loop, wl_display_get_server_fd(server), WL_EVENT_READABLE,
-        server_accept_event, &loop_state);
-    if (!source)
+    transport_global = wl_global_create(
+        server, &wl_compositor_interface, 1, NULL, server_global_bind);
+    if (!transport_global)
         goto transport_failed;
-
     child = fork();
     if (child == 0) {
         struct wl_display *client = wl_display_connect(path);
-        int valid = client && wl_display_get_fd(client) >= 0 &&
+        struct wl_registry *registry =
+            client ? wl_display_get_registry(client) : NULL;
+        struct registry_state state = { 0 };
+        int valid = client && registry &&
+            wl_registry_add_listener(
+                registry, &transport_registry_listener, &state) == 0 &&
+            wl_display_roundtrip(client) >= 0 &&
+            state.compositor == 1u &&
+            wl_display_get_fd(client) >= 0 &&
             wl_display_get_error(client) == 0 &&
             wl_display_flush(client) == 0;
 
+        wl_registry_destroy(registry);
         wl_display_disconnect(client);
         _exit(valid ? 0 : 2);
     }
@@ -1264,13 +1260,13 @@ static int test_transport(void)
         goto transport_failed;
     }
 
-    if (wl_event_loop_dispatch(event_loop, 1000) != 1)
+    if (wl_event_loop_dispatch(event_loop, 1000) != 1 ||
+        wl_event_loop_dispatch(event_loop, 1000) != 1)
         goto child_failed;
     waitpid(child, &status, 0);
     wl_display_destroy(server);
 
-    if (loop_state.accepted != 1 ||
-        !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         fprintf(stderr, "wayland-lib-test: transport failed\n");
         return 1;
     }

@@ -107,11 +107,61 @@ struct wl_display {
     int listen_fd;
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     struct wl_event_loop event_loop;
+    struct wl_event_source *listen_source;
     struct wl_client *clients;
     struct wl_global *globals;
     uint32_t next_global_name;
+    uint32_t serial;
     bool terminated;
 };
+
+static const struct wl_message wl_server_display_methods[] = {
+    {"sync", "n", NULL},
+    {"get_registry", "n", NULL}
+};
+
+static const struct wl_message wl_server_display_events[] = {
+    {"error", "ous", NULL},
+    {"delete_id", "u", NULL}
+};
+
+static const struct wl_interface wl_server_display_interface = {
+    "wl_display", 1, 2, wl_server_display_methods,
+    2, wl_server_display_events
+};
+
+static const struct wl_message wl_server_registry_methods[] = {
+    {"bind", "usun", NULL}
+};
+
+static const struct wl_message wl_server_registry_events[] = {
+    {"global", "usu", NULL},
+    {"global_remove", "u", NULL}
+};
+
+static const struct wl_interface wl_server_registry_interface = {
+    "wl_registry", 1, 1, wl_server_registry_methods,
+    2, wl_server_registry_events
+};
+
+static const struct wl_message wl_server_callback_events[] = {
+    {"done", "u", NULL}
+};
+
+static const struct wl_interface wl_server_callback_interface = {
+    "wl_callback", 1, 0, NULL, 1, wl_server_callback_events
+};
+
+static int wl_display_resource_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments);
+static int wl_registry_resource_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments);
+static int wl_display_accept_event(int fd, uint32_t mask, void *data);
+static int wl_resource_send_message(struct wl_client *client,
+                                    const uint8_t *message, size_t size,
+                                    const int *fds, size_t fd_count);
 
 static void wl_event_loop_cleanup(struct wl_event_loop *loop)
 {
@@ -201,6 +251,10 @@ void wl_display_destroy(struct wl_display *display)
         wl_client_destroy(display->clients);
     while (display->globals)
         wl_global_destroy(display->globals);
+    if (display->listen_source) {
+        (void)wl_event_source_remove(display->listen_source);
+        display->listen_source = NULL;
+    }
     if (display->listen_fd >= 0)
         close(display->listen_fd);
     source = display->event_loop.sources;
@@ -246,6 +300,15 @@ int wl_display_add_socket(struct wl_display *display, const char *name)
         return -1;
     }
     display->listen_fd = fd;
+    display->listen_source = wl_event_loop_add_fd(
+        &display->event_loop, fd,
+        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+        wl_display_accept_event, display);
+    if (!display->listen_source) {
+        close(fd);
+        display->listen_fd = -1;
+        return -1;
+    }
     return 0;
 }
 
@@ -514,6 +577,7 @@ void wl_display_terminate(struct wl_display *display)
 struct wl_client *wl_client_create(struct wl_display *display, int fd)
 {
     struct wl_client *client;
+    struct wl_resource *display_resource;
 
     if (!display || fd < 0) {
         errno = EINVAL;
@@ -538,6 +602,16 @@ struct wl_client *wl_client_create(struct wl_display *display, int fd)
     }
     client->next = display->clients;
     display->clients = client;
+    display_resource = wl_resource_create(
+        client, &wl_server_display_interface, 1, 1u);
+    if (!display_resource) {
+        client->fd = -1;
+        wl_client_destroy(client);
+        return NULL;
+    }
+    wl_resource_set_dispatcher(
+        display_resource, wl_display_resource_dispatch,
+        NULL, display, NULL);
     return client;
 }
 
@@ -567,7 +641,8 @@ void wl_client_destroy(struct wl_client *client)
     }
     while (client->pending_fd_count != 0u)
         close(client->pending_fds[--client->pending_fd_count]);
-    close(client->fd);
+    if (client->fd >= 0)
+        close(client->fd);
     client->display = NULL;
     free(client);
 }
@@ -633,6 +708,16 @@ struct wl_global *wl_global_create(
     global->version = (uint32_t)version;
     global->next = display->globals;
     display->globals = global;
+    for (struct wl_client *client = display->clients;
+         client; client = client->next) {
+        for (struct wl_resource *resource = client->resources;
+             resource; resource = resource->next) {
+            if (resource->interface == &wl_server_registry_interface)
+                wl_resource_post_event(resource, 0u, global->name,
+                                       global->interface->name,
+                                       global->version);
+        }
+    }
     return global;
 }
 
@@ -643,6 +728,14 @@ void wl_global_destroy(struct wl_global *global)
     if (!global)
         return;
     if (global->display) {
+        for (struct wl_client *client = global->display->clients;
+             client; client = client->next) {
+            for (struct wl_resource *resource = client->resources;
+                 resource; resource = resource->next) {
+                if (resource->interface == &wl_server_registry_interface)
+                    wl_resource_post_event(resource, 1u, global->name);
+            }
+        }
         link = &global->display->globals;
         while (*link && *link != global)
             link = &(*link)->next;
@@ -736,6 +829,17 @@ void wl_resource_destroy(struct wl_resource *resource)
             link = &(*link)->next;
         if (*link == resource)
             *link = resource->next;
+    }
+    if (resource->client && !resource->client->destroying &&
+        resource->id != 1u && resource->id < 0xff000000u) {
+        uint8_t message[12];
+        uint32_t header = (12u << 16) | 1u;
+
+        memcpy(message, &(uint32_t){1u}, sizeof(uint32_t));
+        memcpy(message + 4u, &header, sizeof(header));
+        memcpy(message + 8u, &resource->id, sizeof(resource->id));
+        (void)wl_resource_send_message(resource->client, message,
+                                       sizeof(message), NULL, 0u);
     }
     destroy = resource->destroy;
     if (destroy)
@@ -1083,6 +1187,109 @@ static int wl_client_event(int fd, uint32_t mask, void *data)
     if (result < 0 || client->destroy_pending) {
         wl_client_destroy(client);
         return -1;
+    }
+    return 0;
+}
+
+static uint32_t wl_display_next_serial(struct wl_display *display)
+{
+    display->serial++;
+    if (display->serial == 0u)
+        display->serial++;
+    return display->serial;
+}
+
+static int wl_display_resource_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments)
+{
+    struct wl_resource *display_resource = target;
+    struct wl_client *client = wl_resource_get_client(display_resource);
+    struct wl_display *display = wl_client_get_display(client);
+    struct wl_resource *resource;
+    uint32_t id;
+
+    (void)implementation;
+    (void)message;
+    if (!client || !display)
+        return -1;
+    id = arguments[0].n;
+    switch (opcode) {
+    case 0u:
+        resource = wl_resource_create(
+            client, &wl_server_callback_interface, 1, id);
+        if (!resource)
+            return -1;
+        wl_resource_post_event(resource, 0u,
+                               wl_display_next_serial(display));
+        wl_resource_destroy(resource);
+        return 0;
+    case 1u:
+        resource = wl_resource_create(
+            client, &wl_server_registry_interface, 1, id);
+        if (!resource)
+            return -1;
+        wl_resource_set_dispatcher(
+            resource, wl_registry_resource_dispatch, NULL, display, NULL);
+        for (struct wl_global *global = display->globals;
+             global; global = global->next)
+            wl_resource_post_event(resource, 0u, global->name,
+                                   global->interface->name,
+                                   global->version);
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+static int wl_registry_resource_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments)
+{
+    struct wl_resource *registry_resource = target;
+    struct wl_client *client = wl_resource_get_client(registry_resource);
+    struct wl_display *display = wl_client_get_display(client);
+    struct wl_global *global;
+    uint32_t name;
+    uint32_t version;
+    uint32_t id;
+
+    (void)implementation;
+    (void)message;
+    if (!client || !display || opcode != 0u)
+        return -1;
+    name = arguments[0].u;
+    version = arguments[2].u;
+    id = arguments[3].n;
+    for (global = display->globals; global; global = global->next) {
+        if (global->name == name)
+            break;
+    }
+    if (!global || !arguments[1].s ||
+        strcmp(arguments[1].s, global->interface->name) != 0 ||
+        version == 0u || version > global->version)
+        return -1;
+    global->bind(client, global->data, version, id);
+    if (!wl_client_get_object(client, id))
+        return -1;
+    return 0;
+}
+
+static int wl_display_accept_event(int fd, uint32_t mask, void *data)
+{
+    struct wl_display *display = data;
+    int client_fd;
+
+    if (!display || (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u)
+        return -1;
+    if ((mask & WL_EVENT_READABLE) == 0u)
+        return 0;
+    client_fd = accept(fd, NULL, NULL);
+    if (client_fd < 0)
+        return errno == EINTR ? 0 : -1;
+    if (!wl_client_create(display, client_fd)) {
+        close(client_fd);
+        return 0;
     }
     return 0;
 }
