@@ -33,6 +33,7 @@ enable_complete_userland_build()
     BUILD_BSD=1
     BUILD_NCURSES=1
     BUILD_NANO=1
+    BUILD_EPOLL_SHIM=1
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -61,6 +62,7 @@ else
 fi
 BUILD_NCURSES="${BUILD_NCURSES:-0}"
 BUILD_NANO="${BUILD_NANO:-0}"
+BUILD_EPOLL_SHIM="${BUILD_EPOLL_SHIM:-0}"
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -221,6 +223,13 @@ if [ "$BUILD_ZLIB" = "1" ]; then
     WORK_DIR="$TARGET_BUNDLES/zlib" ARCH="$ARCH" \
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
     rsync -a "$TARGET_BUNDLES/zlib/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_EPOLL_SHIM" = "1" ]; then
+    echo "=== Building epoll compatibility bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/epoll-shim" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_epoll_shim.sh
+    rsync -a "$TARGET_BUNDLES/epoll-shim/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

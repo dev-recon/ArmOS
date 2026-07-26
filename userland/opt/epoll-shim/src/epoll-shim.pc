@@ -1,0 +1,11 @@
+# ArmOS epoll compatibility package metadata.
+
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: epoll-shim
+Description: ArmOS level-triggered epoll compatibility over ppoll
+Version: 0.1.0
+Libs: -L${libdir} -lepoll-shim
+Cflags: -I${includedir}
