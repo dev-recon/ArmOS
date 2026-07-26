@@ -166,6 +166,9 @@ void wl_wire_store_u32(uint8_t *data, uint32_t value);
 int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
                          uint16_t opcode, const uint32_t *words,
                          size_t word_count);
+int wl_client_send_fd_words(struct wl_server_client *client,
+                            uint32_t object_id, uint16_t opcode,
+                            const uint32_t *words, size_t word_count, int fd);
 int wl_client_send_global(struct wl_server_client *client,
                           uint32_t registry_id, uint32_t name,
                           const char *interface_name, uint32_t version);
@@ -197,5 +200,7 @@ int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);
 int wl_server_handle_input(struct wl_server *server);
+int wl_server_send_keymap(struct wl_server_client *client,
+                          uint32_t keyboard_id);
 
 #endif /* ARMOS_WLCOMP_H */

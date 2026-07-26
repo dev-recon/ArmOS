@@ -21,6 +21,7 @@
 #include "armos_wlcomp.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -83,6 +84,52 @@ int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
         memcpy(message + WL_WIRE_HEADER_SIZE, words,
                word_count * sizeof(uint32_t));
     return wl_write_full(client->fd, message, size);
+}
+
+int wl_client_send_fd_words(struct wl_server_client *client,
+                            uint32_t object_id, uint16_t opcode,
+                            const uint32_t *words, size_t word_count, int fd)
+{
+    uint8_t message[WL_WIRE_MAX_EVENT];
+    uint8_t control[CMSG_SPACE(sizeof(int))];
+    struct cmsghdr *header;
+    struct iovec iov;
+    struct msghdr packet;
+    size_t size = WL_WIRE_HEADER_SIZE + word_count * sizeof(uint32_t);
+    ssize_t sent;
+
+    if (!client || client->fd < 0 || fd < 0 ||
+        size > sizeof(message) || size > 0xffffu)
+        return -1;
+    wl_wire_store_u32(message, object_id);
+    wl_wire_store_u32(message + 4,
+                      ((uint32_t)size << 16) | (uint32_t)opcode);
+    if (word_count > 0u)
+        memcpy(message + WL_WIRE_HEADER_SIZE, words,
+               word_count * sizeof(uint32_t));
+    memset(control, 0, sizeof(control));
+    memset(&packet, 0, sizeof(packet));
+    iov.iov_base = message;
+    iov.iov_len = size;
+    packet.msg_iov = &iov;
+    packet.msg_iovlen = 1u;
+    packet.msg_control = control;
+    packet.msg_controllen = sizeof(control);
+    header = CMSG_FIRSTHDR(&packet);
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(header), &fd, sizeof(fd));
+    do {
+        sent = sendmsg(client->fd, &packet, 0);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != (ssize_t)size) {
+        fprintf(stderr,
+                "armos-wlcomp: send fd event returned %ld/%lu (errno=%d)\n",
+                (long)sent, (unsigned long)size, errno);
+        return -1;
+    }
+    return 0;
 }
 
 static int wl_client_send_string_event(struct wl_server_client *client,

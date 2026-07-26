@@ -21,6 +21,7 @@
 #include "armos_wlcomp.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -696,9 +697,17 @@ static int wl_dispatch_seat(struct wl_server_client *client,
     if (opcode == 0u)
         return wl_client_add_object(client, new_id,
                                     WL_SERVER_OBJECT_POINTER, 1u, NULL);
-    if (opcode == 1u)
-        return wl_client_add_object(client, new_id,
-                                    WL_SERVER_OBJECT_KEYBOARD, 1u, NULL);
+    if (opcode == 1u) {
+        if (wl_client_add_object(client, new_id,
+                                 WL_SERVER_OBJECT_KEYBOARD, 1u, NULL) < 0)
+            return -1;
+        if (wl_server_send_keymap(client, new_id) < 0) {
+            perror("armos-wlcomp: keyboard keymap");
+            wl_client_remove_object(client, new_id, false);
+            return -1;
+        }
+        return 0;
+    }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,
                             "requested seat capability is unavailable");

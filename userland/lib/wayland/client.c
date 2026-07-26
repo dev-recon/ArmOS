@@ -31,9 +31,10 @@
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
 
-#define WL_CLIENT_MAX_OBJECTS 512u
-#define WL_WIRE_HEADER_SIZE   8u
-#define WL_WIRE_MAX_MESSAGE   65535u
+#define WL_CLIENT_MAX_OBJECTS     512u
+#define WL_CLIENT_MAX_PENDING_FDS 16u
+#define WL_WIRE_HEADER_SIZE       8u
+#define WL_WIRE_MAX_MESSAGE       65535u
 
 struct wl_proxy {
     uint32_t id;
@@ -50,6 +51,8 @@ struct wl_display {
     int fd;
     int error;
     uint32_t next_id;
+    int pending_fds[WL_CLIENT_MAX_PENDING_FDS];
+    size_t pending_fd_count;
     struct wl_proxy *objects[WL_CLIENT_MAX_OBJECTS];
 };
 
@@ -159,21 +162,86 @@ static int wl_proxy_is(const struct wl_proxy *proxy,
         strcmp(proxy->interface->name, interface->name) == 0;
 }
 
-static int wl_read_full(int fd, void *buffer, size_t size)
+static int wl_display_queue_control_fds(struct wl_display *display,
+                                        struct msghdr *message)
+{
+    struct cmsghdr *header;
+
+    for (header = CMSG_FIRSTHDR(message); header;
+         header = CMSG_NXTHDR(message, header)) {
+        size_t payload;
+        size_t count;
+        int *fds;
+
+        if (header->cmsg_level != SOL_SOCKET ||
+            header->cmsg_type != SCM_RIGHTS ||
+            header->cmsg_len < CMSG_LEN(0))
+            continue;
+        payload = header->cmsg_len - CMSG_LEN(0);
+        count = payload / sizeof(int);
+        fds = (int *)(void *)CMSG_DATA(header);
+        for (size_t index = 0; index < count; index++) {
+            if (display->pending_fd_count >= WL_CLIENT_MAX_PENDING_FDS) {
+                close(fds[index]);
+                errno = EMFILE;
+                return -1;
+            }
+            display->pending_fds[display->pending_fd_count++] = fds[index];
+        }
+    }
+    return 0;
+}
+
+static int wl_display_read_full(struct wl_display *display, void *buffer,
+                                size_t size)
 {
     uint8_t *cursor = buffer;
     size_t done = 0;
 
     while (done < size) {
-        ssize_t count = read(fd, cursor + done, size - done);
+        uint8_t control[
+            CMSG_SPACE(sizeof(int) * WL_CLIENT_MAX_PENDING_FDS)];
+        struct iovec iov;
+        struct msghdr message;
+        ssize_t count;
 
+        memset(&message, 0, sizeof(message));
+        memset(control, 0, sizeof(control));
+        iov.iov_base = cursor + done;
+        iov.iov_len = size - done;
+        message.msg_iov = &iov;
+        message.msg_iovlen = 1u;
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+        count = recvmsg(display->fd, &message, MSG_CMSG_CLOEXEC);
         if (count < 0 && errno == EINTR)
             continue;
         if (count <= 0)
             return -1;
+        if ((message.msg_flags & MSG_CTRUNC) != 0 ||
+            wl_display_queue_control_fds(display, &message) < 0)
+            return -1;
         done += (size_t)count;
     }
     return 0;
+}
+
+static int wl_display_take_fd(struct wl_display *display)
+{
+    int fd;
+
+    if (!display || display->pending_fd_count == 0u) {
+        errno = EPROTO;
+        return -1;
+    }
+    fd = display->pending_fds[0];
+    display->pending_fd_count--;
+    if (display->pending_fd_count > 0u) {
+        memmove(display->pending_fds, display->pending_fds + 1,
+                display->pending_fd_count *
+                    sizeof(display->pending_fds[0]));
+    }
+    return fd;
 }
 
 static int wl_write_full(int fd, const void *buffer, size_t size)
@@ -422,6 +490,8 @@ void wl_display_disconnect(struct wl_display *display)
         return;
     if (display->fd >= 0)
         close(display->fd);
+    for (size_t index = 0; index < display->pending_fd_count; index++)
+        close(display->pending_fds[index]);
     for (size_t index = 2u; index < WL_CLIENT_MAX_OBJECTS; index++)
         free(display->objects[index]);
     free(display);
@@ -1424,6 +1494,20 @@ static int wl_dispatch_keyboard_event(struct wl_proxy *proxy,
         (const struct wl_keyboard_listener *)proxy->listener;
     struct wl_display *display = proxy->display;
 
+    if (opcode == 0u && size == 8u) {
+        int fd = wl_display_take_fd(display);
+
+        if (fd < 0)
+            return -1;
+        if (listener && listener->keymap)
+            listener->keymap(proxy->listener_data,
+                             (struct wl_keyboard *)proxy,
+                             wl_load_u32(payload), fd,
+                             wl_load_u32(payload + 4u));
+        else
+            close(fd);
+        return 0;
+    }
     if (opcode == 1u && size >= 12u) {
         struct wl_surface *surface =
             wl_event_surface(display, wl_load_u32(payload + 4u));
@@ -1483,10 +1567,6 @@ static int wl_dispatch_keyboard_event(struct wl_proxy *proxy,
                                   (int32_t)wl_load_u32(payload + 4u));
         return 0;
     }
-    /*
-     * keymap carries a file descriptor outside the byte stream. Descriptor
-     * receive queues are added together with generic proxy dispatch.
-     */
     return -1;
 }
 
@@ -1627,7 +1707,7 @@ int wl_display_dispatch(struct wl_display *display)
         errno = EINVAL;
         return -1;
     }
-    if (wl_read_full(display->fd, header, sizeof(header)) < 0)
+    if (wl_display_read_full(display, header, sizeof(header)) < 0)
         goto transport_error;
     object_id = wl_load_u32(header);
     word = wl_load_u32(header + 4u);
@@ -1641,7 +1721,7 @@ int wl_display_dispatch(struct wl_display *display)
         payload = malloc(size);
         if (!payload)
             return -1;
-        if (wl_read_full(display->fd, payload, size) < 0)
+        if (wl_display_read_full(display, payload, size) < 0)
             goto transport_error;
     }
     if (object_id >= WL_CLIENT_MAX_OBJECTS ||

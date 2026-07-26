@@ -18,8 +18,9 @@
  * - The registry mode expects a compositor on the conventional display.
  */
 
-#include <stdio.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -44,6 +45,7 @@ struct registry_state {
     uint32_t seat_capabilities;
     unsigned int xdg_configures;
     unsigned int toplevel_configures;
+    unsigned int keymaps;
 };
 
 static const struct wl_message generated_compositor_methods[] = {
@@ -133,6 +135,78 @@ static void seat_name(void *data, struct wl_seat *seat, const char *name)
     (void)name;
 }
 
+static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
+                            uint32_t format, int32_t fd, uint32_t size)
+{
+    struct registry_state *state = data;
+    const char *mapping;
+
+    (void)keyboard;
+    mapping = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
+    if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 &&
+        size > 11u && mapping != MAP_FAILED &&
+        strncmp(mapping, "xkb_keymap", 10u) == 0)
+        state->keymaps++;
+    if (mapping != MAP_FAILED)
+        munmap((void *)mapping, size);
+    close(fd);
+}
+
+static void keyboard_enter(void *data, struct wl_keyboard *keyboard,
+                           uint32_t serial, struct wl_surface *surface,
+                           struct wl_array *keys)
+{
+    (void)data;
+    (void)keyboard;
+    (void)serial;
+    (void)surface;
+    (void)keys;
+}
+
+static void keyboard_leave(void *data, struct wl_keyboard *keyboard,
+                           uint32_t serial, struct wl_surface *surface)
+{
+    (void)data;
+    (void)keyboard;
+    (void)serial;
+    (void)surface;
+}
+
+static void keyboard_key(void *data, struct wl_keyboard *keyboard,
+                         uint32_t serial, uint32_t time, uint32_t key,
+                         uint32_t state)
+{
+    (void)data;
+    (void)keyboard;
+    (void)serial;
+    (void)time;
+    (void)key;
+    (void)state;
+}
+
+static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
+                               uint32_t serial, uint32_t depressed,
+                               uint32_t latched, uint32_t locked,
+                               uint32_t group)
+{
+    (void)data;
+    (void)keyboard;
+    (void)serial;
+    (void)depressed;
+    (void)latched;
+    (void)locked;
+    (void)group;
+}
+
+static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,
+                                 int32_t rate, int32_t delay)
+{
+    (void)data;
+    (void)keyboard;
+    (void)rate;
+    (void)delay;
+}
+
 static void xdg_ping(void *data, struct xdg_wm_base *xdg_wm_base,
                      uint32_t serial)
 {
@@ -184,6 +258,14 @@ static int test_registry(void)
     static const struct wl_seat_listener seat_listener = {
         seat_capabilities,
         seat_name
+    };
+    static const struct wl_keyboard_listener keyboard_listener = {
+        keyboard_keymap,
+        keyboard_enter,
+        keyboard_leave,
+        keyboard_key,
+        keyboard_modifiers,
+        keyboard_repeat_info
     };
     static const struct xdg_wm_base_listener wm_base_listener = {
         xdg_ping
@@ -247,7 +329,8 @@ static int test_registry(void)
         goto protocol_failed;
     pointer = wl_seat_get_pointer(seat);
     keyboard = wl_seat_get_keyboard(seat);
-    if (!pointer || !keyboard)
+    if (!pointer || !keyboard ||
+        wl_keyboard_add_listener(keyboard, &keyboard_listener, &state) < 0)
         goto protocol_failed;
     surface = (struct wl_surface *)wl_proxy_marshal_flags(
         (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 1u, 0u,
@@ -291,6 +374,7 @@ static int test_registry(void)
         state.formats != 2u || state.releases != 1u ||
         state.seat_capabilities !=
             (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
+        state.keymaps != 1u ||
         state.xdg_configures != 1u || state.toplevel_configures != 1u)
         goto protocol_failed;
     for (unsigned int iteration = 0; iteration < 600u; iteration++) {
@@ -318,10 +402,11 @@ static int test_registry(void)
 
 protocol_failed:
     fprintf(stderr,
-            "wayland-lib-test: protocol failed (globals=%u formats=%u release=%u seat=%u xdg=%u/%u)\n",
+            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u xdg=%u/%u)\n",
+            wl_display_get_error(display), errno,
             state.globals, state.formats, state.releases,
-            (unsigned)state.seat_capabilities, state.xdg_configures,
-            state.toplevel_configures);
+            (unsigned)state.seat_capabilities, state.keymaps,
+            state.xdg_configures, state.toplevel_configures);
     if (keyboard)
         wl_keyboard_destroy(keyboard);
     if (pointer)
