@@ -144,6 +144,22 @@ static int wl_server_render_event(void *data)
     return 0;
 }
 
+int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
+{
+    if (!server || !server->render_timer)
+        return -1;
+    if (scene_damage)
+        server->scene_damage_pending = true;
+    if (server->render_pending)
+        return 0;
+    server->render_pending = true;
+    if (wl_event_source_timer_update(server->render_timer, 0) < 0) {
+        server->render_pending = false;
+        return -1;
+    }
+    return 0;
+}
+
 static int wl_server_input_event(int fd, uint32_t mask, void *data)
 {
     struct wl_server *server = data;
@@ -161,13 +177,9 @@ static int wl_server_input_event(int fd, uint32_t mask, void *data)
         server->fatal_error = true;
         return -1;
     }
-    if (result > 0 && !server->render_pending) {
-        server->render_pending = true;
-        if (wl_event_source_timer_update(
-                server->render_timer, 0) < 0) {
-            server->fatal_error = true;
-            return -1;
-        }
+    if (result > 0 && wl_server_schedule_render(server, false) < 0) {
+        server->fatal_error = true;
+        return -1;
     }
     return 0;
 }

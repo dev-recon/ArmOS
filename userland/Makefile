@@ -45,6 +45,7 @@ endif
 NEWLIB_RUNTIME_DIR ?= $(TARGET_BUILD_ROOT)/newlib-port
 NEWLIB_SYSROOT ?= $(shell $(CC) -print-sysroot 2>/dev/null)
 NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
+NEWLIB_LIBM ?= $(NEWLIB_SYSROOT)/lib/libm.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
 
 CFLAGS := $(ARCH_FLAGS) -std=gnu99 -Os -ffreestanding -fno-builtin \
@@ -86,6 +87,9 @@ PROGRAMS := $(filter-out armos-wlcomp,$(PROGRAMS))
 
 # Linked explicitly against both native Wayland libraries below.
 PROGRAMS := $(filter-out wayland-lib-test,$(PROGRAMS))
+
+# Linked explicitly against the native Wayland client and math libraries.
+PROGRAMS := $(filter-out teapot-demo,$(PROGRAMS))
 
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
@@ -133,8 +137,13 @@ WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
                      $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
+TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
+TEAPOT_DEMO_TARGET := $(OUT_USR_BIN)/teapot-demo
 
-TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(WAYLAND_API_TEST_TARGET)
+TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(WAYLAND_API_TEST_TARGET) \
+           $(TEAPOT_DEMO_TARGET)
+
+$(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
@@ -220,6 +229,12 @@ $(WAYLAND_API_TEST_TARGET): newlib-port $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIB
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
 		$(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
 		$(WAYLAND_SERVER_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(TEAPOT_DEMO_TARGET): newlib-port $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
+		$(WAYLAND_CLIENT_LIBRARY) "$(NEWLIB_LIBM)" \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
@@ -331,6 +346,8 @@ install: $(TARGETS)
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
+	cp $(TEAPOT_DEMO_TARGET) $(USERFS_USR_BIN)/teapot-demo
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/teapot-demo
 
 clean:
 	rm -rf $(BUILD_DIR)

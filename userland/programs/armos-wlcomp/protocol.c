@@ -380,10 +380,21 @@ static int wl_dispatch_xdg_toplevel(struct wl_server *server,
     }
     if (opcode == 2u || opcode == 3u) {
         const char *text;
+        uint32_t length;
 
-        if (wl_request_string(request, &text, NULL) == 0 &&
+        if (wl_request_string(request, &text, &length) == 0 &&
             wl_request_complete(request)) {
-            (void)text;
+            if (opcode == 2u && surface && surface->used) {
+                size_t copy_length = length - 1u;
+
+                if (copy_length >= sizeof(surface->title))
+                    copy_length = sizeof(surface->title) - 1u;
+                memcpy(surface->title, text, copy_length);
+                surface->title[copy_length] = '\0';
+                if (surface->mapped &&
+                    wl_server_schedule_render(server, true) < 0)
+                    return -1;
+            }
             return 0;
         }
     }

@@ -43,6 +43,7 @@
 #define WL_SERVER_MAX_DATA_OFFERS   8u
 #define WL_SERVER_MAX_MIME_TYPES    8u
 #define WL_SERVER_MAX_MIME_LENGTH   64u
+#define WL_SERVER_MAX_TITLE_LENGTH  96u
 
 #define WL_DISPLAY_ID 1u
 
@@ -154,6 +155,7 @@ struct wl_server_surface {
     uint32_t height;
     uint32_t *pixels;
     size_t pixels_size;
+    char title[WL_SERVER_MAX_TITLE_LENGTH];
     struct wl_server_callback callbacks[WL_SERVER_MAX_CALLBACKS];
 };
 
@@ -277,6 +279,7 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer);
 int wl_renderer_compose(struct wl_server *server);
 int wl_renderer_compose_pointer(struct wl_server *server);
 int wl_renderer_compose_move(struct wl_server *server);
+int wl_server_schedule_render(struct wl_server *server, bool scene_damage);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);

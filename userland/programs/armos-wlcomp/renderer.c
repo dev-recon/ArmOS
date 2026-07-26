@@ -223,6 +223,79 @@ static void wl_renderer_circle(struct wl_server_renderer *renderer,
     }
 }
 
+static uint8_t wl_title_glyph_row(char character, uint32_t row)
+{
+    static const uint8_t letters[26][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30},
+        {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+        {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+        {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
+        {14,4,4,4,4,4,14}, {7,2,2,2,18,18,12},
+        {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17},
+        {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+        {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+        {15,16,16,14,1,1,30}, {31,4,4,4,4,4,4},
+        {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4},
+        {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4}, {31,1,2,4,8,16,31}
+    };
+    static const uint8_t digits[10][7] = {
+        {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14},
+        {14,17,1,2,4,8,31}, {30,1,1,14,1,1,30},
+        {2,6,10,18,31,2,2}, {31,16,16,30,1,1,30},
+        {14,16,16,30,17,17,14}, {31,1,2,4,8,8,8},
+        {14,17,17,14,17,17,14}, {14,17,17,15,1,1,14}
+    };
+
+    if (row >= 7u)
+        return 0u;
+    if (character >= 'a' && character <= 'z')
+        character = (char)(character - 'a' + 'A');
+    if (character >= 'A' && character <= 'Z')
+        return letters[(uint32_t)(character - 'A')][row];
+    if (character >= '0' && character <= '9')
+        return digits[(uint32_t)(character - '0')][row];
+    if (character == '-')
+        return row == 3u ? 31u : 0u;
+    if (character == '.')
+        return row == 6u ? 4u : 0u;
+    return 0u;
+}
+
+static void wl_renderer_title(struct wl_server_renderer *renderer,
+                              const struct wl_server_surface *surface)
+{
+    const uint32_t glyph_width = 6u;
+    uint32_t maximum = surface->width > 70u ?
+        (surface->width - 70u) / glyph_width : 0u;
+    size_t length = strnlen(surface->title, sizeof(surface->title));
+    int32_t x;
+
+    if (length > maximum)
+        length = maximum;
+    x = surface->x + (int32_t)((surface->width -
+                                (uint32_t)length * glyph_width) / 2u);
+    if (x < surface->x + 62)
+        x = surface->x + 62;
+    for (size_t character = 0u; character < length; character++) {
+        for (uint32_t row = 0u; row < 7u; row++) {
+            uint8_t bits = wl_title_glyph_row(
+                surface->title[character], row);
+
+            for (uint32_t column = 0u; column < 5u; column++) {
+                if (bits & (1u << (4u - column))) {
+                    wl_renderer_put_pixel(
+                        renderer, x + (int32_t)column,
+                        surface->y + 10 + (int32_t)row,
+                        0xff343438u);
+                }
+            }
+        }
+        x += (int32_t)glyph_width;
+    }
+}
+
 static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
                                      const struct wl_server_surface *surface)
 {
@@ -280,6 +353,7 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
                        5u, 0xffffbd2eu);
     wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
                        5u, 0xff28c840u);
+    wl_renderer_title(renderer, surface);
 
 draw_content:
     for (uint32_t source_y = 0; source_y < surface->height; source_y++) {
@@ -446,6 +520,22 @@ static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
     if (x >= x1 || y >= y1)
         return 0;
     width = (uint32_t)(x1 - x);
+    /*
+     * Large damage rectangles are cheaper as one contiguous band.  This
+     * trades a bounded amount of extra copying for hundreds of lseek/write
+     * pairs while a window is being dragged.
+     */
+    if ((uint32_t)(y1 - y) >= 64u) {
+        off_t offset = (off_t)(uint32_t)y * renderer->framebuffer.pitch;
+        const uint8_t *source =
+            (const uint8_t *)renderer->canvas + offset;
+        size_t size = (size_t)(uint32_t)(y1 - y) *
+            renderer->framebuffer.pitch;
+
+        if (lseek(renderer->framebuffer_fd, offset, SEEK_SET) < 0)
+            return -1;
+        return wl_write_full(renderer->framebuffer_fd, source, size);
+    }
     for (int32_t row = y; row < y1; row++) {
         off_t offset = (off_t)(uint32_t)row * renderer->framebuffer.pitch +
             (off_t)(uint32_t)x * sizeof(uint32_t);
@@ -645,9 +735,17 @@ int wl_surface_commit(struct wl_server *server,
                       struct wl_server_surface *surface)
 {
     struct wl_server_buffer *buffer;
+    uint32_t previous_width;
+    uint32_t previous_height;
+    bool previous_mapped;
+    bool content_changed;
 
     if (!server || !client || !surface)
         return -1;
+    previous_width = surface->width;
+    previous_height = surface->height;
+    previous_mapped = surface->mapped;
+    content_changed = surface->pending_attach;
     if (surface->pending_attach) {
         buffer = surface->pending_buffer;
         surface->pending_attach = false;
@@ -694,8 +792,27 @@ int wl_surface_commit(struct wl_server *server,
         }
     }
 
-    if (wl_renderer_compose(server) < 0)
-        return -1;
+    if (content_changed) {
+        bool same_extent = !previous_mapped ||
+            (previous_width == surface->width &&
+             previous_height == surface->height);
+
+        if (surface->mapped && same_extent &&
+            (!server->move_damage_pending ||
+             server->move_surface == surface)) {
+            if (!server->move_damage_pending) {
+                server->move_old_x = surface->x;
+                server->move_old_y = surface->y;
+            }
+            server->move_client = client;
+            server->move_surface = surface;
+            server->move_damage_pending = true;
+            if (wl_server_schedule_render(server, false) < 0)
+                return -1;
+        } else if (wl_server_schedule_render(server, true) < 0) {
+            return -1;
+        }
+    }
     for (size_t index = 0; index < WL_SERVER_MAX_CALLBACKS; index++) {
         struct wl_server_callback *callback = &surface->callbacks[index];
         uint32_t done;
