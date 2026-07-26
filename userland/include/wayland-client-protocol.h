@@ -151,11 +151,20 @@ struct wl_data_source_listener {
     void (*send)(void *data, struct wl_data_source *source,
                  const char *mime_type, int32_t fd);
     void (*cancelled)(void *data, struct wl_data_source *source);
+    void (*dnd_drop_performed)(void *data,
+                               struct wl_data_source *source);
+    void (*dnd_finished)(void *data, struct wl_data_source *source);
+    void (*action)(void *data, struct wl_data_source *source,
+                   uint32_t dnd_action);
 };
 
 struct wl_data_offer_listener {
     void (*offer)(void *data, struct wl_data_offer *offer,
                   const char *mime_type);
+    void (*source_actions)(void *data, struct wl_data_offer *offer,
+                           uint32_t source_actions);
+    void (*action)(void *data, struct wl_data_offer *offer,
+                   uint32_t dnd_action);
 };
 
 struct wl_data_device_listener {
@@ -215,6 +224,13 @@ enum wl_output_subpixel {
 
 enum wl_output_transform {
     WL_OUTPUT_TRANSFORM_NORMAL = 0
+};
+
+enum wl_data_device_manager_dnd_action {
+    WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE = 0,
+    WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY = 1,
+    WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE = 2,
+    WL_DATA_DEVICE_MANAGER_DND_ACTION_ASK = 4
 };
 
 #define WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION 3
@@ -367,6 +383,10 @@ void wl_data_offer_accept(struct wl_data_offer *offer, uint32_t serial,
                           const char *mime_type);
 void wl_data_offer_receive(struct wl_data_offer *offer,
                            const char *mime_type, int32_t fd);
+void wl_data_offer_finish(struct wl_data_offer *offer);
+void wl_data_offer_set_actions(struct wl_data_offer *offer,
+                               uint32_t dnd_actions,
+                               uint32_t preferred_action);
 void wl_data_offer_destroy(struct wl_data_offer *offer);
 
 #endif /* ARMOS_WAYLAND_CLIENT_PROTOCOL_H */

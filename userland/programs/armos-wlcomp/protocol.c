@@ -190,7 +190,7 @@ static int wl_dispatch_display(struct wl_server *server,
                                   "wl_output", 2u) < 0)
             return -1;
         if (wl_client_send_global(client, new_id, WL_GLOBAL_DATA_DEVICE,
-                                  "wl_data_device_manager", 1u) < 0)
+                                  "wl_data_device_manager", 3u) < 0)
             return -1;
         if (wl_client_send_global(client, new_id, WL_GLOBAL_SUBCOMPOSITOR,
                                   "wl_subcompositor", 1u) < 0)
@@ -263,8 +263,12 @@ static int wl_dispatch_registry(struct wl_server *server,
                                      requested_version);
     if (name == WL_GLOBAL_DATA_DEVICE &&
         strcmp(interface_name, "wl_data_device_manager") == 0) {
+        uint32_t version = requested_version < 3u ?
+            requested_version : 3u;
+
         return wl_client_add_object(
-            client, new_id, WL_SERVER_OBJECT_DATA_DEVICE_MANAGER, 1u, NULL);
+            client, new_id, WL_SERVER_OBJECT_DATA_DEVICE_MANAGER,
+            version, NULL);
     }
     if (name == WL_GLOBAL_SUBCOMPOSITOR &&
         strcmp(interface_name, "wl_subcompositor") == 0) {
@@ -1068,7 +1072,7 @@ static int wl_publish_selection_to_client(
     offer->source_client = server->selection_client;
     offer->source = server->selection_source;
     if (wl_client_add_object(target, offer_id, WL_SERVER_OBJECT_DATA_OFFER,
-                             1u, offer) < 0) {
+                             device->version, offer) < 0) {
         memset(offer, 0, sizeof(*offer));
         return -1;
     }
@@ -1183,6 +1187,15 @@ static int wl_dispatch_data_source(
         wl_client_remove_object(client, object->id, true);
         return 0;
     }
+    if (opcode == 2u && object->version >= 3u &&
+        request->size == 4u) {
+        uint32_t actions;
+
+        if (wl_request_u32(request, &actions) < 0 ||
+            (actions & ~7u) != 0u)
+            return -1;
+        return 0;
+    }
     return -1;
 }
 
@@ -1242,6 +1255,26 @@ static int wl_dispatch_data_offer(
         wl_client_remove_object(client, object->id, false);
         return 0;
     }
+    if (opcode == 3u && object->version >= 3u &&
+        wl_request_complete(request)) {
+        memset(offer, 0, sizeof(*offer));
+        wl_client_remove_object(client, object->id, false);
+        return 0;
+    }
+    if (opcode == 4u && object->version >= 3u &&
+        request->size == 8u) {
+        uint32_t actions;
+        uint32_t preferred;
+
+        if (wl_request_u32(request, &actions) < 0 ||
+            wl_request_u32(request, &preferred) < 0 ||
+            (actions & ~7u) != 0u ||
+            (preferred != 0u && preferred != 1u &&
+             preferred != 2u && preferred != 4u) ||
+            (preferred & actions) != preferred)
+            return -1;
+        return 0;
+    }
     return -1;
 }
 
@@ -1277,6 +1310,11 @@ static int wl_dispatch_data_device(
         server->selection_source =
             source_object ? source_object->resource : NULL;
         return wl_publish_selection(server);
+    }
+    if (opcode == 2u && object->version >= 2u &&
+        wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
     }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,

@@ -46,6 +46,7 @@ struct registry_state {
     uint32_t seat_version;
     uint32_t shell_name;
     uint32_t data_device_manager_name;
+    uint32_t data_device_manager_version;
     uint32_t output_name;
     uint32_t subcompositor_name;
     uint32_t subcompositor_version;
@@ -132,6 +133,7 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, "wl_data_device_manager") == 0) {
         state->data_device_manager++;
         state->data_device_manager_name = name;
+        state->data_device_manager_version = version;
     }
     if (strcmp(interface, "wl_subcompositor") == 0) {
         state->subcompositor++;
@@ -592,7 +594,8 @@ static int test_registry(void)
         state.data_device_manager == 1u &&
         state.subcompositor == 1u &&
         state.compositor_version >= 4u && state.seat_version >= 5u &&
-        state.subcompositor_version >= 1u;
+        state.subcompositor_version >= 1u &&
+        state.data_device_manager_version >= 3u;
     if (!valid)
         goto protocol_failed;
     compositor = wl_registry_bind(registry, state.compositor_name,
@@ -607,7 +610,7 @@ static int test_registry(void)
                               &wl_output_interface, 2u);
     data_device_manager = wl_registry_bind(
         registry, state.data_device_manager_name,
-        &wl_data_device_manager_interface, 1u);
+        &wl_data_device_manager_interface, 3u);
     subcompositor = wl_registry_bind(
         registry, state.subcompositor_name,
         &wl_subcompositor_interface, 1u);
@@ -726,7 +729,7 @@ static int test_registry(void)
     }
 
     wl_data_offer_destroy(state.selection_offer);
-    wl_data_device_destroy(data_device);
+    wl_data_device_release(data_device);
     wl_data_source_destroy(data_source);
     wl_data_device_manager_destroy(data_device_manager);
     wl_keyboard_release(keyboard);

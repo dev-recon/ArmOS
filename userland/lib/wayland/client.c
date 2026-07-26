@@ -176,19 +176,19 @@ const struct wl_interface wl_output_interface = {
 };
 
 const struct wl_interface wl_data_device_manager_interface = {
-    "wl_data_device_manager", 1, 2, NULL, 0, NULL
+    "wl_data_device_manager", 3, 2, NULL, 0, NULL
 };
 
 const struct wl_interface wl_data_source_interface = {
-    "wl_data_source", 1, 2, NULL, 3, NULL
+    "wl_data_source", 3, 3, NULL, 6, NULL
 };
 
 const struct wl_interface wl_data_device_interface = {
-    "wl_data_device", 1, 2, NULL, 6, NULL
+    "wl_data_device", 3, 3, NULL, 6, NULL
 };
 
 const struct wl_interface wl_data_offer_interface = {
-    "wl_data_offer", 1, 3, NULL, 1, NULL
+    "wl_data_offer", 3, 5, NULL, 3, NULL
 };
 
 const struct wl_interface xdg_wm_base_interface = {
@@ -1790,6 +1790,24 @@ void wl_data_offer_receive(struct wl_data_offer *offer,
                                       mime_type, false, fd);
 }
 
+void wl_data_offer_finish(struct wl_data_offer *offer)
+{
+    if (offer && offer->proxy.version >= 3u)
+        (void)wl_send_words(offer->proxy.display, offer->proxy.id, 3u,
+                            NULL, 0u);
+}
+
+void wl_data_offer_set_actions(struct wl_data_offer *offer,
+                               uint32_t dnd_actions,
+                               uint32_t preferred_action)
+{
+    uint32_t words[2] = { dnd_actions, preferred_action };
+
+    if (offer && offer->proxy.version >= 3u)
+        (void)wl_send_words(offer->proxy.display, offer->proxy.id, 4u,
+                            words, 2u);
+}
+
 void wl_data_offer_destroy(struct wl_data_offer *offer)
 {
     if (!offer)
@@ -2304,6 +2322,25 @@ static int wl_dispatch_data_source_event(struct wl_proxy *proxy,
                                 (struct wl_data_source *)proxy);
         return 0;
     }
+    if (opcode == 3u && size == 0u) {
+        if (listener && listener->dnd_drop_performed)
+            listener->dnd_drop_performed(
+                proxy->listener_data, (struct wl_data_source *)proxy);
+        return 0;
+    }
+    if (opcode == 4u && size == 0u) {
+        if (listener && listener->dnd_finished)
+            listener->dnd_finished(
+                proxy->listener_data, (struct wl_data_source *)proxy);
+        return 0;
+    }
+    if (opcode == 5u && size == 4u) {
+        if (listener && listener->action)
+            listener->action(proxy->listener_data,
+                             (struct wl_data_source *)proxy,
+                             wl_load_u32(payload));
+        return 0;
+    }
     return -1;
 }
 
@@ -2316,14 +2353,30 @@ static int wl_dispatch_data_offer_event(struct wl_proxy *proxy,
     const char *mime_type;
     size_t cursor = 0u;
 
-    if (opcode != 0u ||
-        wl_decode_string(payload, size, &cursor, &mime_type) < 0 ||
-        cursor != size)
-        return -1;
-    if (listener && listener->offer)
-        listener->offer(proxy->listener_data,
-                        (struct wl_data_offer *)proxy, mime_type);
-    return 0;
+    if (opcode == 0u) {
+        if (wl_decode_string(payload, size, &cursor, &mime_type) < 0 ||
+            cursor != size)
+            return -1;
+        if (listener && listener->offer)
+            listener->offer(proxy->listener_data,
+                            (struct wl_data_offer *)proxy, mime_type);
+        return 0;
+    }
+    if (opcode == 1u && size == 4u) {
+        if (listener && listener->source_actions)
+            listener->source_actions(
+                proxy->listener_data, (struct wl_data_offer *)proxy,
+                wl_load_u32(payload));
+        return 0;
+    }
+    if (opcode == 2u && size == 4u) {
+        if (listener && listener->action)
+            listener->action(proxy->listener_data,
+                             (struct wl_data_offer *)proxy,
+                             wl_load_u32(payload));
+        return 0;
+    }
+    return -1;
 }
 
 static int wl_dispatch_data_device_event(struct wl_proxy *proxy,
