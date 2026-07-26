@@ -30,6 +30,8 @@
 #include <wayland-client.h>
 #include <wayland-cursor.h>
 #include <wayland-server.h>
+#include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 #include <xdg-shell-client-protocol.h>
 
 struct registry_state {
@@ -57,6 +59,7 @@ struct registry_state {
     unsigned int xdg_configures;
     unsigned int toplevel_configures;
     unsigned int keymaps;
+    unsigned int xkb_maps;
     unsigned int repeat_info;
     unsigned int output_geometry;
     unsigned int output_modes;
@@ -191,14 +194,46 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
                             uint32_t format, int32_t fd, uint32_t size)
 {
     struct registry_state *state = data;
+    struct xkb_context *context = NULL;
+    struct xkb_keymap *keymap = NULL;
+    struct xkb_state *xkb_state = NULL;
     const char *mapping;
+    char utf8[8];
 
     (void)keyboard;
     mapping = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
     if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 &&
         size > 11u && mapping != MAP_FAILED &&
-        strncmp(mapping, "xkb_keymap", 10u) == 0)
+        strncmp(mapping, "xkb_keymap", 10u) == 0) {
         state->keymaps++;
+        context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        keymap = context ? xkb_keymap_new_from_buffer(
+            context, mapping, size, XKB_KEYMAP_FORMAT_TEXT_V1,
+            XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
+        xkb_state = keymap ? xkb_state_new(keymap) : NULL;
+        if (xkb_state &&
+            xkb_keymap_key_by_name(keymap, "AD01") == 24u &&
+            xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_a &&
+            xkb_state_key_get_utf8(xkb_state, 24u, utf8,
+                                   sizeof(utf8)) == 1 &&
+            strcmp(utf8, "a") == 0 &&
+            xkb_state_key_get_one_sym(xkb_state, 11u) ==
+                XKB_KEY_eacute &&
+            xkb_state_key_get_utf8(xkb_state, 11u, utf8,
+                                   sizeof(utf8)) == 2 &&
+            (unsigned char)utf8[0] == 0xc3u &&
+            (unsigned char)utf8[1] == 0xa9u) {
+            xkb_state_update_mask(xkb_state, 1u, 0u, 0u,
+                                  0u, 0u, 0u);
+            if (xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_A &&
+                xkb_state_key_get_consumed_mods2(
+                    xkb_state, 24u, XKB_CONSUMED_MODE_XKB) == 1u)
+                state->xkb_maps++;
+        }
+        xkb_state_unref(xkb_state);
+        xkb_keymap_unref(keymap);
+        xkb_context_unref(context);
+    }
     if (mapping != MAP_FAILED)
         munmap((void *)mapping, size);
     close(fd);
@@ -707,7 +742,8 @@ static int test_registry(void)
         state.formats != 2u || state.releases != 1u ||
         state.seat_capabilities !=
             (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
-        state.keymaps != 1u || state.repeat_info != 1u ||
+        state.keymaps != 1u || state.xkb_maps != 1u ||
+        state.repeat_info != 1u ||
         state.output_geometry != 1u || state.output_modes != 1u ||
         state.output_done != 1u || state.output_scale != 1u ||
         state.surface_enters != 1u ||
@@ -768,15 +804,16 @@ static int test_registry(void)
     wl_registry_destroy(registry);
     wl_event_queue_destroy(event_queue);
     wl_display_disconnect(display);
-    printf("wayland-lib-test: registry, SHM, input, clipboard and xdg-shell passed\n");
+    printf("wayland-lib-test: registry, SHM, XKB, input, clipboard and xdg-shell passed\n");
     return 0;
 
 protocol_failed:
     fprintf(stderr,
-            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u repeat=%u clipboard=%u/%u/%u xdg=%u/%u)\n",
+            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u/%u repeat=%u clipboard=%u/%u/%u xdg=%u/%u)\n",
             wl_display_get_error(display), errno,
             state.globals, state.formats, state.releases,
             (unsigned)state.seat_capabilities, state.keymaps,
+            state.xkb_maps,
             state.repeat_info, state.clipboard_offers,
             state.clipboard_selections, state.clipboard_sends,
             state.xdg_configures, state.toplevel_configures);
