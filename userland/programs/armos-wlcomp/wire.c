@@ -472,6 +472,10 @@ void wl_server_disconnect_client(struct wl_server *server,
     }
     for (size_t index = 0; index < client->pending_fd_count; index++)
         close(client->pending_fds[index]);
+    if (client->event_source) {
+        (void)wl_event_source_remove(client->event_source);
+        client->event_source = NULL;
+    }
     if (client->fd >= 0)
         close(client->fd);
     memset(client, 0, sizeof(*client));

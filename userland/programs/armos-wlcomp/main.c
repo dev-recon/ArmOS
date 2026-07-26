@@ -10,7 +10,7 @@
  *
  * Responsibilities:
  * - Own the Wayland local socket and accept bounded client connections.
- * - Drive protocol dispatch and framebuffer presentation through poll(2).
+ * - Drive protocol dispatch through the shared Wayland server event loop.
  * - Provide a headless mode for deterministic protocol validation.
  * - Support silent supervised startup without writing over shell prompts.
  *
@@ -33,6 +33,8 @@
 #include <unistd.h>
 
 #define WL_FRAME_INTERVAL_MS 16u
+
+static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
 static void wl_server_usage(const char *program)
 {
@@ -95,79 +97,125 @@ static int wl_server_accept_client(struct wl_server *server)
         wl_server_disconnect_client(server, client);
         return -1;
     }
+    client->event_source = wl_event_loop_add_fd(
+        server->event_loop, client->fd,
+        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+        wl_server_client_event, server);
+    if (!client->event_source) {
+        wl_server_disconnect_client(server, client);
+        return -1;
+    }
+    return 0;
+}
+
+static int wl_server_listen_event(int fd, uint32_t mask, void *data)
+{
+    struct wl_server *server = data;
+
+    (void)fd;
+    if ((mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
+        server->fatal_error = true;
+        return -1;
+    }
+    if ((mask & WL_EVENT_READABLE) != 0u)
+        (void)wl_server_accept_client(server);
+    return 0;
+}
+
+static int wl_server_render_event(void *data)
+{
+    struct wl_server *server = data;
+
+    server->render_pending = false;
+    if (wl_renderer_compose(server) < 0) {
+        server->fatal_error = true;
+        return -1;
+    }
+    return 0;
+}
+
+static int wl_server_input_event(int fd, uint32_t mask, void *data)
+{
+    struct wl_server *server = data;
+    int result;
+
+    (void)fd;
+    if ((mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
+        server->fatal_error = true;
+        return -1;
+    }
+    if ((mask & WL_EVENT_READABLE) == 0u)
+        return 0;
+    result = wl_server_handle_input(server);
+    if (result < 0) {
+        server->fatal_error = true;
+        return -1;
+    }
+    if (result > 0 && !server->render_pending) {
+        server->render_pending = true;
+        if (wl_event_source_timer_update(
+                server->render_timer, (int)WL_FRAME_INTERVAL_MS) < 0) {
+            server->fatal_error = true;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int wl_server_client_event(int fd, uint32_t mask, void *data)
+{
+    struct wl_server *server = data;
+    struct wl_server_client *client = NULL;
+
+    for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
+        if (server->clients[index].used &&
+            server->clients[index].fd == fd) {
+            client = &server->clients[index];
+            break;
+        }
+    }
+    if (!client)
+        return -1;
+    if ((mask & WL_EVENT_READABLE) == 0u ||
+        wl_server_receive_client(server, client) < 0 ||
+        (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
+        wl_server_disconnect_client(server, client);
+        if (wl_renderer_compose(server) < 0)
+            server->fatal_error = true;
+        return -1;
+    }
     return 0;
 }
 
 static int wl_server_run(struct wl_server *server)
 {
-    struct pollfd descriptors[2u + WL_SERVER_MAX_CLIENTS];
-    struct wl_server_client *owners[2u + WL_SERVER_MAX_CLIENTS];
-    uint64_t next_frame_ms = 0;
-    bool render_pending = false;
-
-    for (;;) {
-        nfds_t count = 2u;
-        struct timespec now;
-        uint64_t now_ms;
-        int poll_timeout = -1;
-
-        if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+    server->event_display = wl_display_create();
+    if (!server->event_display)
+        return -1;
+    server->event_loop = wl_display_get_event_loop(server->event_display);
+    server->listen_source = wl_event_loop_add_fd(
+        server->event_loop, server->listen_fd,
+        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+        wl_server_listen_event, server);
+    server->render_timer = wl_event_loop_add_timer(
+        server->event_loop, wl_server_render_event, server);
+    if (!server->event_loop || !server->listen_source ||
+        !server->render_timer)
+        return -1;
+    if (server->input_fd >= 0) {
+        server->input_source = wl_event_loop_add_fd(
+            server->event_loop, server->input_fd,
+            WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+            wl_server_input_event, server);
+        if (!server->input_source)
             return -1;
-        now_ms = (uint64_t)now.tv_sec * 1000u +
-                 (uint64_t)now.tv_nsec / 1000000u;
-        if (render_pending) {
-            if (now_ms >= next_frame_ms) {
-                if (wl_renderer_compose(server) < 0)
-                    return -1;
-                render_pending = false;
-                next_frame_ms = now_ms + WL_FRAME_INTERVAL_MS;
-            } else {
-                poll_timeout = (int)(next_frame_ms - now_ms);
-            }
-        }
-
-        memset(descriptors, 0, sizeof(descriptors));
-        memset(owners, 0, sizeof(owners));
-        descriptors[0].fd = server->listen_fd;
-        descriptors[0].events = POLLIN;
-        descriptors[1].fd = server->input_fd;
-        descriptors[1].events = POLLIN;
-        for (size_t index = 0; index < WL_SERVER_MAX_CLIENTS; index++) {
-            if (!server->clients[index].used)
-                continue;
-            descriptors[count].fd = server->clients[index].fd;
-            descriptors[count].events = POLLIN;
-            owners[count] = &server->clients[index];
-            count++;
-        }
-
-        if (poll(descriptors, count, poll_timeout) < 0) {
-            if (errno == EINTR)
-                continue;
-            return -1;
-        }
-        if ((descriptors[0].revents & POLLIN) != 0)
-            (void)wl_server_accept_client(server);
-        if ((descriptors[1].revents & POLLIN) != 0) {
-            int input_result = wl_server_handle_input(server);
-
-            if (input_result < 0)
-                return -1;
-            if (input_result > 0)
-                render_pending = true;
-        }
-        for (nfds_t index = 2u; index < count; index++) {
-            short events = descriptors[index].revents;
-
-            if (events == 0)
-                continue;
-            if ((events & POLLIN) == 0 ||
-                wl_server_receive_client(server, owners[index]) < 0) {
-                wl_server_disconnect_client(server, owners[index]);
-                (void)wl_renderer_compose(server);
-            }
-        }
     }
+    while (!server->fatal_error) {
+        if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
+            errno != EINTR)
+            return -1;
+    }
+    return -1;
 }
 
 int main(int argc, char **argv)
@@ -222,6 +270,8 @@ int main(int argc, char **argv)
     if (wl_renderer_compose(&server) < 0) {
         perror("armos-wlcomp: initial frame");
         close(server.listen_fd);
+        if (server.input_fd >= 0)
+            close(server.input_fd);
         wl_renderer_destroy(&server.renderer);
         return 1;
     }
@@ -234,6 +284,11 @@ int main(int argc, char **argv)
     }
     if (wl_server_run(&server) < 0)
         perror("armos-wlcomp: event loop");
+    for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
+        if (server.clients[index].used)
+            wl_server_disconnect_client(&server, &server.clients[index]);
+    }
+    wl_display_destroy(server.event_display);
     close(server.listen_fd);
     if (server.input_fd >= 0)
         close(server.input_fd);

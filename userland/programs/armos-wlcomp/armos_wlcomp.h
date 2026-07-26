@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <sys/fb.h>
 #include <sys/input.h>
+#include <wayland-server-core.h>
 
 #define ARMOS_WLCOMP_SOCKET_PATH "/tmp/wayland-0"
 
@@ -149,6 +150,7 @@ struct wl_server_surface {
 struct wl_server_client {
     bool used;
     int fd;
+    struct wl_event_source *event_source;
     uint8_t receive[WL_SERVER_MAX_RECEIVE];
     size_t receive_length;
     int pending_fds[WL_SERVER_MAX_PENDING_FDS];
@@ -173,6 +175,13 @@ struct wl_server_renderer {
 struct wl_server {
     int listen_fd;
     int input_fd;
+    struct wl_display *event_display;
+    struct wl_event_loop *event_loop;
+    struct wl_event_source *listen_source;
+    struct wl_event_source *input_source;
+    struct wl_event_source *render_timer;
+    bool render_pending;
+    bool fatal_error;
     uint32_t serial;
     uint32_t next_surface_position;
     int32_t pointer_x;
