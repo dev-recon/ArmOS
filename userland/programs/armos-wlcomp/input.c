@@ -258,6 +258,9 @@ static void wl_handle_input_event(struct wl_server *server,
 {
     if (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
         event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
+        int32_t previous_pointer_x = server->pointer_x;
+        int32_t previous_pointer_y = server->pointer_y;
+
         if (event->code == ARMOS_INPUT_AXIS_X) {
             if (event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
                 server->pointer_x = (int32_t)(
@@ -287,8 +290,17 @@ static void wl_handle_input_event(struct wl_server *server,
         if ((uint32_t)server->pointer_y >= server->renderer.framebuffer.height)
             server->pointer_y =
                 (int32_t)server->renderer.framebuffer.height - 1;
-        if (server->drag_surface && server->drag_client &&
+        if ((server->pointer_x != previous_pointer_x ||
+             server->pointer_y != previous_pointer_y) &&
+            server->drag_surface && server->drag_client &&
             server->drag_surface->used && server->drag_client->used) {
+            if (!server->move_damage_pending) {
+                server->move_old_x = server->drag_surface->x;
+                server->move_old_y = server->drag_surface->y;
+                server->move_client = server->drag_client;
+                server->move_surface = server->drag_surface;
+                server->move_damage_pending = true;
+            }
             server->drag_surface->x =
                 server->pointer_x - server->drag_offset_x;
             server->drag_surface->y =

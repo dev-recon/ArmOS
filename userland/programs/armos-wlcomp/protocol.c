@@ -649,6 +649,11 @@ static int wl_dispatch_surface(struct wl_server *server,
     if (!surface)
         return -1;
     if (opcode == 0u && wl_request_complete(request)) {
+        if (server->move_surface == surface) {
+            server->move_client = NULL;
+            server->move_surface = NULL;
+            server->move_damage_pending = false;
+        }
         free(surface->pixels);
         memset(surface, 0, sizeof(*surface));
         wl_client_remove_object(client, object->id, true);

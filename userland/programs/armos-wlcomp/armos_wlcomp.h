@@ -170,6 +170,11 @@ struct wl_server_renderer {
     struct armos_fb_info framebuffer;
     uint32_t *canvas;
     size_t canvas_size;
+    bool clip_enabled;
+    int32_t clip_x0;
+    int32_t clip_y0;
+    int32_t clip_x1;
+    int32_t clip_y1;
     uint32_t pointer_backing[12u * 16u];
     bool pointer_backing_valid;
 };
@@ -196,10 +201,15 @@ struct wl_server {
     uint32_t modifiers_locked;
     int32_t drag_offset_x;
     int32_t drag_offset_y;
+    bool move_damage_pending;
+    int32_t move_old_x;
+    int32_t move_old_y;
     struct wl_server_client *focus_client;
     struct wl_server_surface *focus_surface;
     struct wl_server_client *drag_client;
     struct wl_server_surface *drag_surface;
+    struct wl_server_client *move_client;
+    struct wl_server_surface *move_surface;
     struct wl_server_client *selection_client;
     struct wl_server_data_source *selection_source;
     struct wl_server_renderer renderer;
@@ -253,6 +263,7 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless);
 void wl_renderer_destroy(struct wl_server_renderer *renderer);
 int wl_renderer_compose(struct wl_server *server);
 int wl_renderer_compose_pointer(struct wl_server *server);
+int wl_renderer_compose_move(struct wl_server *server);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);

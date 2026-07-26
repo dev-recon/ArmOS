@@ -125,8 +125,8 @@ static int wl_server_render_event(void *data)
     struct wl_server *server = data;
 
     server->render_pending = false;
-    if ((server->drag_surface ?
-            wl_renderer_compose(server) :
+    if ((server->move_damage_pending ?
+            wl_renderer_compose_move(server) :
             wl_renderer_compose_pointer(server)) < 0) {
         server->fatal_error = true;
         return -1;
