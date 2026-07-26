@@ -101,11 +101,6 @@ static int file_read_buffer(file_t* file, void* buf, size_t count)
      * prevents a partially unmapped user buffer from aborting the kernel
      * inside a filesystem or driver memcpy().
      */
-    if (is_kernel_pointer(buf)) {
-        result = file->f_op->read(file, buf, count);
-        return (int)result;
-    }
-
     read_count = count;
     if (read_count > SYSCALL_IO_BOUNCE_SIZE)
         read_count = SYSCALL_IO_BOUNCE_SIZE;
@@ -141,11 +136,6 @@ static int file_write_buffer(file_t* file, const void* buf, size_t count)
     if (!file) return -EBADF;
     if (!can_write(file)) return -EBADF;
     if (!file->f_op || !file->f_op->write) return -ENOSYS;
-
-    if (is_kernel_pointer(buf)) {
-        result = file->f_op->write(file, buf, count);
-        return (int)result;
-    }
 
     /*
      * Bound the user bounce buffer like sys_read(). A raw kmalloc(count) lets
@@ -225,12 +215,17 @@ int sys_write(int fd, const void* buf, size_t count)
 int kernel_write(int fd, const void* kernel_buf, size_t count)
 {
     task_t* task = task_current_local();
+    file_t* file;
 
     if (count == 0) return 0;
     if (!kernel_buf || !is_kernel_pointer(kernel_buf)) return -EFAULT;
     if (fd < 0 || fd >= MAX_FILES) return -EBADF;
     if (!task || !task->process) return -EBADF;
-    return file_write_buffer(task->process->files[fd], kernel_buf, count);
+    file = task->process->files[fd];
+    if (!file) return -EBADF;
+    if (!can_write(file)) return -EBADF;
+    if (!file->f_op || !file->f_op->write) return -ENOSYS;
+    return (int)file->f_op->write(file, kernel_buf, count);
 }
 
 static int positioned_file(int fd, const armos_offset_t* user_offset,

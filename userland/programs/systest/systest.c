@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -750,6 +751,7 @@ static void test_dev_tty(void)
 {
     struct stat st;
     struct stat fst;
+    volatile uintptr_t invalid_address = UINTPTR_MAX & ~(uintptr_t)0xfffu;
     int fd;
 
     if (expect(stat("/dev/tty0", &st) == 0, "stat /dev/tty0", 0) == 0) {
@@ -779,6 +781,10 @@ static void test_dev_tty(void)
     if (expect(fd >= 0, "open /dev/tty write-only", fd) >= 0) {
         if (expect(fstat(fd, &fst) == 0, "fstat /dev/tty", 0) == 0)
             expect(S_ISCHR(fst.st_mode), "fstat /dev/tty is char device", fst.st_mode);
+        errno = 0;
+        expect(write(fd, (const void *)invalid_address, 1u) < 0 &&
+               errno == EFAULT,
+               "tty write rejects invalid user pointer", errno);
         close(fd);
     }
 
