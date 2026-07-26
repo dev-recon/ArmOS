@@ -229,6 +229,7 @@ static volatile uint32_t uart_frame_error_count;
 static volatile uint32_t uart_parity_error_count;
 static volatile uint32_t uart_break_error_count;
 static volatile uint32_t uart_overrun_error_count;
+static bool uart_rx_interrupts_enabled;
 
 static void uart_record_rx_status(uint32_t dr)
 {
@@ -291,6 +292,7 @@ void uart_init(void)
     unsigned rx_timeout;
 
     uart_ensure_mmio_base();
+    __atomic_store_n(&uart_rx_interrupts_enabled, false, __ATOMIC_RELAXED);
 
     /* Desactiver l'UART */
     UART_CR = 0;
@@ -332,6 +334,7 @@ void uart_enable_rx_interrupts(void)
     UART_ICR = UART_INT_RX | UART_INT_RT | UART_INT_ERR;
     UART_RSR = 0;
     UART_IMSC |= UART_INT_RX | UART_INT_RT | UART_INT_ERR;
+    __atomic_store_n(&uart_rx_interrupts_enabled, true, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&uart_lock, flags);
 
     irq_enable_level(arch_platform_uart_irq());
@@ -659,15 +662,23 @@ void uart_flush(void)
     for (volatile int i = 0; i < 1000; i++);
 }
 
-bool uart_has_data(void) {
+static bool uart_rx_has_data(void)
+{
     uart_ensure_mmio_base();
 
-    uint32_t uart_flags = UART_FR;
-    
     /* RXFE is set when the PL011 receive FIFO is empty. */
-    bool rx_fifo_empty = (uart_flags & (1 << 4)) != 0;
-    
-    return !rx_fifo_empty;
+    return (UART_FR & UART_FR_RXFE) == 0;
+}
+
+bool uart_has_data(void)
+{
+    /*
+     * Once RX interrupts are enabled, the IRQ handler is the sole FIFO
+     * consumer. Allowing tty_read() to poll it concurrently can make CPU A
+     * read byte N+1 and enqueue it before CPU B enqueues byte N.
+     */
+    return !__atomic_load_n(&uart_rx_interrupts_enabled, __ATOMIC_ACQUIRE) &&
+           uart_rx_has_data();
 }
 
 static const tty_backend_ops_t uart_tty_backend = {
@@ -805,7 +816,7 @@ void uart_irq_handler(void) {
     /* RX ou timeout de reception ? */
     if (mis & (UART_INT_RX | UART_INT_RT | UART_INT_ERR)) {
         /* Lire tous les caractères disponibles */
-        while (uart_has_data()) {
+        while (uart_rx_has_data()) {
             int c = uart_getc();
             if (c < 0) break;
             

@@ -1338,6 +1338,7 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
     uint32_t tty_input_depth = 0;
     uint32_t tty_input_capacity = 0;
     uint32_t tty_eof_pending = 0;
+    uint32_t tty_input_dropped = 0;
     uint32_t tty_iflag = 0;
     uint32_t tty_oflag = 0;
     uint32_t tty_lflag = 0;
@@ -1383,6 +1384,7 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
 
     spin_lock_irqsave(&tty->lock, &flags);
     input_chars = tty->input_chars;
+    tty_input_dropped = tty->input_dropped;
     ctrl_c_seen = tty->ctrl_c_seen;
     sigint_delivered = tty->sigint_delivered;
     sigint_missed = tty->sigint_missed;
@@ -1405,8 +1407,10 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
                 "virtio-keyboard" : "platform-input");
     proc_append(buf, cap, len, "winsize rows %u cols %u xpixel %u ypixel %u\n",
                 rows, cols, xpixel, ypixel);
-    proc_append(buf, cap, len, "input depth %u capacity %u chars %u eof %u\n",
-                tty_input_depth, tty_input_capacity, input_chars, tty_eof_pending);
+    proc_append(buf, cap, len,
+                "input depth %u capacity %u chars %u dropped %u eof %u\n",
+                tty_input_depth, tty_input_capacity, input_chars,
+                tty_input_dropped, tty_eof_pending);
     proc_append(buf, cap, len, "wake char %u line %u eof %u\n",
                 tty_char_wakeups, tty_line_wakeups, tty_eof_wakeups);
     proc_append(buf, cap, len, "output enq %u drain %u full %u drain_calls %u\n",

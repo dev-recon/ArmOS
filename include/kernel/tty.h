@@ -116,6 +116,7 @@ struct tty_struct {
     uint32_t output_drained;
     uint32_t output_full_waits;
     uint32_t output_drain_calls;
+    uint32_t input_dropped;
     
     /* POSIX-ish terminal state. */
     struct termios termios;

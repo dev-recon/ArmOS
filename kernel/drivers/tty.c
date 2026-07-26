@@ -998,8 +998,10 @@ static task_t *tty_enqueue_input_char_locked(struct tty_struct *tty,
         tty_backend_putc_to(tty, c);
 
     next_head = (tty->input_head + 1) % TTY_INPUT_BUF_SIZE;
-    if (next_head == tty->input_tail)
+    if (next_head == tty->input_tail) {
+        tty->input_dropped++;
         return NULL;
+    }
 
     tty->input_buf[tty->input_head] = c;
     tty->input_head = next_head;
