@@ -75,6 +75,8 @@ void xdg_toplevel_set_title(struct xdg_toplevel *xdg_toplevel,
                             const char *title);
 void xdg_toplevel_set_app_id(struct xdg_toplevel *xdg_toplevel,
                              const char *app_id);
+void xdg_toplevel_move(struct xdg_toplevel *xdg_toplevel,
+                       struct wl_seat *seat, uint32_t serial);
 void xdg_toplevel_set_max_size(struct xdg_toplevel *xdg_toplevel,
                                int32_t width, int32_t height);
 void xdg_toplevel_set_min_size(struct xdg_toplevel *xdg_toplevel,

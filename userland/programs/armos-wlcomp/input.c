@@ -258,6 +258,10 @@ static void wl_handle_button(struct wl_server *server,
     words[1] = event->timestamp_ms;
     words[2] = event->code;
     words[3] = pressed ? 1u : 0u;
+    if (pressed)
+        server->pointer_grab_serial = words[0];
+    else
+        server->pointer_grab_serial = 0u;
     (void)wl_client_send_words(client, pointer->id, 3u, words, 4u);
 }
 

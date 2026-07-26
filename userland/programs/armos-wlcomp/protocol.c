@@ -349,11 +349,14 @@ static int wl_dispatch_xdg_surface(struct wl_server *server,
                             "unsupported xdg_surface request");
 }
 
-static int wl_dispatch_xdg_toplevel(struct wl_server_client *client,
+static int wl_dispatch_xdg_toplevel(struct wl_server *server,
+                                    struct wl_server_client *client,
                                     struct wl_server_object *object,
                                     uint16_t opcode,
                                     struct wl_request *request)
 {
+    struct wl_server_surface *surface = object->resource;
+
     if (opcode == 0u && wl_request_complete(request)) {
         wl_client_remove_object(client, object->id, true);
         return 0;
@@ -366,6 +369,32 @@ static int wl_dispatch_xdg_toplevel(struct wl_server_client *client,
             (void)text;
             return 0;
         }
+    }
+    if (opcode == 5u) {
+        uint32_t seat_id;
+        uint32_t serial;
+        struct wl_server_object *seat;
+
+        if (wl_request_u32(request, &seat_id) < 0 ||
+            wl_request_u32(request, &serial) < 0 ||
+            !wl_request_complete(request))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "malformed xdg_toplevel.move");
+        seat = wl_client_find_object(client, seat_id);
+        if (!seat || seat->type != WL_SERVER_OBJECT_SEAT || !surface ||
+            !surface->used || !server->pointer_left ||
+            server->pointer_grab_serial != serial ||
+            server->focus_client != client ||
+            server->focus_surface != surface)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "invalid xdg_toplevel.move grab");
+        server->drag_client = client;
+        server->drag_surface = surface;
+        server->drag_offset_x = server->pointer_x - surface->x;
+        server->drag_offset_y = server->pointer_y - surface->y;
+        return 0;
     }
     if ((opcode == 7u || opcode == 8u) && request->size == 8u) {
         request->cursor = request->size;
@@ -1139,7 +1168,8 @@ int wl_server_dispatch_message(struct wl_server *server,
         return wl_dispatch_xdg_surface(server, client, object, opcode,
                                        &request);
     case WL_SERVER_OBJECT_XDG_TOPLEVEL:
-        return wl_dispatch_xdg_toplevel(client, object, opcode, &request);
+        return wl_dispatch_xdg_toplevel(server, client, object, opcode,
+                                        &request);
     default:
         return wl_protocol_fail(client, object_id,
                                 WL_PROTOCOL_ERROR_INVALID_METHOD,

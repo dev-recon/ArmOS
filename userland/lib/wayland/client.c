@@ -1745,6 +1745,19 @@ void xdg_toplevel_set_app_id(struct xdg_toplevel *xdg_toplevel,
         (void)wl_send_string(&xdg_toplevel->proxy, 3u, app_id);
 }
 
+void xdg_toplevel_move(struct xdg_toplevel *xdg_toplevel,
+                       struct wl_seat *seat, uint32_t serial)
+{
+    uint32_t words[2];
+
+    if (!xdg_toplevel || !seat)
+        return;
+    words[0] = ((struct wl_proxy *)seat)->id;
+    words[1] = serial;
+    (void)wl_send_words(xdg_toplevel->proxy.display,
+                        xdg_toplevel->proxy.id, 5u, words, 2u);
+}
+
 static void xdg_toplevel_set_size(struct xdg_toplevel *xdg_toplevel,
                                   uint16_t opcode, int32_t width,
                                   int32_t height)
