@@ -65,6 +65,22 @@ static int wl_request_string(struct wl_request *request, const char **text,
     return 0;
 }
 
+static int wl_request_nullable_string(struct wl_request *request,
+                                      const char **text)
+{
+    uint32_t size;
+
+    if (!request || !text || request->cursor + 4u > request->size)
+        return -1;
+    size = wl_wire_u32(request->data + request->cursor);
+    if (size == 0u) {
+        request->cursor += 4u;
+        *text = NULL;
+        return 0;
+    }
+    return wl_request_string(request, text, NULL);
+}
+
 static int wl_protocol_fail(struct wl_server_client *client,
                             uint32_t object_id, uint32_t code,
                             const char *message)
@@ -172,6 +188,9 @@ static int wl_dispatch_display(struct wl_server *server,
         if (wl_client_send_global(client, new_id, WL_GLOBAL_OUTPUT,
                                   "wl_output", 2u) < 0)
             return -1;
+        if (wl_client_send_global(client, new_id, WL_GLOBAL_DATA_DEVICE,
+                                  "wl_data_device_manager", 1u) < 0)
+            return -1;
         return 0;
     }
     return wl_protocol_fail(client, WL_DISPLAY_ID,
@@ -234,6 +253,11 @@ static int wl_dispatch_registry(struct wl_server *server,
     if (name == WL_GLOBAL_OUTPUT && strcmp(interface_name, "wl_output") == 0)
         return wl_server_bind_output(server, client, new_id,
                                      requested_version);
+    if (name == WL_GLOBAL_DATA_DEVICE &&
+        strcmp(interface_name, "wl_data_device_manager") == 0) {
+        return wl_client_add_object(
+            client, new_id, WL_SERVER_OBJECT_DATA_DEVICE_MANAGER, 1u, NULL);
+    }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_OBJECT,
                             "unknown registry global");
@@ -762,6 +786,287 @@ static int wl_dispatch_input_object(struct wl_server_client *client,
                             "malformed input object request");
 }
 
+static struct wl_server_data_source *wl_allocate_data_source(
+    struct wl_server_client *client)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_DATA_SOURCES; index++) {
+        if (!client->data_sources[index].used) {
+            memset(&client->data_sources[index], 0,
+                   sizeof(client->data_sources[index]));
+            client->data_sources[index].used = true;
+            return &client->data_sources[index];
+        }
+    }
+    return NULL;
+}
+
+static struct wl_server_data_offer *wl_allocate_data_offer(
+    struct wl_server_client *client)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_DATA_OFFERS; index++) {
+        if (!client->data_offers[index].used) {
+            memset(&client->data_offers[index], 0,
+                   sizeof(client->data_offers[index]));
+            client->data_offers[index].used = true;
+            return &client->data_offers[index];
+        }
+    }
+    return NULL;
+}
+
+static struct wl_server_object *wl_find_client_object_type(
+    struct wl_server_client *client, enum wl_server_object_type type)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
+        if (client->objects[index].type == type)
+            return &client->objects[index];
+    }
+    return NULL;
+}
+
+static int wl_publish_selection_to_client(
+    struct wl_server *server, struct wl_server_client *target)
+{
+    struct wl_server_object *device = wl_find_client_object_type(
+        target, WL_SERVER_OBJECT_DATA_DEVICE);
+    struct wl_server_data_offer *offer;
+    uint32_t offer_id;
+
+    if (!device)
+        return 0;
+    if (!server->selection_client || !server->selection_source ||
+        !server->selection_source->used) {
+        offer_id = 0u;
+        return wl_client_send_words(target, device->id, 5u, &offer_id, 1u);
+    }
+    offer = wl_allocate_data_offer(target);
+    if (!offer)
+        return -1;
+    offer_id = target->next_server_id++;
+    if (offer_id < 0xff000000u ||
+        wl_client_find_object(target, offer_id)) {
+        memset(offer, 0, sizeof(*offer));
+        return -1;
+    }
+    offer->object_id = offer_id;
+    offer->source_client = server->selection_client;
+    offer->source = server->selection_source;
+    if (wl_client_add_object(target, offer_id, WL_SERVER_OBJECT_DATA_OFFER,
+                             1u, offer) < 0) {
+        memset(offer, 0, sizeof(*offer));
+        return -1;
+    }
+    if (wl_client_send_words(target, device->id, 0u, &offer_id, 1u) < 0)
+        return -1;
+    for (size_t index = 0u; index < offer->source->mime_count; index++) {
+        if (wl_client_send_string(target, offer_id, 0u,
+                                  offer->source->mime_types[index]) < 0)
+            return -1;
+    }
+    return wl_client_send_words(target, device->id, 5u, &offer_id, 1u);
+}
+
+static int wl_publish_selection(struct wl_server *server)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
+        if (server->clients[index].used &&
+            wl_publish_selection_to_client(server,
+                                           &server->clients[index]) < 0)
+            return -1;
+    }
+    return 0;
+}
+
+void wl_server_drop_client_selection(struct wl_server *server,
+                                     struct wl_server_client *client)
+{
+    if (!server || !client || server->selection_client != client)
+        return;
+    server->selection_client = NULL;
+    server->selection_source = NULL;
+    for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
+        struct wl_server_client *other = &server->clients[index];
+
+        if (other->used && other != client)
+            (void)wl_publish_selection_to_client(server, other);
+    }
+}
+
+static int wl_dispatch_data_device_manager(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    uint32_t new_id;
+
+    if (opcode == 0u && wl_request_u32(request, &new_id) == 0 &&
+        wl_request_complete(request)) {
+        struct wl_server_data_source *source =
+            wl_allocate_data_source(client);
+
+        if (!source)
+            return -1;
+        source->object_id = new_id;
+        if (wl_client_add_object(client, new_id,
+                                 WL_SERVER_OBJECT_DATA_SOURCE,
+                                 object->version, source) < 0) {
+            memset(source, 0, sizeof(*source));
+            return -1;
+        }
+        return 0;
+    }
+    if (opcode == 1u) {
+        uint32_t seat_id;
+        struct wl_server_object *seat;
+
+        if (wl_request_u32(request, &new_id) < 0 ||
+            wl_request_u32(request, &seat_id) < 0 ||
+            !wl_request_complete(request))
+            return -1;
+        seat = wl_client_find_object(client, seat_id);
+        if (!seat || seat->type != WL_SERVER_OBJECT_SEAT)
+            return -1;
+        if (wl_client_add_object(client, new_id,
+                                 WL_SERVER_OBJECT_DATA_DEVICE,
+                                 object->version, NULL) < 0)
+            return -1;
+        return wl_publish_selection_to_client(server, client);
+    }
+    return -1;
+}
+
+static int wl_dispatch_data_source(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    struct wl_server_data_source *source = object->resource;
+
+    if (!source || !source->used)
+        return -1;
+    if (opcode == 0u) {
+        const char *mime_type;
+        uint32_t length;
+
+        if (wl_request_string(request, &mime_type, &length) < 0 ||
+            !wl_request_complete(request) ||
+            source->mime_count >= WL_SERVER_MAX_MIME_TYPES ||
+            length > WL_SERVER_MAX_MIME_LENGTH)
+            return -1;
+        memcpy(source->mime_types[source->mime_count++], mime_type,
+               length);
+        return 0;
+    }
+    if (opcode == 1u && wl_request_complete(request)) {
+        if (server->selection_source == source) {
+            server->selection_source = NULL;
+            server->selection_client = NULL;
+            (void)wl_publish_selection(server);
+        }
+        memset(source, 0, sizeof(*source));
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_data_offer_has_mime(const struct wl_server_data_offer *offer,
+                                  const char *mime_type)
+{
+    if (!offer || !offer->source || !mime_type)
+        return 0;
+    for (size_t index = 0u; index < offer->source->mime_count; index++) {
+        if (strcmp(offer->source->mime_types[index], mime_type) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static int wl_dispatch_data_offer(
+    struct wl_server_client *client, struct wl_server_object *object,
+    uint16_t opcode, struct wl_request *request)
+{
+    struct wl_server_data_offer *offer = object->resource;
+
+    if (!offer || !offer->used || !offer->source ||
+        !offer->source_client || !offer->source_client->used)
+        return -1;
+    if (opcode == 0u) {
+        uint32_t serial;
+        const char *mime_type;
+
+        if (wl_request_u32(request, &serial) < 0 ||
+            wl_request_nullable_string(request, &mime_type) < 0 ||
+            !wl_request_complete(request) ||
+            (mime_type && !wl_data_offer_has_mime(offer, mime_type)))
+            return -1;
+        (void)serial;
+        return 0;
+    }
+    if (opcode == 1u) {
+        const char *mime_type;
+        int fd;
+        int result;
+
+        if (wl_request_string(request, &mime_type, NULL) < 0 ||
+            !wl_request_complete(request) ||
+            !wl_data_offer_has_mime(offer, mime_type))
+            return -1;
+        fd = wl_client_take_fd(client);
+        if (fd < 0)
+            return -1;
+        result = wl_client_send_fd_string(
+            offer->source_client, offer->source->object_id, 1u,
+            mime_type, fd);
+        close(fd);
+        return result;
+    }
+    if (opcode == 2u && wl_request_complete(request)) {
+        memset(offer, 0, sizeof(*offer));
+        wl_client_remove_object(client, object->id, false);
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_data_device(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    if (opcode == 1u) {
+        uint32_t source_id;
+        uint32_t serial;
+        struct wl_server_object *source_object = NULL;
+
+        if (wl_request_u32(request, &source_id) < 0 ||
+            wl_request_u32(request, &serial) < 0 ||
+            !wl_request_complete(request))
+            return -1;
+        (void)serial;
+        if (source_id != 0u) {
+            source_object = wl_client_find_object(client, source_id);
+            if (!source_object ||
+                source_object->type != WL_SERVER_OBJECT_DATA_SOURCE)
+                return -1;
+        }
+        if (server->selection_source &&
+            server->selection_source !=
+                (source_object ? source_object->resource : NULL)) {
+            (void)wl_client_send_words(
+                server->selection_client,
+                server->selection_source->object_id, 2u, NULL, 0u);
+        }
+        server->selection_client = source_object ? client : NULL;
+        server->selection_source =
+            source_object ? source_object->resource : NULL;
+        return wl_publish_selection(server);
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported wl_data_device request");
+}
+
 int wl_server_dispatch_message(struct wl_server *server,
                                struct wl_server_client *client,
                                const uint8_t *message, size_t size)
@@ -810,6 +1115,17 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_POINTER:
     case WL_SERVER_OBJECT_KEYBOARD:
         return wl_dispatch_input_object(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_DATA_DEVICE_MANAGER:
+        return wl_dispatch_data_device_manager(server, client, object,
+                                               opcode, &request);
+    case WL_SERVER_OBJECT_DATA_SOURCE:
+        return wl_dispatch_data_source(server, client, object, opcode,
+                                       &request);
+    case WL_SERVER_OBJECT_DATA_DEVICE:
+        return wl_dispatch_data_device(server, client, object, opcode,
+                                       &request);
+    case WL_SERVER_OBJECT_DATA_OFFER:
+        return wl_dispatch_data_offer(client, object, opcode, &request);
     case WL_SERVER_OBJECT_XDG_WM_BASE:
         return wl_dispatch_xdg_wm_base(server, client, object, opcode,
                                        &request);

@@ -38,6 +38,10 @@
 #define WL_SERVER_MAX_CALLBACKS     16u
 #define WL_SERVER_MAX_RECEIVE       (64u * 1024u)
 #define WL_SERVER_MAX_PENDING_FDS   16u
+#define WL_SERVER_MAX_DATA_SOURCES  8u
+#define WL_SERVER_MAX_DATA_OFFERS   8u
+#define WL_SERVER_MAX_MIME_TYPES    8u
+#define WL_SERVER_MAX_MIME_LENGTH   64u
 
 #define WL_DISPLAY_ID 1u
 
@@ -46,6 +50,7 @@
 #define WL_GLOBAL_SEAT       3u
 #define WL_GLOBAL_XDG_SHELL  4u
 #define WL_GLOBAL_OUTPUT     5u
+#define WL_GLOBAL_DATA_DEVICE 6u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -65,6 +70,10 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_POINTER,
     WL_SERVER_OBJECT_KEYBOARD,
     WL_SERVER_OBJECT_OUTPUT,
+    WL_SERVER_OBJECT_DATA_DEVICE_MANAGER,
+    WL_SERVER_OBJECT_DATA_SOURCE,
+    WL_SERVER_OBJECT_DATA_DEVICE,
+    WL_SERVER_OBJECT_DATA_OFFER,
     WL_SERVER_OBJECT_XDG_WM_BASE,
     WL_SERVER_OBJECT_XDG_SURFACE,
     WL_SERVER_OBJECT_XDG_TOPLEVEL
@@ -73,6 +82,21 @@ enum wl_server_object_type {
 struct wl_server_pool;
 struct wl_server_buffer;
 struct wl_server_surface;
+struct wl_server_client;
+
+struct wl_server_data_source {
+    bool used;
+    uint32_t object_id;
+    size_t mime_count;
+    char mime_types[WL_SERVER_MAX_MIME_TYPES][WL_SERVER_MAX_MIME_LENGTH];
+};
+
+struct wl_server_data_offer {
+    bool used;
+    uint32_t object_id;
+    struct wl_server_client *source_client;
+    struct wl_server_data_source *source;
+};
 
 struct wl_server_object {
     uint32_t id;
@@ -129,10 +153,13 @@ struct wl_server_client {
     size_t receive_length;
     int pending_fds[WL_SERVER_MAX_PENDING_FDS];
     size_t pending_fd_count;
+    uint32_t next_server_id;
     struct wl_server_object objects[WL_SERVER_MAX_OBJECTS];
     struct wl_server_pool pools[WL_SERVER_MAX_POOLS];
     struct wl_server_buffer buffers[WL_SERVER_MAX_BUFFERS];
     struct wl_server_surface surfaces[WL_SERVER_MAX_SURFACES];
+    struct wl_server_data_source data_sources[WL_SERVER_MAX_DATA_SOURCES];
+    struct wl_server_data_offer data_offers[WL_SERVER_MAX_DATA_OFFERS];
 };
 
 struct wl_server_renderer {
@@ -159,6 +186,8 @@ struct wl_server {
     struct wl_server_surface *focus_surface;
     struct wl_server_client *drag_client;
     struct wl_server_surface *drag_surface;
+    struct wl_server_client *selection_client;
+    struct wl_server_data_source *selection_source;
     struct wl_server_renderer renderer;
     struct wl_server_client clients[WL_SERVER_MAX_CLIENTS];
 };
@@ -173,6 +202,12 @@ int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
 int wl_client_send_fd_words(struct wl_server_client *client,
                             uint32_t object_id, uint16_t opcode,
                             const uint32_t *words, size_t word_count, int fd);
+int wl_client_send_string(struct wl_server_client *client,
+                          uint32_t object_id, uint16_t opcode,
+                          const char *text);
+int wl_client_send_fd_string(struct wl_server_client *client,
+                             uint32_t object_id, uint16_t opcode,
+                             const char *text, int fd);
 int wl_client_send_global(struct wl_server_client *client,
                           uint32_t registry_id, uint32_t name,
                           const char *interface_name, uint32_t version);
@@ -193,9 +228,12 @@ int wl_client_take_fd(struct wl_server_client *client);
 int wl_server_dispatch_message(struct wl_server *server,
                                struct wl_server_client *client,
                                const uint8_t *message, size_t size);
+void wl_server_drop_client_selection(struct wl_server *server,
+                                     struct wl_server_client *client);
 int wl_server_receive_client(struct wl_server *server,
                              struct wl_server_client *client);
-void wl_server_disconnect_client(struct wl_server_client *client);
+void wl_server_disconnect_client(struct wl_server *server,
+                                 struct wl_server_client *client);
 
 int wl_renderer_init(struct wl_server_renderer *renderer, bool headless);
 void wl_renderer_destroy(struct wl_server_renderer *renderer);

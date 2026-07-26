@@ -21,6 +21,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,12 @@
 #define WL_CLIENT_MAX_PENDING_FDS 16u
 #define WL_WIRE_HEADER_SIZE       8u
 #define WL_WIRE_MAX_MESSAGE       65535u
+
+union wl_control_buffer {
+    struct cmsghdr alignment;
+    uint8_t bytes[
+        CMSG_SPACE(sizeof(int) * WL_CLIENT_MAX_PENDING_FDS)];
+};
 
 struct wl_proxy {
     uint32_t id;
@@ -74,6 +81,10 @@ struct wl_seat { struct wl_proxy proxy; };
 struct wl_pointer { struct wl_proxy proxy; };
 struct wl_keyboard { struct wl_proxy proxy; };
 struct wl_output { struct wl_proxy proxy; };
+struct wl_data_device_manager { struct wl_proxy proxy; };
+struct wl_data_source { struct wl_proxy proxy; };
+struct wl_data_device { struct wl_proxy proxy; };
+struct wl_data_offer { struct wl_proxy proxy; };
 struct xdg_wm_base { struct wl_proxy proxy; };
 struct xdg_surface { struct wl_proxy proxy; };
 struct xdg_toplevel { struct wl_proxy proxy; };
@@ -128,6 +139,22 @@ const struct wl_interface wl_keyboard_interface = {
 
 const struct wl_interface wl_output_interface = {
     "wl_output", 2, 0, NULL, 4, NULL
+};
+
+const struct wl_interface wl_data_device_manager_interface = {
+    "wl_data_device_manager", 1, 2, NULL, 0, NULL
+};
+
+const struct wl_interface wl_data_source_interface = {
+    "wl_data_source", 1, 2, NULL, 3, NULL
+};
+
+const struct wl_interface wl_data_device_interface = {
+    "wl_data_device", 1, 2, NULL, 6, NULL
+};
+
+const struct wl_interface wl_data_offer_interface = {
+    "wl_data_offer", 1, 3, NULL, 1, NULL
 };
 
 const struct wl_interface xdg_wm_base_interface = {
@@ -235,20 +262,19 @@ static int wl_display_read_full(struct wl_display *display, void *buffer,
     size_t done = 0;
 
     while (done < size) {
-        uint8_t control[
-            CMSG_SPACE(sizeof(int) * WL_CLIENT_MAX_PENDING_FDS)];
+        union wl_control_buffer control;
         struct iovec iov;
         struct msghdr message;
         ssize_t count;
 
         memset(&message, 0, sizeof(message));
-        memset(control, 0, sizeof(control));
+        memset(&control, 0, sizeof(control));
         iov.iov_base = cursor + done;
         iov.iov_len = size - done;
         message.msg_iov = &iov;
         message.msg_iovlen = 1u;
-        message.msg_control = control;
-        message.msg_controllen = sizeof(control);
+        message.msg_control = control.bytes;
+        message.msg_controllen = sizeof(control.bytes);
         count = recvmsg(display->fd, &message, MSG_CMSG_CLOEXEC);
         if (count < 0 && errno == EINTR)
             continue;
@@ -336,6 +362,31 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
     return proxy;
 }
 
+static struct wl_proxy *wl_proxy_allocate_server(
+    struct wl_display *display, size_t size,
+    const struct wl_interface *interface, uint32_t version, uint32_t id)
+{
+    struct wl_proxy *proxy;
+
+    if (!display || !interface || size < sizeof(*proxy) ||
+        id < 0xff000000u || wl_proxy_find(display, id)) {
+        errno = EPROTO;
+        return NULL;
+    }
+    proxy = calloc(1, size);
+    if (!proxy)
+        return NULL;
+    proxy->id = id;
+    proxy->version = version;
+    proxy->interface = interface;
+    proxy->display = display;
+    if (wl_proxy_store(display, proxy) < 0) {
+        free(proxy);
+        return NULL;
+    }
+    return proxy;
+}
+
 static int wl_send_words(struct wl_display *display, uint32_t object_id,
                          uint16_t opcode, const uint32_t *words,
                          size_t word_count)
@@ -364,7 +415,7 @@ static int wl_send_fd_words(struct wl_display *display, uint32_t object_id,
                             size_t word_count, int fd)
 {
     uint8_t message[WL_WIRE_HEADER_SIZE + 24u];
-    uint8_t control[CMSG_SPACE(sizeof(int))];
+    union wl_control_buffer control;
     struct cmsghdr *header;
     struct iovec iov;
     struct msghdr packet;
@@ -380,14 +431,14 @@ static int wl_send_fd_words(struct wl_display *display, uint32_t object_id,
     if (word_count)
         memcpy(message + WL_WIRE_HEADER_SIZE, words,
                word_count * sizeof(uint32_t));
-    memset(control, 0, sizeof(control));
+    memset(&control, 0, sizeof(control));
     memset(&packet, 0, sizeof(packet));
     iov.iov_base = message;
     iov.iov_len = size;
     packet.msg_iov = &iov;
     packet.msg_iovlen = 1u;
-    packet.msg_control = control;
-    packet.msg_controllen = sizeof(control);
+    packet.msg_control = control.bytes;
+    packet.msg_controllen = CMSG_SPACE(sizeof(int));
     header = CMSG_FIRSTHDR(&packet);
     header->cmsg_len = CMSG_LEN(sizeof(int));
     header->cmsg_level = SOL_SOCKET;
@@ -437,6 +488,76 @@ static int wl_send_string(struct wl_proxy *proxy, uint16_t opcode,
     return result;
 }
 
+static int wl_send_prefixed_string(struct wl_proxy *proxy, uint16_t opcode,
+                                   const uint32_t *words, size_t word_count,
+                                   const char *text, bool nullable, int fd)
+{
+    union wl_control_buffer control;
+    struct cmsghdr *header;
+    struct iovec iov;
+    struct msghdr packet;
+    uint8_t *message;
+    uint32_t text_size;
+    uint32_t padded;
+    uint32_t size;
+    uint32_t cursor;
+    ssize_t sent;
+    int result;
+
+    if (!proxy || word_count > 8u || (!text && !nullable) || fd < -1) {
+        errno = EINVAL;
+        return -1;
+    }
+    text_size = text ? (uint32_t)strlen(text) + 1u : 0u;
+    padded = wl_align_u32(text_size);
+    size = WL_WIRE_HEADER_SIZE + (uint32_t)word_count * 4u + 4u + padded;
+    if (size > WL_WIRE_MAX_MESSAGE) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    message = calloc(1, size);
+    if (!message)
+        return -1;
+    wl_store_u32(message, proxy->id);
+    wl_store_u32(message + 4u, (size << 16) | opcode);
+    cursor = WL_WIRE_HEADER_SIZE;
+    if (word_count) {
+        memcpy(message + cursor, words, word_count * sizeof(uint32_t));
+        cursor += (uint32_t)word_count * 4u;
+    }
+    wl_store_u32(message + cursor, text_size);
+    cursor += 4u;
+    if (text_size)
+        memcpy(message + cursor, text, text_size);
+    if (fd < 0) {
+        result = wl_write_full(proxy->display->fd, message, size);
+        free(message);
+        return result;
+    }
+    memset(&control, 0, sizeof(control));
+    memset(&packet, 0, sizeof(packet));
+    iov.iov_base = message;
+    iov.iov_len = size;
+    packet.msg_iov = &iov;
+    packet.msg_iovlen = 1u;
+    packet.msg_control = control.bytes;
+    packet.msg_controllen = CMSG_SPACE(sizeof(int));
+    header = CMSG_FIRSTHDR(&packet);
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(header), &fd, sizeof(fd));
+    do {
+        sent = sendmsg(proxy->display->fd, &packet, 0);
+    } while (sent < 0 && errno == EINTR);
+    free(message);
+    if (sent != (ssize_t)size) {
+        proxy->display->error = errno ? errno : EPIPE;
+        return -1;
+    }
+    return 0;
+}
+
 static int wl_decode_string(const uint8_t *payload, size_t size,
                             size_t *cursor, const char **text)
 {
@@ -454,6 +575,22 @@ static int wl_decode_string(const uint8_t *payload, size_t size,
     *text = (const char *)(payload + *cursor);
     *cursor += padded;
     return 0;
+}
+
+static int wl_decode_nullable_string(const uint8_t *payload, size_t size,
+                                     size_t *cursor, const char **text)
+{
+    uint32_t length;
+
+    if (!payload || !cursor || !text || *cursor + 4u > size)
+        return -1;
+    length = wl_load_u32(payload + *cursor);
+    if (length == 0u) {
+        *cursor += 4u;
+        *text = NULL;
+        return 0;
+    }
+    return wl_decode_string(payload, size, cursor, text);
 }
 
 static int wl_client_socket_path(const char *name, char *path, size_t size)
@@ -691,19 +828,19 @@ store_word:
     if (descriptor_count == 0u) {
         result = wl_write_full(display->fd, message, cursor);
     } else {
-        uint8_t control[CMSG_SPACE(sizeof(descriptors))];
+        union wl_control_buffer control;
         struct cmsghdr *header;
         struct iovec iov;
         struct msghdr packet;
         ssize_t sent;
 
-        memset(control, 0, sizeof(control));
+        memset(&control, 0, sizeof(control));
         memset(&packet, 0, sizeof(packet));
         iov.iov_base = message;
         iov.iov_len = cursor;
         packet.msg_iov = &iov;
         packet.msg_iovlen = 1u;
-        packet.msg_control = control;
+        packet.msg_control = control.bytes;
         packet.msg_controllen =
             CMSG_SPACE(descriptor_count * sizeof(descriptors[0]));
         header = CMSG_FIRSTHDR(&packet);
@@ -1260,6 +1397,134 @@ void wl_output_destroy(struct wl_output *output)
         wl_proxy_destroy(&output->proxy);
 }
 
+struct wl_data_source *wl_data_device_manager_create_data_source(
+    struct wl_data_device_manager *manager)
+{
+    if (!manager) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return (struct wl_data_source *)wl_create_object(
+        &manager->proxy, 0u, sizeof(struct wl_data_source),
+        &wl_data_source_interface);
+}
+
+struct wl_data_device *wl_data_device_manager_get_data_device(
+    struct wl_data_device_manager *manager, struct wl_seat *seat)
+{
+    struct wl_data_device *device;
+    uint32_t words[2];
+
+    if (!manager || !seat) {
+        errno = EINVAL;
+        return NULL;
+    }
+    device = (struct wl_data_device *)wl_proxy_allocate(
+        manager->proxy.display, sizeof(*device),
+        &wl_data_device_interface, manager->proxy.version);
+    if (!device)
+        return NULL;
+    words[0] = device->proxy.id;
+    words[1] = seat->proxy.id;
+    if (wl_send_words(manager->proxy.display, manager->proxy.id, 1u,
+                      words, 2u) < 0) {
+        wl_proxy_destroy(&device->proxy);
+        return NULL;
+    }
+    return device;
+}
+
+void wl_data_device_manager_destroy(struct wl_data_device_manager *manager)
+{
+    if (manager)
+        wl_proxy_destroy(&manager->proxy);
+}
+
+int wl_data_source_add_listener(
+    struct wl_data_source *source,
+    const struct wl_data_source_listener *listener, void *data)
+{
+    return wl_proxy_add_listener(&source->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void wl_data_source_offer(struct wl_data_source *source,
+                          const char *mime_type)
+{
+    if (source && mime_type)
+        (void)wl_send_string(&source->proxy, 0u, mime_type);
+}
+
+void wl_data_source_destroy(struct wl_data_source *source)
+{
+    if (!source)
+        return;
+    (void)wl_send_words(source->proxy.display, source->proxy.id, 1u,
+                        NULL, 0u);
+    wl_proxy_destroy(&source->proxy);
+}
+
+int wl_data_device_add_listener(
+    struct wl_data_device *device,
+    const struct wl_data_device_listener *listener, void *data)
+{
+    return wl_proxy_add_listener(&device->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void wl_data_device_set_selection(struct wl_data_device *device,
+                                  struct wl_data_source *source,
+                                  uint32_t serial)
+{
+    uint32_t words[2];
+
+    if (!device)
+        return;
+    words[0] = source ? source->proxy.id : 0u;
+    words[1] = serial;
+    (void)wl_send_words(device->proxy.display, device->proxy.id, 1u,
+                        words, 2u);
+}
+
+void wl_data_device_destroy(struct wl_data_device *device)
+{
+    if (device)
+        wl_proxy_destroy(&device->proxy);
+}
+
+int wl_data_offer_add_listener(
+    struct wl_data_offer *offer,
+    const struct wl_data_offer_listener *listener, void *data)
+{
+    return wl_proxy_add_listener(&offer->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void wl_data_offer_accept(struct wl_data_offer *offer, uint32_t serial,
+                          const char *mime_type)
+{
+    if (offer)
+        (void)wl_send_prefixed_string(&offer->proxy, 0u, &serial, 1u,
+                                      mime_type, true, -1);
+}
+
+void wl_data_offer_receive(struct wl_data_offer *offer,
+                           const char *mime_type, int32_t fd)
+{
+    if (offer && mime_type && fd >= 0)
+        (void)wl_send_prefixed_string(&offer->proxy, 1u, NULL, 0u,
+                                      mime_type, false, fd);
+}
+
+void wl_data_offer_destroy(struct wl_data_offer *offer)
+{
+    if (!offer)
+        return;
+    (void)wl_send_words(offer->proxy.display, offer->proxy.id, 2u,
+                        NULL, 0u);
+    wl_proxy_destroy(&offer->proxy);
+}
+
 int xdg_wm_base_add_listener(
     struct xdg_wm_base *xdg_wm_base,
     const struct xdg_wm_base_listener *listener, void *data)
@@ -1715,6 +1980,145 @@ static int wl_dispatch_surface_event(struct wl_proxy *proxy, uint16_t opcode,
     return 0;
 }
 
+static int wl_dispatch_data_source_event(struct wl_proxy *proxy,
+                                         uint16_t opcode,
+                                         const uint8_t *payload, size_t size)
+{
+    const struct wl_data_source_listener *listener =
+        (const struct wl_data_source_listener *)proxy->listener;
+    const char *mime_type;
+    size_t cursor = 0u;
+
+    if (opcode == 0u &&
+        wl_decode_nullable_string(payload, size, &cursor, &mime_type) == 0 &&
+        cursor == size) {
+        if (listener && listener->target)
+            listener->target(proxy->listener_data,
+                             (struct wl_data_source *)proxy, mime_type);
+        return 0;
+    }
+    if (opcode == 1u &&
+        wl_decode_string(payload, size, &cursor, &mime_type) == 0 &&
+        cursor == size) {
+        int fd = wl_display_take_fd(proxy->display);
+
+        if (fd < 0)
+            return -1;
+        if (listener && listener->send)
+            listener->send(proxy->listener_data,
+                           (struct wl_data_source *)proxy, mime_type, fd);
+        else
+            close(fd);
+        return 0;
+    }
+    if (opcode == 2u && size == 0u) {
+        if (listener && listener->cancelled)
+            listener->cancelled(proxy->listener_data,
+                                (struct wl_data_source *)proxy);
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_data_offer_event(struct wl_proxy *proxy,
+                                        uint16_t opcode,
+                                        const uint8_t *payload, size_t size)
+{
+    const struct wl_data_offer_listener *listener =
+        (const struct wl_data_offer_listener *)proxy->listener;
+    const char *mime_type;
+    size_t cursor = 0u;
+
+    if (opcode != 0u ||
+        wl_decode_string(payload, size, &cursor, &mime_type) < 0 ||
+        cursor != size)
+        return -1;
+    if (listener && listener->offer)
+        listener->offer(proxy->listener_data,
+                        (struct wl_data_offer *)proxy, mime_type);
+    return 0;
+}
+
+static int wl_dispatch_data_device_event(struct wl_proxy *proxy,
+                                         uint16_t opcode,
+                                         const uint8_t *payload, size_t size)
+{
+    const struct wl_data_device_listener *listener =
+        (const struct wl_data_device_listener *)proxy->listener;
+    struct wl_display *display = proxy->display;
+
+    if (opcode == 0u && size == 4u) {
+        struct wl_data_offer *offer =
+            (struct wl_data_offer *)wl_proxy_allocate_server(
+                display, sizeof(*offer), &wl_data_offer_interface,
+                proxy->version, wl_load_u32(payload));
+
+        if (!offer)
+            return -1;
+        if (listener && listener->data_offer)
+            listener->data_offer(proxy->listener_data,
+                                 (struct wl_data_device *)proxy, offer);
+        return 0;
+    }
+    if (opcode == 1u && size == 20u) {
+        struct wl_proxy *surface =
+            wl_proxy_find(display, wl_load_u32(payload + 4u));
+        uint32_t offer_id = wl_load_u32(payload + 16u);
+        struct wl_proxy *offer = offer_id ?
+            wl_proxy_find(display, offer_id) : NULL;
+
+        if (!surface || !wl_proxy_is(surface, &wl_surface_interface) ||
+            (offer_id && (!offer ||
+             !wl_proxy_is(offer, &wl_data_offer_interface))))
+            return -1;
+        if (listener && listener->enter)
+            listener->enter(proxy->listener_data,
+                            (struct wl_data_device *)proxy,
+                            wl_load_u32(payload),
+                            (struct wl_surface *)surface,
+                            (wl_fixed_t)wl_load_u32(payload + 8u),
+                            (wl_fixed_t)wl_load_u32(payload + 12u),
+                            (struct wl_data_offer *)offer);
+        return 0;
+    }
+    if (opcode == 2u && size == 0u) {
+        if (listener && listener->leave)
+            listener->leave(proxy->listener_data,
+                            (struct wl_data_device *)proxy);
+        return 0;
+    }
+    if (opcode == 3u && size == 12u) {
+        if (listener && listener->motion)
+            listener->motion(proxy->listener_data,
+                             (struct wl_data_device *)proxy,
+                             wl_load_u32(payload),
+                             (wl_fixed_t)wl_load_u32(payload + 4u),
+                             (wl_fixed_t)wl_load_u32(payload + 8u));
+        return 0;
+    }
+    if (opcode == 4u && size == 0u) {
+        if (listener && listener->drop)
+            listener->drop(proxy->listener_data,
+                           (struct wl_data_device *)proxy);
+        return 0;
+    }
+    if (opcode == 5u && size == 4u) {
+        uint32_t offer_id = wl_load_u32(payload);
+        struct wl_proxy *offer = offer_id ?
+            wl_proxy_find(display, offer_id) : NULL;
+
+        if (offer_id && (!offer ||
+            !wl_proxy_is(offer, &wl_data_offer_interface)))
+            return -1;
+        if (listener && listener->selection)
+            listener->selection(proxy->listener_data,
+                                (struct wl_data_device *)proxy,
+                                (struct wl_data_offer *)offer);
+        return 0;
+    }
+    return -1;
+}
+
 static int wl_dispatch_xdg_wm_base_event(struct wl_proxy *proxy,
                                          uint16_t opcode,
                                          const uint8_t *payload, size_t size)
@@ -1911,6 +2315,12 @@ int wl_display_dispatch(struct wl_display *display)
         result = wl_dispatch_output_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_surface_interface)) {
         result = wl_dispatch_surface_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_data_source_interface)) {
+        result = wl_dispatch_data_source_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_data_device_interface)) {
+        result = wl_dispatch_data_device_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_data_offer_interface)) {
+        result = wl_dispatch_data_offer_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &xdg_wm_base_interface)) {
         result = wl_dispatch_xdg_wm_base_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &xdg_surface_interface)) {

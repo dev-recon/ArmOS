@@ -31,6 +31,10 @@ struct wl_shm;
 struct wl_shm_pool;
 struct wl_buffer;
 struct wl_output;
+struct wl_data_device_manager;
+struct wl_data_source;
+struct wl_data_device;
+struct wl_data_offer;
 struct wl_seat;
 struct wl_pointer;
 struct wl_keyboard;
@@ -49,6 +53,10 @@ extern const struct wl_interface wl_seat_interface;
 extern const struct wl_interface wl_pointer_interface;
 extern const struct wl_interface wl_keyboard_interface;
 extern const struct wl_interface wl_output_interface;
+extern const struct wl_interface wl_data_device_manager_interface;
+extern const struct wl_interface wl_data_source_interface;
+extern const struct wl_interface wl_data_device_interface;
+extern const struct wl_interface wl_data_offer_interface;
 
 struct wl_registry_listener {
     void (*global)(void *data, struct wl_registry *registry, uint32_t name,
@@ -124,6 +132,34 @@ struct wl_output_listener {
                  int32_t width, int32_t height, int32_t refresh);
     void (*done)(void *data, struct wl_output *output);
     void (*scale)(void *data, struct wl_output *output, int32_t factor);
+};
+
+struct wl_data_source_listener {
+    void (*target)(void *data, struct wl_data_source *source,
+                   const char *mime_type);
+    void (*send)(void *data, struct wl_data_source *source,
+                 const char *mime_type, int32_t fd);
+    void (*cancelled)(void *data, struct wl_data_source *source);
+};
+
+struct wl_data_offer_listener {
+    void (*offer)(void *data, struct wl_data_offer *offer,
+                  const char *mime_type);
+};
+
+struct wl_data_device_listener {
+    void (*data_offer)(void *data, struct wl_data_device *device,
+                       struct wl_data_offer *offer);
+    void (*enter)(void *data, struct wl_data_device *device,
+                  uint32_t serial, struct wl_surface *surface,
+                  wl_fixed_t x, wl_fixed_t y,
+                  struct wl_data_offer *offer);
+    void (*leave)(void *data, struct wl_data_device *device);
+    void (*motion)(void *data, struct wl_data_device *device,
+                   uint32_t time, wl_fixed_t x, wl_fixed_t y);
+    void (*drop)(void *data, struct wl_data_device *device);
+    void (*selection)(void *data, struct wl_data_device *device,
+                      struct wl_data_offer *offer);
 };
 
 enum wl_shm_format {
@@ -257,5 +293,35 @@ int wl_output_add_listener(struct wl_output *output,
                            const struct wl_output_listener *listener,
                            void *data);
 void wl_output_destroy(struct wl_output *output);
+
+struct wl_data_source *wl_data_device_manager_create_data_source(
+    struct wl_data_device_manager *manager);
+struct wl_data_device *wl_data_device_manager_get_data_device(
+    struct wl_data_device_manager *manager, struct wl_seat *seat);
+void wl_data_device_manager_destroy(struct wl_data_device_manager *manager);
+
+int wl_data_source_add_listener(
+    struct wl_data_source *source,
+    const struct wl_data_source_listener *listener, void *data);
+void wl_data_source_offer(struct wl_data_source *source,
+                          const char *mime_type);
+void wl_data_source_destroy(struct wl_data_source *source);
+
+int wl_data_device_add_listener(
+    struct wl_data_device *device,
+    const struct wl_data_device_listener *listener, void *data);
+void wl_data_device_set_selection(struct wl_data_device *device,
+                                  struct wl_data_source *source,
+                                  uint32_t serial);
+void wl_data_device_destroy(struct wl_data_device *device);
+
+int wl_data_offer_add_listener(
+    struct wl_data_offer *offer,
+    const struct wl_data_offer_listener *listener, void *data);
+void wl_data_offer_accept(struct wl_data_offer *offer, uint32_t serial,
+                          const char *mime_type);
+void wl_data_offer_receive(struct wl_data_offer *offer,
+                           const char *mime_type, int32_t fd);
+void wl_data_offer_destroy(struct wl_data_offer *offer);
 
 #endif /* ARMOS_WAYLAND_CLIENT_PROTOCOL_H */

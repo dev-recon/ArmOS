@@ -23,6 +23,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,9 +89,10 @@ static int wl_server_accept_client(struct wl_server *server)
     memset(client, 0, sizeof(*client));
     client->used = true;
     client->fd = fd;
+    client->next_server_id = 0xff000000u;
     if (wl_client_add_object(client, WL_DISPLAY_ID, WL_SERVER_OBJECT_DISPLAY,
                              1u, NULL) < 0) {
-        wl_server_disconnect_client(client);
+        wl_server_disconnect_client(server, client);
         return -1;
     }
     return 0;
@@ -161,7 +163,7 @@ static int wl_server_run(struct wl_server *server)
                 continue;
             if ((events & POLLIN) == 0 ||
                 wl_server_receive_client(server, owners[index]) < 0) {
-                wl_server_disconnect_client(owners[index]);
+                wl_server_disconnect_client(server, owners[index]);
                 (void)wl_renderer_compose(server);
             }
         }
@@ -170,11 +172,12 @@ static int wl_server_run(struct wl_server *server)
 
 int main(int argc, char **argv)
 {
-    struct wl_server server;
+    static struct wl_server server;
     const char *socket_path = ARMOS_WLCOMP_SOCKET_PATH;
     bool headless = false;
     bool quiet = false;
 
+    (void)signal(SIGPIPE, SIG_IGN);
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--headless") == 0) {
             headless = true;

@@ -36,10 +36,12 @@ struct registry_state {
     unsigned int shm;
     unsigned int seat;
     unsigned int shell;
+    unsigned int data_device_manager;
     uint32_t compositor_name;
     uint32_t shm_name;
     uint32_t seat_name;
     uint32_t shell_name;
+    uint32_t data_device_manager_name;
     uint32_t output_name;
     unsigned int formats;
     unsigned int releases;
@@ -53,7 +55,14 @@ struct registry_state {
     unsigned int output_done;
     unsigned int output_scale;
     unsigned int surface_enters;
+    unsigned int clipboard_offers;
+    unsigned int clipboard_selections;
+    unsigned int clipboard_sends;
+    struct wl_data_offer *selection_offer;
 };
+
+static const char clipboard_mime[] = "text/plain;charset=utf-8";
+static const char clipboard_text[] = "ArmOS clipboard";
 
 static const struct wl_message generated_compositor_methods[] = {
     {"create_surface", "n", NULL},
@@ -97,6 +106,10 @@ static void registry_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, "xdg_wm_base") == 0) {
         state->shell++;
         state->shell_name = name;
+    }
+    if (strcmp(interface, "wl_data_device_manager") == 0) {
+        state->data_device_manager++;
+        state->data_device_manager_name = name;
     }
     if (strcmp(interface, "wl_output") == 0)
         state->output_name = name;
@@ -320,6 +333,117 @@ static void toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
     (void)xdg_toplevel;
 }
 
+static void data_source_target(void *data, struct wl_data_source *source,
+                               const char *mime_type)
+{
+    (void)data;
+    (void)source;
+    (void)mime_type;
+}
+
+static void data_source_send(void *data, struct wl_data_source *source,
+                             const char *mime_type, int32_t fd)
+{
+    struct registry_state *state = data;
+    size_t length = sizeof(clipboard_text);
+
+    (void)source;
+    if (strcmp(mime_type, clipboard_mime) == 0 &&
+        write(fd, clipboard_text, length) == (ssize_t)length)
+        state->clipboard_sends++;
+    close(fd);
+}
+
+static void data_source_cancelled(void *data, struct wl_data_source *source)
+{
+    (void)data;
+    (void)source;
+}
+
+static void data_offer_offer(void *data, struct wl_data_offer *offer,
+                             const char *mime_type)
+{
+    struct registry_state *state = data;
+
+    (void)offer;
+    if (strcmp(mime_type, clipboard_mime) == 0)
+        state->clipboard_offers++;
+}
+
+static void data_device_data_offer(void *data,
+                                   struct wl_data_device *device,
+                                   struct wl_data_offer *offer)
+{
+    static const struct wl_data_offer_listener listener = {
+        data_offer_offer
+    };
+
+    (void)device;
+    (void)wl_data_offer_add_listener(offer, &listener, data);
+}
+
+static void data_device_enter(void *data, struct wl_data_device *device,
+                              uint32_t serial, struct wl_surface *surface,
+                              wl_fixed_t x, wl_fixed_t y,
+                              struct wl_data_offer *offer)
+{
+    (void)data;
+    (void)device;
+    (void)serial;
+    (void)surface;
+    (void)x;
+    (void)y;
+    (void)offer;
+}
+
+static void data_device_leave(void *data, struct wl_data_device *device)
+{
+    (void)data;
+    (void)device;
+}
+
+static void data_device_motion(void *data, struct wl_data_device *device,
+                               uint32_t time, wl_fixed_t x, wl_fixed_t y)
+{
+    (void)data;
+    (void)device;
+    (void)time;
+    (void)x;
+    (void)y;
+}
+
+static void data_device_drop(void *data, struct wl_data_device *device)
+{
+    (void)data;
+    (void)device;
+}
+
+static void data_device_selection(void *data,
+                                  struct wl_data_device *device,
+                                  struct wl_data_offer *offer)
+{
+    struct registry_state *state = data;
+
+    (void)device;
+    state->selection_offer = offer;
+    state->clipboard_selections++;
+}
+
+static const struct wl_data_source_listener clipboard_source_listener = {
+    data_source_target,
+    data_source_send,
+    data_source_cancelled
+};
+
+static const struct wl_data_device_listener clipboard_device_listener = {
+    data_device_data_offer,
+    data_device_enter,
+    data_device_leave,
+    data_device_motion,
+    data_device_drop,
+    data_device_selection
+};
+
 static int test_registry(void)
 {
     static const struct wl_registry_listener listener = {
@@ -376,15 +500,25 @@ static int test_registry(void)
     struct wl_pointer *pointer = NULL;
     struct wl_keyboard *keyboard = NULL;
     struct wl_output *output = NULL;
+    struct wl_data_device_manager *data_device_manager = NULL;
+    struct wl_data_source *data_source = NULL;
+    struct wl_data_device *data_device = NULL;
     struct xdg_wm_base *wm_base = NULL;
     struct xdg_surface *xdg_surface = NULL;
     struct xdg_toplevel *xdg_toplevel = NULL;
     uint32_t *pixels = MAP_FAILED;
     char shm_name[48];
     int shm_fd = -1;
+    int clipboard_pipe[2] = { -1, -1 };
+    char clipboard_buffer[sizeof(clipboard_text)] = { 0 };
     int valid;
 
-    display = wl_display_connect(NULL);
+    for (unsigned int attempt = 0u; attempt < 100u; attempt++) {
+        display = wl_display_connect(NULL);
+        if (display || errno != ENOENT)
+            break;
+        usleep(10000u);
+    }
     if (!display) {
         perror("wayland-lib-test: connect");
         return 1;
@@ -398,8 +532,9 @@ static int test_registry(void)
         wl_display_disconnect(display);
         return 1;
     }
-    valid = state.globals == 5u && state.compositor == 1u &&
-        state.shm == 1u && state.seat == 1u && state.shell == 1u;
+    valid = state.globals == 6u && state.compositor == 1u &&
+        state.shm == 1u && state.seat == 1u && state.shell == 1u &&
+        state.data_device_manager == 1u;
     if (!valid)
         goto protocol_failed;
     compositor = wl_registry_bind(registry, state.compositor_name,
@@ -412,7 +547,11 @@ static int test_registry(void)
                                &xdg_wm_base_interface, 1u);
     output = wl_registry_bind(registry, state.output_name,
                               &wl_output_interface, 2u);
+    data_device_manager = wl_registry_bind(
+        registry, state.data_device_manager_name,
+        &wl_data_device_manager_interface, 1u);
     if (!compositor || !shm || !seat || !wm_base || !output ||
+        !data_device_manager ||
         wl_seat_add_listener(seat, &seat_listener, &state) < 0 ||
         wl_shm_add_listener(shm, &shm_listener, &state) < 0 ||
         wl_output_add_listener(output, &output_listener, &state) < 0 ||
@@ -420,9 +559,19 @@ static int test_registry(void)
         goto protocol_failed;
     pointer = wl_seat_get_pointer(seat);
     keyboard = wl_seat_get_keyboard(seat);
-    if (!pointer || !keyboard ||
+    data_source =
+        wl_data_device_manager_create_data_source(data_device_manager);
+    data_device =
+        wl_data_device_manager_get_data_device(data_device_manager, seat);
+    if (!pointer || !keyboard || !data_source || !data_device ||
+        wl_data_source_add_listener(data_source, &clipboard_source_listener,
+                                    &state) < 0 ||
+        wl_data_device_add_listener(data_device, &clipboard_device_listener,
+                                    &state) < 0 ||
         wl_keyboard_add_listener(keyboard, &keyboard_listener, &state) < 0)
         goto protocol_failed;
+    wl_data_source_offer(data_source, clipboard_mime);
+    wl_data_device_set_selection(data_device, data_source, 1u);
     surface = (struct wl_surface *)wl_proxy_marshal_flags(
         (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 1u, 0u,
         NULL);
@@ -472,13 +621,35 @@ static int test_registry(void)
         state.output_geometry != 1u || state.output_modes != 1u ||
         state.output_done != 1u || state.output_scale != 1u ||
         state.surface_enters != 1u ||
-        state.xdg_configures != 1u || state.toplevel_configures != 1u)
+        state.xdg_configures != 1u || state.toplevel_configures != 1u ||
+        state.clipboard_offers != 1u ||
+        state.clipboard_selections == 0u || !state.selection_offer)
         goto protocol_failed;
+    if (pipe(clipboard_pipe) < 0)
+        goto protocol_failed;
+    wl_data_offer_receive(state.selection_offer, clipboard_mime,
+                          clipboard_pipe[1]);
+    close(clipboard_pipe[1]);
+    clipboard_pipe[1] = -1;
+    if (wl_display_roundtrip(display) < 0 ||
+        read(clipboard_pipe[0], clipboard_buffer,
+             sizeof(clipboard_buffer)) !=
+            (ssize_t)sizeof(clipboard_buffer) ||
+        memcmp(clipboard_buffer, clipboard_text,
+               sizeof(clipboard_text)) != 0 ||
+        state.clipboard_sends != 1u)
+        goto protocol_failed;
+    close(clipboard_pipe[0]);
+    clipboard_pipe[0] = -1;
     for (unsigned int iteration = 0; iteration < 600u; iteration++) {
         if (wl_display_roundtrip(display) < 0)
             goto protocol_failed;
     }
 
+    wl_data_offer_destroy(state.selection_offer);
+    wl_data_device_destroy(data_device);
+    wl_data_source_destroy(data_source);
+    wl_data_device_manager_destroy(data_device_manager);
     wl_keyboard_destroy(keyboard);
     wl_pointer_destroy(pointer);
     wl_seat_destroy(seat);
@@ -495,17 +666,30 @@ static int test_registry(void)
     wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
-    printf("wayland-lib-test: registry, SHM, input and xdg-shell passed\n");
+    printf("wayland-lib-test: registry, SHM, input, clipboard and xdg-shell passed\n");
     return 0;
 
 protocol_failed:
     fprintf(stderr,
-            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u repeat=%u xdg=%u/%u)\n",
+            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u repeat=%u clipboard=%u/%u/%u xdg=%u/%u)\n",
             wl_display_get_error(display), errno,
             state.globals, state.formats, state.releases,
             (unsigned)state.seat_capabilities, state.keymaps,
-            state.repeat_info,
+            state.repeat_info, state.clipboard_offers,
+            state.clipboard_selections, state.clipboard_sends,
             state.xdg_configures, state.toplevel_configures);
+    if (clipboard_pipe[0] >= 0)
+        close(clipboard_pipe[0]);
+    if (clipboard_pipe[1] >= 0)
+        close(clipboard_pipe[1]);
+    if (state.selection_offer)
+        wl_data_offer_destroy(state.selection_offer);
+    if (data_device)
+        wl_data_device_destroy(data_device);
+    if (data_source)
+        wl_data_source_destroy(data_source);
+    if (data_device_manager)
+        wl_data_device_manager_destroy(data_device_manager);
     if (keyboard)
         wl_keyboard_destroy(keyboard);
     if (pointer)
@@ -537,6 +721,157 @@ protocol_failed:
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
     return 1;
+}
+
+static int test_clipboard(void)
+{
+    static const struct wl_registry_listener registry_listener = {
+        registry_global,
+        registry_global_remove
+    };
+    struct registry_state source_state = { 0 };
+    struct registry_state target_state = { 0 };
+    struct wl_display *source_display = NULL;
+    struct wl_display *target_display = NULL;
+    struct wl_registry *source_registry = NULL;
+    struct wl_registry *target_registry = NULL;
+    struct wl_data_device_manager *source_manager = NULL;
+    struct wl_data_device_manager *target_manager = NULL;
+    struct wl_data_source *source = NULL;
+    struct wl_data_device *source_device = NULL;
+    struct wl_data_device *target_device = NULL;
+    struct wl_seat *source_seat = NULL;
+    struct wl_seat *target_seat = NULL;
+    int transfer[2] = { -1, -1 };
+    char received[sizeof(clipboard_text)] = { 0 };
+    int source_error;
+    int target_error;
+    int saved_errno;
+    int result = 1;
+
+    for (unsigned int attempt = 0u; attempt < 100u; attempt++) {
+        source_display = wl_display_connect(NULL);
+        if (source_display || errno != ENOENT)
+            break;
+        usleep(10000u);
+    }
+    target_display = wl_display_connect(NULL);
+    if (!source_display || !target_display)
+        goto done;
+    source_registry = wl_display_get_registry(source_display);
+    target_registry = wl_display_get_registry(target_display);
+    if (!source_registry || !target_registry ||
+        wl_registry_add_listener(source_registry, &registry_listener,
+                                 &source_state) < 0 ||
+        wl_registry_add_listener(target_registry, &registry_listener,
+                                 &target_state) < 0 ||
+        wl_display_roundtrip(source_display) < 0 ||
+        wl_display_roundtrip(target_display) < 0 ||
+        source_state.data_device_manager != 1u ||
+        source_state.seat != 1u ||
+        target_state.data_device_manager != 1u ||
+        target_state.seat != 1u)
+        goto done;
+    source_manager = wl_registry_bind(
+        source_registry, source_state.data_device_manager_name,
+        &wl_data_device_manager_interface, 1u);
+    target_manager = wl_registry_bind(
+        target_registry, target_state.data_device_manager_name,
+        &wl_data_device_manager_interface, 1u);
+    source_seat = wl_registry_bind(source_registry, source_state.seat_name,
+                                   &wl_seat_interface, 1u);
+    target_seat = wl_registry_bind(target_registry, target_state.seat_name,
+                                   &wl_seat_interface, 1u);
+    source = source_manager ?
+        wl_data_device_manager_create_data_source(source_manager) : NULL;
+    source_device = source_manager && source_seat ?
+        wl_data_device_manager_get_data_device(source_manager,
+                                               source_seat) : NULL;
+    target_device = target_manager && target_seat ?
+        wl_data_device_manager_get_data_device(target_manager,
+                                               target_seat) : NULL;
+    if (!source_manager || !target_manager ||
+        !source_seat || !target_seat || !source ||
+        !source_device || !target_device ||
+        wl_data_source_add_listener(source, &clipboard_source_listener,
+                                    &source_state) < 0 ||
+        wl_data_device_add_listener(target_device,
+                                    &clipboard_device_listener,
+                                    &target_state) < 0)
+        goto done;
+    wl_data_source_offer(source, clipboard_mime);
+    wl_data_device_set_selection(source_device, source, 1u);
+    if (wl_display_roundtrip(source_display) < 0 ||
+        wl_display_roundtrip(target_display) < 0 ||
+        target_state.clipboard_offers != 1u ||
+        target_state.clipboard_selections == 0u ||
+        !target_state.selection_offer ||
+        pipe(transfer) < 0)
+        goto done;
+    wl_data_offer_receive(target_state.selection_offer, clipboard_mime,
+                          transfer[1]);
+    close(transfer[1]);
+    transfer[1] = -1;
+    if (wl_display_roundtrip(target_display) < 0 ||
+        wl_display_roundtrip(source_display) < 0 ||
+        read(transfer[0], received, sizeof(received)) !=
+            (ssize_t)sizeof(received) ||
+        memcmp(received, clipboard_text, sizeof(received)) != 0 ||
+        source_state.clipboard_sends != 1u)
+        goto done;
+    printf("wayland-lib-test: cross-client clipboard transfer passed\n");
+    result = 0;
+
+done:
+    source_error = source_display ?
+        wl_display_get_error(source_display) : 0;
+    target_error = target_display ?
+        wl_display_get_error(target_display) : 0;
+    saved_errno = errno;
+    if (transfer[0] >= 0)
+        close(transfer[0]);
+    if (transfer[1] >= 0)
+        close(transfer[1]);
+    if (target_state.selection_offer)
+        wl_data_offer_destroy(target_state.selection_offer);
+    if (target_device)
+        wl_data_device_destroy(target_device);
+    if (source_device)
+        wl_data_device_destroy(source_device);
+    if (source)
+        wl_data_source_destroy(source);
+    if (target_manager)
+        wl_data_device_manager_destroy(target_manager);
+    if (source_manager)
+        wl_data_device_manager_destroy(source_manager);
+    if (target_seat)
+        wl_seat_destroy(target_seat);
+    if (source_seat)
+        wl_seat_destroy(source_seat);
+    if (target_registry)
+        wl_registry_destroy(target_registry);
+    if (source_registry)
+        wl_registry_destroy(source_registry);
+    if (target_display)
+        wl_display_disconnect(target_display);
+    if (source_display)
+        wl_display_disconnect(source_display);
+    if (result != 0) {
+        fprintf(stderr,
+                "wayland-lib-test: clipboard transfer failed "
+                "(source_error=%d target_error=%d errno=%d "
+                "globals=%u/%u manager=%u/%u seat=%u/%u "
+                "offer=%u selection=%u send=%u)\n",
+                source_error, target_error, saved_errno,
+                source_state.globals, target_state.globals,
+                source_state.data_device_manager,
+                target_state.data_device_manager,
+                source_state.seat, target_state.seat,
+                target_state.clipboard_offers,
+                target_state.clipboard_selections,
+                source_state.clipboard_sends);
+    }
+    return result;
 }
 
 static int test_transport(void)
@@ -587,8 +922,11 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--registry") == 0)
         return test_registry();
+    if (argc == 2 && strcmp(argv[1], "--clipboard") == 0)
+        return test_clipboard();
     if (argc != 1) {
-        fprintf(stderr, "usage: wayland-lib-test [--registry]\n");
+        fprintf(stderr,
+                "usage: wayland-lib-test [--registry|--clipboard]\n");
         return 2;
     }
     return test_transport();
