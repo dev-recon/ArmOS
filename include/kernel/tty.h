@@ -101,6 +101,8 @@ struct tty_struct {
     const tty_backend_ops_t *backend;
     const tty_backend_ops_t *output_mirror;
     bool output_only;
+    bool (*virtual_putc)(void *context, char c);
+    void *virtual_context;
 
     /* Buffers circulaires */
     char input_buf[TTY_INPUT_BUF_SIZE];
@@ -206,6 +208,7 @@ void tty_input_char(char c);
 void tty_input_char_to_id(int tty_id, char c);
 bool tty_has_pending_output(void);
 void tty_drain_output(void);
+void tty_drain_output_for_id(int tty_id);
 bool tty_console_output_lock(unsigned long *flags);
 void tty_console_output_unlock(unsigned long flags);
 ssize_t tty_read(char *buf, size_t count);
@@ -257,5 +260,9 @@ int tty_id_from_device_path(const char* path);
 int tty_id_from_file(file_t* file);
 int tty_current_controlling_id(void);
 file_t* create_tty_console_file(const char* name, int flags);
+int tty_register_virtual(struct tty_struct *tty, int tty_id,
+                         bool (*putc)(void *context, char c),
+                         void *context);
+void tty_unregister_virtual(int tty_id);
 
 #endif

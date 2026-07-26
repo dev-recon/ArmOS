@@ -21,6 +21,9 @@
 
 #define TIOCGWINSZ 0x5413
 #define TIOCSWINSZ 0x5414
+#define TIOCSCTTY  0x540E
+#define TIOCGPTN   0x80045430u
+#define TIOCSPTLCK 0x40045431u
 
 struct winsize {
     unsigned short ws_row;

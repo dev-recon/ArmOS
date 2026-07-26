@@ -16,5 +16,9 @@
 #include_next <stdlib.h>
 
 const char *getprogname(void);
+int posix_openpt(int flags);
+int grantpt(int fd);
+int unlockpt(int fd);
+char *ptsname(int fd);
 
 #endif /* ARMOS_STDLIB_H */

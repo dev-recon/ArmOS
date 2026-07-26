@@ -35,6 +35,7 @@
 #include <kernel/net/control.h>
 #include <kernel/spinlock.h>
 #include <kernel/input.h>
+#include <kernel/pty.h>
 
 #define SYSCALL_IO_BOUNCE_SIZE     (64u * 1024u)
 #define SYSCALL_IO_BOUNCE_MIN_SIZE (4u * 1024u)
@@ -1014,6 +1015,24 @@ static int sys_open_resolved(task_t *task, char *full_path,
         return search_ret;
     }
 
+    if (pty_is_master_path(full_path)) {
+        fd = allocate_fd(task);
+        if (fd < 0) {
+            kfree(full_path);
+            return fd;
+        }
+        tty_file = pty_create_master_file(flags & ~O_CLOEXEC);
+        if (!tty_file) {
+            free_fd(task, fd);
+            kfree(full_path);
+            return -ENOSPC;
+        }
+        task->process->files[fd] = tty_file;
+        task->process->fd_flags[fd] = flags & O_CLOEXEC;
+        kfree(full_path);
+        return fd;
+    }
+
     if (is_tty_device_path(full_path)) {
         int tty_id = tty_id_from_device_path(full_path);
 
@@ -1040,7 +1059,8 @@ static int sys_open_resolved(task_t *task, char *full_path,
             strcmp(full_path, "/dev/tty") == 0 ? "tty" :
             strcmp(full_path, "/dev/console") == 0 ? "console" :
             strcmp(full_path, "/dev/tty1") == 0 ? "tty1" :
-            strcmp(full_path, "/dev/ttyS0") == 0 ? "ttyS0" : "tty0",
+            strcmp(full_path, "/dev/ttyS0") == 0 ? "ttyS0" :
+            pty_is_slave_path(full_path) ? full_path + 5u : "tty0",
             flags & ~O_CLOEXEC);
         if (!tty_file) {
             free_fd(task, fd);
@@ -1481,7 +1501,8 @@ file_t* create_file(void)
 
 bool file_is_tty(file_t* file)
 {
-    return file && file->type == FILE_TYPE_TTY;
+    return file && (file->type == FILE_TYPE_TTY ||
+                    file->type == FILE_TYPE_PTY_MASTER);
 }
 
 file_t* get_file(file_t* file)

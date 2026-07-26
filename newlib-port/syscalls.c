@@ -62,6 +62,9 @@
 #define CLOCK_MONOTONIC ((clockid_t)4)
 #endif
 
+#define ARMOS_TIOCGPTN   0x80045430u
+#define ARMOS_TIOCSPTLCK 0x40045431u
+
 extern long sys_read(int fd, void *buf, unsigned long count);
 extern long sys_write(int fd, const void *buf, unsigned long count);
 extern long sys_pread(int fd, void *buf, unsigned long count,
@@ -1645,6 +1648,40 @@ int ioctl(int fd, unsigned long request, ...)
     va_end(ap);
 
     return ret_errno(sys_ioctl(fd, request, arg));
+}
+
+int posix_openpt(int flags)
+{
+    return open("/dev/ptmx", flags);
+}
+
+int grantpt(int fd)
+{
+    int number;
+
+    return ioctl(fd, ARMOS_TIOCGPTN, &number);
+}
+
+int unlockpt(int fd)
+{
+    int unlocked = 0;
+
+    return ioctl(fd, ARMOS_TIOCSPTLCK, &unlocked);
+}
+
+char *ptsname(int fd)
+{
+    static char path[16];
+    int number;
+
+    if (ioctl(fd, ARMOS_TIOCGPTN, &number) < 0)
+        return NULL;
+    if (number < 0 || number > 7) {
+        errno = ENODEV;
+        return NULL;
+    }
+    snprintf(path, sizeof(path), "/dev/pts/%d", number);
+    return path;
 }
 
 int tcgetattr(int fd, void *termios_p)

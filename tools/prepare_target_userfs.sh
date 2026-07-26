@@ -56,6 +56,7 @@ fi
 mkdir -p \
     "$DEST_ROOT/bin" \
     "$DEST_ROOT/dev" \
+    "$DEST_ROOT/dev/pts" \
     "$DEST_ROOT/opt" \
     "$DEST_ROOT/sbin" \
     "$DEST_ROOT/tmp" \

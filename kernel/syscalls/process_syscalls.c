@@ -43,6 +43,7 @@
 #include <kernel/mount.h>
 #include <kernel/virtio_block.h>
 #include <kernel/input.h>
+#include <kernel/pty.h>
 
 #define PIPE_BUF_SIZE 4096
 
@@ -845,6 +846,9 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_INPUT)
         return armos_input_read_ready();
 
+    if (file->type == FILE_TYPE_PTY_MASTER)
+        return pty_master_read_ready(file);
+
     return file->f_op && file->f_op->read;
 }
 
@@ -862,6 +866,9 @@ static bool fd_write_ready(file_t *file)
 
     if (file->type == FILE_TYPE_ARMOS_SOCKET)
         return armos_socket_write_ready(file);
+
+    if (file->type == FILE_TYPE_PTY_MASTER)
+        return pty_master_write_ready(file);
 
     return file->f_op && file->f_op->write;
 }
@@ -960,6 +967,10 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     if (!file)
         return -EBADF;
 
+    if (file->type == FILE_TYPE_PTY_MASTER &&
+        (request == ARMOS_TIOCGPTN || request == ARMOS_TIOCSPTLCK))
+        return pty_master_ioctl(file, request, arg);
+
     tty_id = file_is_tty(file) ? tty_id_from_file(file) : -ENOTTY;
     if (file_is_tty(file) && tty_id < 0)
         return tty_id;
@@ -1033,6 +1044,12 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         return tty_set_winsize_for_id(tty_id, wsz.ws_row, wsz.ws_col,
                                       wsz.ws_xpixel, wsz.ws_ypixel);
+
+    case TIOCSCTTY:
+        if (!file_is_tty(file))
+            return -ENOTTY;
+        task->process->controlling_tty = tty_id;
+        return 0;
 
     case TCGETS:
         if (!file_is_tty(file))

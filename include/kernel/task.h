@@ -185,6 +185,7 @@ typedef enum file_type {
     FILE_TYPE_FRAMEBUFFER,
     FILE_TYPE_NETCTL,
     FILE_TYPE_INPUT,
+    FILE_TYPE_PTY_MASTER,
 } file_type_t;
 typedef struct inode_operations inode_operations_t;
 
