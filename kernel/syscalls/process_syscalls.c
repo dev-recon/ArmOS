@@ -1309,7 +1309,10 @@ int sys_getrlimit(int resource, armos_rlimit_t* limit)
 
     local.current = ARMOS_RLIM_INFINITY;
     local.maximum = ARMOS_RLIM_INFINITY;
-    if (resource == ARMOS_RLIMIT_NOFILE) {
+    if (resource == ARMOS_RLIMIT_STACK) {
+        local.current = USER_STACK_SIZE;
+        local.maximum = USER_STACK_SIZE;
+    } else if (resource == ARMOS_RLIMIT_NOFILE) {
         local.current = task->process->rlimit_nofile_cur;
         local.maximum = task->process->rlimit_nofile_max;
     }

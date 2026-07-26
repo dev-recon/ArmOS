@@ -18,6 +18,7 @@
 
 #include <kernel/power.h>
 #include <kernel/kprintf.h>
+#include <kernel/memory.h>
 #include <kernel/types.h>
 #include <kernel/task.h>
 #include <kernel/process.h>
@@ -93,18 +94,35 @@ static unsigned shutdown_collect_targets(task_t **targets, unsigned max_targets)
 
 static unsigned shutdown_count_live_targets(void)
 {
-    task_t *targets[MAX_TASKS];
+    task_t *task;
+    unsigned found = 0;
+    unsigned walked = 0;
+    unsigned long flags;
 
-    return shutdown_collect_targets(targets, MAX_TASKS);
+    spin_lock_irqsave(&task_lock, &flags);
+    task = task_list_head;
+    if (task) {
+        do {
+            if (shutdown_signal_target(task))
+                found++;
+            task = task->next;
+            walked++;
+        } while (task && task != task_list_head && walked < MAX_TASKS);
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
+    return found;
 }
 
 static unsigned shutdown_signal_targets(int sig)
 {
-    task_t *targets[MAX_TASKS];
+    task_t **targets;
     unsigned target_count;
     unsigned delivered = 0;
     unsigned i;
 
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return 0;
     target_count = shutdown_collect_targets(targets, MAX_TASKS);
 
     for (i = 0; i < target_count; i++) {
@@ -112,6 +130,7 @@ static unsigned shutdown_signal_targets(int sig)
             delivered++;
     }
 
+    kfree(targets);
     return delivered;
 }
 
@@ -135,11 +154,14 @@ static void shutdown_wait_for_targets(const char *phase, uint32_t grace_ms)
 
 static unsigned shutdown_force_terminate_targets(void)
 {
-    task_t *targets[MAX_TASKS];
+    task_t **targets;
     unsigned target_count;
     unsigned stopped = 0;
     unsigned i;
 
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return 0;
     target_count = shutdown_collect_targets(targets, MAX_TASKS);
 
     for (i = 0; i < target_count; i++) {
@@ -152,6 +174,7 @@ static unsigned shutdown_force_terminate_targets(void)
         }
     }
 
+    kfree(targets);
     return stopped;
 }
 

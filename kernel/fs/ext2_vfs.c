@@ -221,10 +221,13 @@ static void ext2_wait_finish(ext2_wait_queue_t* queue, task_t* task)
 static void ext2_wait_wake_all(ext2_wait_queue_t* queue)
 {
     unsigned long flags;
-    task_t* wake[MAX_TASKS];
+    task_t** wake;
     uint32_t wake_count = 0;
 
     if (!queue)
+        return;
+    wake = kmalloc(sizeof(*wake) * MAX_TASKS);
+    if (!wake)
         return;
 
     spin_lock_irqsave(&queue->lock, &flags);
@@ -244,6 +247,7 @@ static void ext2_wait_wake_all(ext2_wait_queue_t* queue)
     for (uint32_t i = 0; i < wake_count; i++) {
         task_wake(wake[i]);
     }
+    kfree(wake);
 }
 
 static bool ext2_op_try_acquire(void)

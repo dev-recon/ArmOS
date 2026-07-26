@@ -76,7 +76,8 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
 {
     const size_t word_size = sizeof(vaddr_t);
     const size_t alignment = ARCH_TASK_STACK_ALIGNMENT;
-    const vaddr_t stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
+    const vaddr_t stack_bottom =
+        USER_STACK_TOP - USER_STACK_SIZE + PAGE_SIZE;
     const vaddr_t stack_page = USER_STACK_TOP - PAGE_SIZE;
     vaddr_t *argv_addresses = NULL;
     vaddr_t *envp_addresses = NULL;
@@ -91,7 +92,7 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
     size_t vector_bytes;
     int index;
 
-    if (!vm || create_vma(vm, stack_bottom, USER_STACK_SIZE,
+    if (!vm || create_vma(vm, stack_bottom, USER_STACK_SIZE - PAGE_SIZE,
                           VMA_READ | VMA_WRITE) == NULL)
         return -1;
 

@@ -219,6 +219,8 @@ void idle_task_func(void* arg);
 void init_process_main(void* arg);
 static task_t* schedule_next_task(void);
 static bool task_stack_metadata_valid(task_t* task);
+static bool kstack_guard_valid(const task_t *task);
+static bool kstack_guard_fully_valid(const task_t *task);
 static bool task_is_schedulable(task_t* task);
 static bool runqueue_contains_locked(task_t* task);
 static bool runqueue_link_plausible_locked(task_t* task, uint32_t prio);
@@ -477,6 +479,11 @@ static bool task_stack_metadata_valid(task_t* task)
     if (task->stack_top != (uint8_t*)task->stack_base + task->stack_size) {
         KERROR("TASK: %s stack metadata inconsistent base=%p top=%p size=%u\n",
                task->name, task->stack_base, task->stack_top, task->stack_size);
+        return false;
+    }
+
+    if (!kstack_guard_valid(task)) {
+        KERROR("TASK: %s kernel stack guard corrupted\n", task->name);
         return false;
     }
 
@@ -876,16 +883,71 @@ void task_context_save_complete(task_context_t* ctx)
 
 #define KERNEL_TASK_STACK_PAGES \
     ((KERNEL_TASK_STACK_SIZE + PAGE_SIZE - 1) / PAGE_SIZE)
+#define KERNEL_TASK_STACK_GUARD_PAGES \
+    ((KERNEL_TASK_STACK_GUARD_SIZE + PAGE_SIZE - 1) / PAGE_SIZE)
+#define KERNEL_TASK_STACK_TOTAL_PAGES \
+    (KERNEL_TASK_STACK_GUARD_PAGES + KERNEL_TASK_STACK_PAGES)
+#define KERNEL_TASK_STACK_CANARY 0xA55A3CC3u
+
+static void kstack_guard_initialize(void *guard)
+{
+    uint32_t *words = guard;
+    size_t count = KERNEL_TASK_STACK_GUARD_SIZE / sizeof(*words);
+
+    for (size_t i = 0; i < count; i++)
+        words[i] = KERNEL_TASK_STACK_CANARY;
+}
+
+static bool kstack_guard_valid(const task_t *task)
+{
+    const uint32_t *words;
+    size_t count;
+
+    if (!task || !task->stack_base)
+        return false;
+    words = (const uint32_t *)((const uint8_t *)task->stack_base -
+                              KERNEL_TASK_STACK_GUARD_SIZE);
+    count = KERNEL_TASK_STACK_GUARD_SIZE / sizeof(*words);
+
+    /*
+     * Check the cache line immediately below the usable stack on every
+     * scheduling validation. The complete guard is checked when reclaimed.
+     */
+    for (size_t i = count - 16u; i < count; i++) {
+        if (words[i] != KERNEL_TASK_STACK_CANARY)
+            return false;
+    }
+    return true;
+}
+
+static bool kstack_guard_fully_valid(const task_t *task)
+{
+    const uint32_t *words;
+    size_t count;
+
+    if (!task || !task->stack_base)
+        return false;
+    words = (const uint32_t *)((const uint8_t *)task->stack_base -
+                              KERNEL_TASK_STACK_GUARD_SIZE);
+    count = KERNEL_TASK_STACK_GUARD_SIZE / sizeof(*words);
+    for (size_t i = 0; i < count; i++) {
+        if (words[i] != KERNEL_TASK_STACK_CANARY)
+            return false;
+    }
+    return true;
+}
 
 static void *kstack_alloc(void **out_phys)
 {
-    void *phys = allocate_pages(KERNEL_TASK_STACK_PAGES);
+    void *phys = allocate_pages(KERNEL_TASK_STACK_TOTAL_PAGES);
     void *virt;
 
     if (!phys)
         return NULL;
 
     virt = (void *)phys_to_virt((paddr_t)phys);
+    kstack_guard_initialize(virt);
+    virt = (uint8_t *)virt + KERNEL_TASK_STACK_GUARD_SIZE;
     memset(virt, 0, KERNEL_TASK_STACK_SIZE);
     if (out_phys)
         *out_phys = phys;
@@ -895,7 +957,7 @@ static void *kstack_alloc(void **out_phys)
 static void kstack_free(void *p)
 {
     if (p)
-        free_pages(p, KERNEL_TASK_STACK_PAGES);
+        free_pages(p, KERNEL_TASK_STACK_TOTAL_PAGES);
 }
 
 static bool task_alloc_kernel_stack(task_t *task)
@@ -909,7 +971,8 @@ static bool task_alloc_kernel_stack(task_t *task)
 
     task->stack_size = KERNEL_TASK_STACK_SIZE;
     task->stack_top = (uint8_t *)task->stack_base + task->stack_size;
-    kernel_lifecycle_stats.stack_pages_allocated += KERNEL_TASK_STACK_PAGES;
+    kernel_lifecycle_stats.stack_pages_allocated +=
+        KERNEL_TASK_STACK_TOTAL_PAGES;
     return true;
 }
 
@@ -918,12 +981,15 @@ void task_free_kernel_stack(task_t *task)
     if (!task || !task->stack_base)
         return;
 
+    if (!kstack_guard_fully_valid(task))
+        KERROR("TASK: %s kernel stack guard corrupted\n", task->name);
     kstack_free(task->stack_phys_base);
     task->stack_base = NULL;
     task->stack_top = NULL;
     task->stack_phys_base = NULL;
     task->stack_size = 0;
-    kernel_lifecycle_stats.stack_pages_freed += KERNEL_TASK_STACK_PAGES;
+    kernel_lifecycle_stats.stack_pages_freed +=
+        KERNEL_TASK_STACK_TOTAL_PAGES;
 }
 
 

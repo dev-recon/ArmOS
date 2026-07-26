@@ -690,7 +690,7 @@ static bool setup_signal_frame(task_t* proc, int sig, sigaction_t* action,
 int sys_kill(pid_t pid, int sig)
 {
     task_t* target;
-    task_t* targets[MAX_TASKS];
+    task_t** targets;
     uint32_t target_count = 0;
     int delivered = 0;
     
@@ -706,15 +706,22 @@ int sys_kill(pid_t pid, int sig)
         
         /* TODO: Verifier les permissions (uid, gid) */
         return send_signal(target, sig);
-        
-    } else if (pid == 0) {
+    }
+
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return -ENOMEM;
+
+    if (pid == 0) {
         task_t* caller;
         pid_t pgid;
         uint32_t i;
 
         caller = task_current_local();
-        if (!caller || caller->type != TASK_TYPE_PROCESS || !caller->process)
+        if (!caller || caller->type != TASK_TYPE_PROCESS || !caller->process) {
+            kfree(targets);
             return -EINVAL;
+        }
 
         pgid = caller->process->pgid;
         target_count = signal_collect_pgid_targets(pgid, targets, MAX_TASKS);
@@ -723,9 +730,6 @@ int sys_kill(pid_t pid, int sig)
             if (send_signal(targets[i], sig) == 0)
                 delivered++;
         }
-
-        return delivered ? 0 : -ESRCH;
-        
     } else {
         pid_t pgid = -pid;
         uint32_t i;
@@ -736,9 +740,10 @@ int sys_kill(pid_t pid, int sig)
             if (send_signal(targets[i], sig) == 0)
                 delivered++;
         }
-
-        return delivered ? 0 : -ESRCH;
     }
+
+    kfree(targets);
+    return delivered ? 0 : -ESRCH;
 }
 
 /**

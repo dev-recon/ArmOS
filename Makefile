@@ -107,6 +107,7 @@ CFLAGS = -std=gnu99 $(ARCH_CFLAGS) $(PLATFORM_CFLAGS) $(MATH_FLAGS) \
          -DARMOS_VERSION=\"$(ARMOS_VERSION)\" \
          -ffreestanding -nostdlib -nostartfiles -fno-inline \
          -Wall -Wextra -Werror -g -O0 -fno-omit-frame-pointer -Wformat -Wformat-security \
+         -Wframe-larger-than=8192 \
          -fno-builtin $(STACK_PROTECTOR_FLAG) -Wno-unused-function \
          -MMD -MP \
          -fno-pic -fno-pie \

@@ -380,7 +380,7 @@ void tty_console_output_unlock(unsigned long flags)
 static int tty_signal_process_group(pid_t pgid, int sig)
 {
     task_t* task;
-    task_t* targets[MAX_TASKS];
+    task_t** targets;
     uint32_t target_count = 0;
     uint32_t walked = 0;
     unsigned long flags;
@@ -389,11 +389,15 @@ static int tty_signal_process_group(pid_t pgid, int sig)
 
     if (pgid <= 0)
         return 0;
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return -ENOMEM;
 
     spin_lock_irqsave(&task_lock, &flags);
     task = task_list_head;
     if (!task) {
         spin_unlock_irqrestore(&task_lock, flags);
+        kfree(targets);
         return 0;
     }
 
@@ -417,6 +421,7 @@ static int tty_signal_process_group(pid_t pgid, int sig)
             delivered++;
     }
 
+    kfree(targets);
     return delivered;
 }
 

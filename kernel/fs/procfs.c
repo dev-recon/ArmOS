@@ -1132,10 +1132,15 @@ static const char* proc_syscall_name(uint32_t nr)
 
 static void proc_fill_sched_trace(char* buf, size_t cap, size_t* len)
 {
-    sched_trace_event_t events[SCHED_TRACE_SIZE];
+    sched_trace_event_t *events;
     uint32_t total = 0;
     uint32_t written = 0;
 
+    events = kmalloc(sizeof(*events) * SCHED_TRACE_SIZE);
+    if (!events) {
+        proc_append(buf, cap, len, "sched trace unavailable: out of memory\n");
+        return;
+    }
     sched_trace_snapshot(events, SCHED_TRACE_SIZE, &total, &written);
     proc_append(buf, cap, len,
                 "seq tick event pid tid state wake syscall current_pid current_tid current_syscall name current\n");
@@ -1164,6 +1169,7 @@ static void proc_fill_sched_trace(char* buf, size_t cap, size_t* len)
                     e->current_name);
     }
     proc_append(buf, cap, len, "total %u shown %u\n", total, written);
+    kfree(events);
 }
 
 static const char* proc_sched_pick_reason(uint32_t reason)

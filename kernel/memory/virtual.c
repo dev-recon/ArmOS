@@ -19,10 +19,34 @@
  *   reference accounting becomes split-aware.
  */
 
+#include <kernel/arch_barrier.h>
 #include <kernel/memory.h>
 #include <kernel/shm.h>
+#include <kernel/smp.h>
+#include <kernel/spinlock.h>
 #include <kernel/task.h>
+#include <kernel/tlb.h>
 #include <kernel/util.h>
+
+/*
+ * Page-table creation is not reentrant within one address space. Serialize
+ * demand faults so simultaneous pthread stack growth cannot race while
+ * installing intermediate translation tables.
+ */
+static spinlock_t vm_fault_lock = SPINLOCK_INIT("vm_fault");
+
+static void vm_fault_lock_acquire(void)
+{
+    /*
+     * Fault handlers can run with local IRQs masked. Service pending TLB
+     * rendezvous while contending, otherwise the lock owner may wait forever
+     * for this CPU's shootdown acknowledgement.
+     */
+    while (!spin_trylock(&vm_fault_lock)) {
+        tlb_handle_remote_ipi(smp_processor_id());
+        arch_cpu_relax();
+    }
+}
 
 static bool vm_range_overlaps(const vma_t *vma, vaddr_t start, vaddr_t end)
 {
@@ -391,28 +415,41 @@ static vm_space_t *current_user_vm(void)
 int handle_lazy_anon_fault(vaddr_t address, bool write)
 {
     vm_space_t *space = current_user_vm();
-    vma_t *vma = find_vma(space, address);
+    vma_t *vma;
     vaddr_t page_address = address & PAGE_MASK;
     void *page;
+    int result = 0;
 
-    if (!vma || !(vma->flags & VMA_LAZY))
+    if (!space)
         return -EINVAL;
+    vm_fault_lock_acquire();
+    vma = find_vma(space, address);
+    if (!vma || !(vma->flags & VMA_LAZY)) {
+        result = -EINVAL;
+        goto out;
+    }
     if ((write && !(vma->flags & VMA_WRITE)) ||
-        (!write && !(vma->flags & VMA_READ)))
-        return -EACCES;
+        (!write && !(vma->flags & VMA_READ))) {
+        result = -EACCES;
+        goto out;
+    }
     if (get_physical_address(space->pgdir, page_address) != 0)
-        return -EEXIST;
+        goto out;
 
     page = allocate_page();
-    if (!page)
-        return -ENOMEM;
+    if (!page) {
+        result = -ENOMEM;
+        goto out;
+    }
     if (map_user_page(space->pgdir, page_address,
                       (paddr_t)(uintptr_t)page, vma->flags,
                       space->asid) < 0) {
         free_page(page);
-        return -ENOMEM;
+        result = -ENOMEM;
     }
-    return 0;
+out:
+    spin_unlock(&vm_fault_lock);
+    return result;
 }
 
 int handle_user_stack_fault(vaddr_t address)
@@ -421,24 +458,33 @@ int handle_user_stack_fault(vaddr_t address)
     vma_t *vma;
     vaddr_t page_address;
     void *page;
+    int result = 0;
 
-    if (!space || address < USER_STACK_BOTTOM || address >= USER_STACK_TOP)
+    if (!space || address < USER_STACK_BOTTOM + PAGE_SIZE ||
+        address >= USER_STACK_TOP)
         return -EINVAL;
+    vm_fault_lock_acquire();
     vma = find_vma(space, address);
-    if (!vma || !(vma->flags & VMA_WRITE))
-        return -EACCES;
+    if (!vma || !(vma->flags & VMA_WRITE)) {
+        result = -EACCES;
+        goto out;
+    }
     page_address = address & PAGE_MASK;
     if (get_physical_address(space->pgdir, page_address) != 0)
-        return -EEXIST;
+        goto out;
 
     page = allocate_page();
-    if (!page)
-        return -ENOMEM;
+    if (!page) {
+        result = -ENOMEM;
+        goto out;
+    }
     if (map_user_page(space->pgdir, page_address,
                       (paddr_t)(uintptr_t)page, vma->flags,
                       space->asid) < 0) {
         free_page(page);
-        return -ENOMEM;
+        result = -ENOMEM;
     }
-    return 0;
+out:
+    spin_unlock(&vm_fault_lock);
+    return result;
 }

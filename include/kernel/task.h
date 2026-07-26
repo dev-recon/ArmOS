@@ -30,7 +30,8 @@ struct signal_state_t;
 struct file;
 
 /* Configuration */
-#define KERNEL_TASK_STACK_SIZE  (16 * 1024)    /* 16KB par tache */
+#define KERNEL_TASK_STACK_SIZE        (32 * 1024) /* 32 KiB usable per task */
+#define KERNEL_TASK_STACK_GUARD_SIZE  (4 * 1024)  /* Canary guard below stack */
 #define MAX_TASKS               1024             /* Maximum de taches vivantes */
 #define TASK_NAME_MAX           32              /* Longueur max du nom */
 #define MAX_SIGNALS             32

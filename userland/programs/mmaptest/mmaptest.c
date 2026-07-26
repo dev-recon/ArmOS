@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <arm_os_abi.h>
@@ -78,9 +79,15 @@ int main(void)
     int status = 0;
     void *thread_result = NULL;
     pthread_t thread;
+    struct rlimit stack_limit;
     pid_t pid;
 
     printf("mmaptest: anonymous private mapping smoke test\n");
+    if (getrlimit(RLIMIT_STACK, &stack_limit) < 0 ||
+        stack_limit.rlim_cur != 8u * 1024u * 1024u ||
+        stack_limit.rlim_max != 8u * 1024u * 1024u)
+        return fail("RLIMIT_STACK is not 8 MiB");
+    ok("RLIMIT_STACK reports 8 MiB");
 
     p = mmap(NULL, 8192, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
