@@ -325,7 +325,7 @@ static void test_shared_memory_descriptor_passing(void)
     volatile int *mapping = MAP_FAILED;
     pid_t child;
 
-    snprintf(name, sizeof(name), "socket-shm-%d", getpid());
+    snprintf(name, sizeof(name), "/socket-shm-%d", getpid());
     shm_unlink(name);
     if (expect(socketpair(AF_LOCAL, SOCK_STREAM, 0, pair) == 0,
                "shared buffer transfer socket", errno) < 0)
@@ -353,9 +353,12 @@ static void test_shared_memory_descriptor_passing(void)
     close(pair[1]);
     pair[1] = -1;
 
-    shared_fd = shm_open(name, 4096, SHM_O_CREAT | SHM_O_EXCL);
+    shared_fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (expect(shared_fd >= 0, "create descriptor-backed shared buffer",
                shared_fd) < 0)
+        goto wait_child;
+    if (expect(ftruncate(shared_fd, 4096) == 0,
+               "size descriptor-backed shared buffer", errno) < 0)
         goto wait_child;
     mapping = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                    MAP_SHARED, shared_fd, 0);

@@ -20,6 +20,7 @@
 
 #include <arm_os_abi.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -393,11 +394,13 @@ static int test_surface_roundtrip(int fd, bool interactive)
     int xdg_toplevel_configured = 0;
     int result = -1;
 
-    snprintf(shm_name, sizeof(shm_name), "wayland-test-%d", getpid());
+    snprintf(shm_name, sizeof(shm_name), "/wayland-test-%d", getpid());
     shm_unlink(shm_name);
-    shm_fd = shm_open(shm_name, TEST_SHM_SIZE,
-                      SHM_O_CREAT | SHM_O_EXCL);
+    shm_fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC,
+                      0600);
     if (shm_fd < 0)
+        goto out;
+    if (ftruncate(shm_fd, TEST_SHM_SIZE) < 0)
         goto out;
     mapping = mmap(NULL, TEST_SHM_SIZE, PROT_READ | PROT_WRITE,
                    MAP_SHARED, shm_fd, 0);

@@ -155,12 +155,7 @@ long syscall(long number, ...);
 void *sbrk(void *addr);
 int print(const char* msg);
 
-#define SHM_O_CREAT 0x01
-#define SHM_O_EXCL  0x02
-#define SHM_RDONLY  0x01
-#define SHM_RDWR    0x02
-
-int shm_open(const char *name, size_t size, int flags);
+int shm_open(const char *name, int oflag, mode_t mode);
 int shm_unlink(const char *name);
 void *shm_map(int id, void *addr, int flags);
 int shm_unmap(void *addr, size_t size);

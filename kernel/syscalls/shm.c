@@ -220,7 +220,7 @@ static file_operations_t shm_file_operations = {
     .truncate = shm_file_truncate,
 };
 
-static int shm_install_handle(shm_object_t *obj)
+static int shm_install_handle(shm_object_t *obj, int open_flags)
 {
     task_t *task = task_current_local();
     file_t *file;
@@ -245,14 +245,17 @@ static int shm_install_handle(shm_object_t *obj)
     }
     strcpy(file->name, "shm");
     file->type = FILE_TYPE_SHM;
-    file->flags = O_RDWR;
+    file->flags = (open_flags & ARMOS_SHM_OPEN_READONLY) != 0 ?
+        O_RDONLY : O_RDWR;
     file->f_op = &shm_file_operations;
     file->private_data = obj;
     inode->mode = S_IFREG | 0600;
     inode->size = obj->size;
     inode->f_op = &shm_file_operations;
     file->inode = inode;
-    fd = vfs_install_file(task, file, 0u);
+    fd = vfs_install_file(task, file,
+                          (open_flags & ARMOS_SHM_OPEN_CLOEXEC) != 0 ?
+                          O_CLOEXEC : 0u);
     if (fd < 0)
         close_file(file);
     return fd;
@@ -294,7 +297,17 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
         return -EFAULT;
     if (name[0] == '\0')
         return -EINVAL;
-    if (flags & ~(SHM_O_CREAT | SHM_O_EXCL))
+    if (flags & ~(ARMOS_SHM_OPEN_CREATE |
+                  ARMOS_SHM_OPEN_EXCLUSIVE |
+                  ARMOS_SHM_OPEN_READONLY |
+                  ARMOS_SHM_OPEN_CLOEXEC |
+                  ARMOS_SHM_OPEN_TRUNCATE))
+        return -EINVAL;
+    if ((flags & ARMOS_SHM_OPEN_EXCLUSIVE) != 0 &&
+        (flags & ARMOS_SHM_OPEN_CREATE) == 0)
+        return -EINVAL;
+    if ((flags & ARMOS_SHM_OPEN_TRUNCATE) != 0 &&
+        (flags & ARMOS_SHM_OPEN_READONLY) != 0)
         return -EINVAL;
 
     if (size > SHM_GLOBAL_MAX_BYTES)
@@ -305,7 +318,8 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
 
     obj = shm_find_by_name(name);
     if (obj) {
-        if ((flags & SHM_O_CREAT) && (flags & SHM_O_EXCL)) {
+        if ((flags & ARMOS_SHM_OPEN_CREATE) &&
+            (flags & ARMOS_SHM_OPEN_EXCLUSIVE)) {
             spin_unlock(&shm_lock);
             return -EEXIST;
         }
@@ -313,12 +327,19 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
             spin_unlock(&shm_lock);
             return -EINVAL;
         }
+        if ((flags & ARMOS_SHM_OPEN_TRUNCATE) != 0) {
+            result = shm_resize_locked(obj, 0);
+            if (result < 0) {
+                spin_unlock(&shm_lock);
+                return result;
+            }
+        }
         obj->handles++;
         spin_unlock(&shm_lock);
-        return shm_install_handle(obj);
+        return shm_install_handle(obj, flags);
     }
 
-    if (!(flags & SHM_O_CREAT)) {
+    if (!(flags & ARMOS_SHM_OPEN_CREATE)) {
         spin_unlock(&shm_lock);
         return -ENOENT;
     }
@@ -345,7 +366,7 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
 
     obj->handles = 1u;
     spin_unlock(&shm_lock);
-    return shm_install_handle(obj);
+    return shm_install_handle(obj, flags);
 }
 
 int sys_shm_unlink(const char *user_name)
@@ -476,9 +497,10 @@ void *sys_shm_map(int fd, void *addr, int flags)
 {
     uint32_t vma_flags = VMA_READ | VMA_SHARED;
 
-    if (flags != SHM_RDONLY && flags != SHM_RDWR)
+    if (flags != ARMOS_SHM_MAP_READONLY &&
+        flags != ARMOS_SHM_MAP_READWRITE)
         return (void *)-EINVAL;
-    if (flags == SHM_RDWR)
+    if (flags == ARMOS_SHM_MAP_READWRITE)
         vma_flags |= VMA_WRITE;
     return shm_map_fd(fd, addr, 0u, vma_flags);
 }

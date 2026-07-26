@@ -40,6 +40,7 @@
 #include <armos/thread.h>
 #include <uapi/armos/file.h>
 #include <uapi/armos/resource.h>
+#include <uapi/armos/shm.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/syscall.h>
 #include <uapi/armos/time.h>
@@ -2542,9 +2543,36 @@ _sig_func_ptr signal(int sig, _sig_func_ptr handler)
     return _signal_r(NULL, sig, handler);
 }
 
-int shm_open(const char *name, size_t size, int flags)
+int shm_open(const char *name, int oflag, mode_t mode)
 {
-    return ret_errno(sys_shm_open(name, size, flags));
+    int access_mode = oflag & O_ACCMODE;
+    int armos_flags = 0;
+
+    (void)mode;
+    if (access_mode != O_RDONLY && access_mode != O_RDWR) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((oflag & ~(O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC |
+                   O_CLOEXEC)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((oflag & O_EXCL) != 0 && (oflag & O_CREAT) == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (access_mode == O_RDONLY)
+        armos_flags |= ARMOS_SHM_OPEN_READONLY;
+    if ((oflag & O_CREAT) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_CREATE;
+    if ((oflag & O_EXCL) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_EXCLUSIVE;
+    if ((oflag & O_CLOEXEC) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_CLOEXEC;
+    if ((oflag & O_TRUNC) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_TRUNCATE;
+    return ret_errno(sys_shm_open(name, 0, armos_flags));
 }
 
 int shm_unlink(const char *name)

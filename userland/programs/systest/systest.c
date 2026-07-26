@@ -2113,11 +2113,16 @@ static void test_shared_memory(void)
     int waited;
     volatile int *shared;
 
-    snprintf(name, sizeof(name), "systest-shm-%d", getpid());
+    snprintf(name, sizeof(name), "/systest-shm-%d", getpid());
     shm_unlink(name);
-    id = shm_open(name, 4096, SHM_O_CREAT | SHM_O_EXCL);
+    id = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (expect(id >= 0, "shm create", id) < 0)
         return;
+    if (expect(ftruncate(id, 4096) == 0, "shm initial ftruncate", errno) < 0) {
+        close(id);
+        shm_unlink(name);
+        return;
+    }
 
     shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                   MAP_SHARED, id, 0);
@@ -2164,12 +2169,14 @@ static void test_growable_shared_memory(void)
     char name[40];
     int fd;
 
-    snprintf(name, sizeof(name), "systest-shm-grow-%d", getpid());
+    snprintf(name, sizeof(name), "/systest-shm-grow-%d", getpid());
     shm_unlink(name);
     memset(&st, 0, sizeof(st));
-    fd = shm_open(name, 0, SHM_O_CREAT | SHM_O_EXCL);
+    fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
     if (expect(fd >= 0, "shm create empty growable object", fd) < 0)
         return;
+    expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0,
+           "POSIX shm_open close-on-exec", errno);
 
     if (expect(ftruncate(fd, (off_t)initial_size) == 0,
                "shm ftruncate grows object to 16 MiB", errno) < 0)

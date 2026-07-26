@@ -21,16 +21,12 @@
 
 #include <kernel/types.h>
 #include <kernel/memory.h>
+#include <uapi/armos/shm.h>
 
-#define SHM_NAME_MAX          32
+#define SHM_NAME_MAX          64
 #define SHM_MAX_OBJECTS       32
 #define SHM_GLOBAL_MAX_BYTES  (256u * 1024u * 1024u)
 #define SHM_GLOBAL_MAX_PAGES  (SHM_GLOBAL_MAX_BYTES / PAGE_SIZE)
-
-#define SHM_O_CREAT         0x01
-#define SHM_O_EXCL          0x02
-#define SHM_RDONLY          0x01
-#define SHM_RDWR            0x02
 
 int sys_shm_open(const char *name, size_t size, int flags);
 int sys_shm_unlink(const char *name);

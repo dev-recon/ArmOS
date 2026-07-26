@@ -10,6 +10,7 @@ else
 ARCH ?= arm-none-eabi-
 endif
 CC := $(ARCH)gcc
+AR := $(ARCH)ar
 STRIP := $(ARCH)strip
 ARMOS_SOURCE_ROOT := $(abspath ..)
 ARMOS_REPRODUCIBLE_ROOT ?= /usr/src/armos
@@ -24,12 +25,14 @@ OUT_DIR := $(BUILD_DIR)/out
 OUT_BIN := $(OUT_DIR)/bin
 OUT_SBIN := $(OUT_DIR)/sbin
 OUT_USR_BIN := $(OUT_DIR)/usr/bin
+OUT_USR_LIB := $(OUT_DIR)/usr/lib
 OUT_OPT := $(OUT_DIR)/opt
 NEWLIB_PORT := ../newlib-port
 USERFS_ROOT ?= $(TARGET_BUILD_ROOT)/userfs
 USERFS_BIN := $(USERFS_ROOT)/bin
 USERFS_SBIN := $(USERFS_ROOT)/sbin
 USERFS_USR_BIN := $(USERFS_ROOT)/usr/bin
+USERFS_USR_LIB := $(USERFS_ROOT)/usr/lib
 USERFS_OPT := $(USERFS_ROOT)/opt
 
 ifeq ($(TARGET_ARCH),arm64)
@@ -81,6 +84,9 @@ PROGRAMS := $(filter-out hello64,$(PROGRAMS))
 # armos-wlcomp is a privileged system service installed in /sbin.
 PROGRAMS := $(filter-out armos-wlcomp,$(PROGRAMS))
 
+# Linked explicitly against both native Wayland libraries below.
+PROGRAMS := $(filter-out wayland-lib-test,$(PROGRAMS))
+
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
 
@@ -113,6 +119,15 @@ HELLO64_SRCS := $(wildcard programs/hello64/*.c)
 HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64/%.o,$(HELLO64_SRCS))
 ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
 ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
+WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
+WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
+WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
+WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
+WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY)
+WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
+WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
+
+TARGETS += $(WAYLAND_LIBRARIES) $(WAYLAND_API_TEST_TARGET)
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
@@ -160,6 +175,24 @@ $(BUILD_DIR)/programs/%.o: programs/%.c | $(BUILD_DIR)
 $(BUILD_DIR)/opt/%.o: opt/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/wayland/%.o: lib/wayland/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_SERVER_LIBRARY): $(WAYLAND_SERVER_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_API_TEST_TARGET): newlib-port $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
+		$(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
@@ -218,7 +251,7 @@ $(OUT_BIN)/%: newlib-port $(BUILD_DIR)/coreutils/%.o
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(BUILD_DIR)/coreutils/$*.o "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 install: $(TARGETS)
-	mkdir -p $(USERFS_BIN) $(USERFS_SBIN) $(USERFS_USR_BIN) $(USERFS_OPT)
+	mkdir -p $(USERFS_BIN) $(USERFS_SBIN) $(USERFS_USR_BIN) $(USERFS_USR_LIB) $(USERFS_OPT)
 	rm -rf $(USERFS_ROOT)/opt/newlib
 	rm -f $(USERFS_USR_BIN)/hello64
 	# xvprobe is an optional local-only binary; never retain one from another target.
@@ -262,6 +295,10 @@ install: $(TARGETS)
 		rm -f $(USERFS_BIN)/$$name $(USERFS_SBIN)/$$name $(USERFS_USR_BIN)/$$name; \
 		$(STRIP) --strip-all $(USERFS_OPT)/$$name/bin/$$name; \
 	done
+	cp $(WAYLAND_CLIENT_LIBRARY) $(USERFS_USR_LIB)/libwayland-client.a
+	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
+	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
 
 clean:
 	rm -rf $(BUILD_DIR)
