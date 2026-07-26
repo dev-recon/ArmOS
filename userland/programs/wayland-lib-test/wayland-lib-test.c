@@ -905,6 +905,8 @@ done:
 struct server_loop_test_state {
     int pipe_events;
     int accepted;
+    int timer_events;
+    int idle_events;
 };
 
 static int server_pipe_event(int fd, uint32_t mask, void *data)
@@ -931,6 +933,21 @@ static int server_accept_event(int fd, uint32_t mask, void *data)
     close(accepted);
     state->accepted++;
     return -1;
+}
+
+static int server_timer_event(void *data)
+{
+    struct server_loop_test_state *state = data;
+
+    state->timer_events++;
+    return -1;
+}
+
+static void server_idle_event(void *data)
+{
+    struct server_loop_test_state *state = data;
+
+    state->idle_events++;
 }
 
 static int test_transport(void)
@@ -961,6 +978,14 @@ static int test_transport(void)
         write(pipe_fds[1], "x", 1u) != 1 ||
         wl_event_loop_dispatch(event_loop, 1000) != 1 ||
         loop_state.pipe_events != 1 ||
+        wl_event_loop_dispatch(event_loop, 0) != 0)
+        goto transport_failed;
+    source = wl_event_loop_add_timer(event_loop, server_timer_event,
+                                     &loop_state);
+    if (!source || wl_event_source_timer_update(source, 0) < 0 ||
+        !wl_event_loop_add_idle(event_loop, server_idle_event, &loop_state) ||
+        wl_event_loop_dispatch(event_loop, 1000) != 2 ||
+        loop_state.timer_events != 1 || loop_state.idle_events != 1 ||
         wl_event_loop_dispatch(event_loop, 0) != 0)
         goto transport_failed;
     close(pipe_fds[0]);

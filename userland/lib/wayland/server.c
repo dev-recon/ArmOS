@@ -27,16 +27,30 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
+
+enum wl_event_source_type {
+    WL_EVENT_SOURCE_FD,
+    WL_EVENT_SOURCE_TIMER,
+    WL_EVENT_SOURCE_IDLE
+};
 
 struct wl_event_source {
     struct wl_event_loop *loop;
     struct wl_event_source *next;
+    enum wl_event_source_type type;
     int fd;
     uint32_t mask;
-    wl_event_loop_fd_func_t func;
+    union {
+        wl_event_loop_fd_func_t fd;
+        wl_event_loop_timer_func_t timer;
+        wl_event_loop_idle_func_t idle;
+    } func;
     void *data;
+    uint64_t deadline_ms;
+    bool armed;
     bool removed;
 };
 
@@ -70,6 +84,33 @@ static void wl_event_loop_cleanup(struct wl_event_loop *loop)
         source->loop = NULL;
         free(source);
     }
+}
+
+static uint64_t wl_event_loop_now_ms(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return 0u;
+    return (uint64_t)now.tv_sec * 1000u +
+        (uint64_t)now.tv_nsec / 1000000u;
+}
+
+static struct wl_event_source *wl_event_source_create(
+    struct wl_event_loop *loop, enum wl_event_source_type type, void *data)
+{
+    struct wl_event_source *source;
+
+    source = calloc(1, sizeof(*source));
+    if (!source)
+        return NULL;
+    source->loop = loop;
+    source->type = type;
+    source->fd = -1;
+    source->data = data;
+    source->next = loop->sources;
+    loop->sources = source;
+    return source;
 }
 
 static int wl_server_socket_path(const char *name, char *path, size_t size)
@@ -183,16 +224,12 @@ struct wl_event_source *wl_event_loop_add_fd(
         errno = EINVAL;
         return NULL;
     }
-    source = calloc(1, sizeof(*source));
+    source = wl_event_source_create(loop, WL_EVENT_SOURCE_FD, data);
     if (!source)
         return NULL;
-    source->loop = loop;
     source->fd = fd;
     source->mask = mask;
-    source->func = func;
-    source->data = data;
-    source->next = loop->sources;
-    loop->sources = source;
+    source->func.fd = func;
     return source;
 }
 
@@ -208,6 +245,54 @@ int wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask)
     }
     source->mask = mask;
     return 0;
+}
+
+struct wl_event_source *wl_event_loop_add_timer(
+    struct wl_event_loop *loop, wl_event_loop_timer_func_t func, void *data)
+{
+    struct wl_event_source *source;
+
+    if (!loop || !func) {
+        errno = EINVAL;
+        return NULL;
+    }
+    source = wl_event_source_create(loop, WL_EVENT_SOURCE_TIMER, data);
+    if (!source)
+        return NULL;
+    source->func.timer = func;
+    return source;
+}
+
+int wl_event_source_timer_update(struct wl_event_source *source, int ms_delay)
+{
+    uint64_t now;
+
+    if (!source || !source->loop || source->removed ||
+        source->type != WL_EVENT_SOURCE_TIMER || ms_delay < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    now = wl_event_loop_now_ms();
+    source->deadline_ms = now + (uint64_t)ms_delay;
+    source->armed = true;
+    return 0;
+}
+
+struct wl_event_source *wl_event_loop_add_idle(
+    struct wl_event_loop *loop, wl_event_loop_idle_func_t func, void *data)
+{
+    struct wl_event_source *source;
+
+    if (!loop || !func) {
+        errno = EINVAL;
+        return NULL;
+    }
+    source = wl_event_source_create(loop, WL_EVENT_SOURCE_IDLE, data);
+    if (!source)
+        return NULL;
+    source->func.idle = func;
+    source->armed = true;
+    return source;
 }
 
 int wl_event_source_remove(struct wl_event_source *source)
@@ -258,26 +343,46 @@ int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout)
     size_t index = 0u;
     int ready;
     int dispatched = 0;
+    uint64_t now;
 
     if (!loop || timeout < -1) {
         errno = EINVAL;
         return -1;
     }
+    now = wl_event_loop_now_ms();
     for (source = loop->sources; source; source = source->next) {
-        if (!source->removed)
-            count++;
-    }
-    if (count == 0u)
-        return poll(NULL, 0u, timeout);
-    descriptors = calloc(count, sizeof(*descriptors));
-    sources = calloc(count, sizeof(*sources));
-    if (!descriptors || !sources) {
-        free(descriptors);
-        free(sources);
-        return -1;
-    }
-    for (source = loop->sources; source; source = source->next) {
+        int timer_timeout;
+
         if (source->removed)
+            continue;
+        if (source->type == WL_EVENT_SOURCE_FD) {
+            count++;
+            continue;
+        }
+        if (source->type == WL_EVENT_SOURCE_IDLE && source->armed) {
+            timeout = 0;
+            continue;
+        }
+        if (source->type != WL_EVENT_SOURCE_TIMER || !source->armed)
+            continue;
+        timer_timeout = source->deadline_ms <= now ? 0 :
+            (int)(source->deadline_ms - now);
+        if (timeout < 0 || timer_timeout < timeout)
+            timeout = timer_timeout;
+    }
+    descriptors = NULL;
+    sources = NULL;
+    if (count != 0u) {
+        descriptors = calloc(count, sizeof(*descriptors));
+        sources = calloc(count, sizeof(*sources));
+        if (!descriptors || !sources) {
+            free(descriptors);
+            free(sources);
+            return -1;
+        }
+    }
+    for (source = loop->sources; source; source = source->next) {
+        if (source->removed || source->type != WL_EVENT_SOURCE_FD)
             continue;
         descriptors[index].fd = source->fd;
         descriptors[index].events = wl_event_poll_mask(source->mask);
@@ -285,26 +390,46 @@ int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout)
         index++;
     }
     ready = poll(descriptors, count, timeout);
-    if (ready <= 0) {
+    if (ready < 0) {
         free(sources);
         free(descriptors);
         return ready;
     }
 
     loop->dispatch_depth++;
-    for (index = 0u; index < count; index++) {
-        uint32_t mask;
+    if (ready > 0) {
+        for (index = 0u; index < count; index++) {
+            uint32_t mask;
 
-        source = sources[index];
-        if (!source || source->removed || descriptors[index].revents == 0)
+            source = sources[index];
+            if (!source || source->removed ||
+                descriptors[index].revents == 0)
+                continue;
+            mask = wl_event_callback_mask(descriptors[index].revents) &
+                (source->mask | WL_EVENT_HANGUP | WL_EVENT_ERROR);
+            if (mask == 0u)
+                continue;
+            if (source->func.fd(source->fd, mask, source->data) < 0)
+                source->removed = true;
+            dispatched++;
+        }
+    }
+    now = wl_event_loop_now_ms();
+    for (source = loop->sources; source; source = source->next) {
+        if (source->removed || !source->armed)
             continue;
-        mask = wl_event_callback_mask(descriptors[index].revents) &
-            (source->mask | WL_EVENT_HANGUP | WL_EVENT_ERROR);
-        if (mask == 0u)
-            continue;
-        if (source->func(source->fd, mask, source->data) < 0)
+        if (source->type == WL_EVENT_SOURCE_TIMER &&
+            source->deadline_ms <= now) {
+            source->armed = false;
+            if (source->func.timer(source->data) < 0)
+                source->removed = true;
+            dispatched++;
+        } else if (source->type == WL_EVENT_SOURCE_IDLE) {
+            source->armed = false;
+            source->func.idle(source->data);
             source->removed = true;
-        dispatched++;
+            dispatched++;
+        }
     }
     loop->dispatch_depth--;
     wl_event_loop_cleanup(loop);

@@ -37,6 +37,8 @@ enum wl_event_loop_fd_mask {
 };
 
 typedef int (*wl_event_loop_fd_func_t)(int fd, uint32_t mask, void *data);
+typedef int (*wl_event_loop_timer_func_t)(void *data);
+typedef void (*wl_event_loop_idle_func_t)(void *data);
 
 struct wl_display *wl_display_create(void);
 void wl_display_destroy(struct wl_display *display);
@@ -50,6 +52,11 @@ struct wl_event_source *wl_event_loop_add_fd(
     struct wl_event_loop *loop, int fd, uint32_t mask,
     wl_event_loop_fd_func_t func, void *data);
 int wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask);
+struct wl_event_source *wl_event_loop_add_timer(
+    struct wl_event_loop *loop, wl_event_loop_timer_func_t func, void *data);
+int wl_event_source_timer_update(struct wl_event_source *source, int ms_delay);
+struct wl_event_source *wl_event_loop_add_idle(
+    struct wl_event_loop *loop, wl_event_loop_idle_func_t func, void *data);
 int wl_event_source_remove(struct wl_event_source *source);
 int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout);
 
