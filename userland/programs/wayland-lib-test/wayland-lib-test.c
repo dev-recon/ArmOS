@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -511,6 +512,7 @@ static int test_registry(void)
     int shm_fd = -1;
     int clipboard_pipe[2] = { -1, -1 };
     char clipboard_buffer[sizeof(clipboard_text)] = { 0 };
+    struct pollfd wayland_poll;
     int valid;
 
     for (unsigned int attempt = 0u; attempt < 100u; attempt++) {
@@ -525,13 +527,32 @@ static int test_registry(void)
     }
     registry = wl_display_get_registry(display);
     if (!registry ||
-        wl_registry_add_listener(registry, &listener, &state) < 0 ||
-        wl_display_roundtrip(display) < 0) {
+        wl_registry_add_listener(registry, &listener, &state) < 0) {
         perror("wayland-lib-test: registry");
         wl_registry_destroy(registry);
         wl_display_disconnect(display);
         return 1;
     }
+    if (wl_display_prepare_read(display) < 0)
+        goto protocol_failed;
+    wl_display_cancel_read(display);
+    if (wl_display_prepare_read(display) < 0)
+        goto protocol_failed;
+    wayland_poll.fd = wl_display_get_fd(display);
+    wayland_poll.events = POLLIN;
+    wayland_poll.revents = 0;
+    if (poll(&wayland_poll, 1u, 1000) <= 0 ||
+        !(wayland_poll.revents & POLLIN) ||
+        wl_display_read_events(display) < 0) {
+        wl_display_cancel_read(display);
+        goto protocol_failed;
+    }
+    errno = 0;
+    if (wl_display_prepare_read(display) == 0 || errno != EAGAIN)
+        goto protocol_failed;
+    if (wl_display_dispatch_pending(display) <= 0 ||
+        wl_display_roundtrip(display) < 0)
+        goto protocol_failed;
     valid = state.globals == 6u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u &&
         state.data_device_manager == 1u;
