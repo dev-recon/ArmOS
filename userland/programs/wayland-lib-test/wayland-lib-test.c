@@ -902,11 +902,45 @@ done:
     return result;
 }
 
+struct server_loop_test_state {
+    int pipe_events;
+    int accepted;
+};
+
+static int server_pipe_event(int fd, uint32_t mask, void *data)
+{
+    struct server_loop_test_state *state = data;
+    char byte;
+
+    if ((mask & WL_EVENT_READABLE) == 0u || read(fd, &byte, 1u) != 1)
+        return -1;
+    state->pipe_events++;
+    return -1;
+}
+
+static int server_accept_event(int fd, uint32_t mask, void *data)
+{
+    struct server_loop_test_state *state = data;
+    int accepted;
+
+    if ((mask & WL_EVENT_READABLE) == 0u)
+        return -1;
+    accepted = accept(fd, NULL, NULL);
+    if (accepted < 0)
+        return -1;
+    close(accepted);
+    state->accepted++;
+    return -1;
+}
+
 static int test_transport(void)
 {
     struct wl_display *server;
+    struct wl_event_loop *event_loop;
+    struct wl_event_source *source;
+    struct server_loop_test_state loop_state = { 0 };
     char path[64];
-    int accepted;
+    int pipe_fds[2] = { -1, -1 };
     int status;
     pid_t child;
 
@@ -916,6 +950,28 @@ static int test_transport(void)
         perror("wayland-lib-test: server");
         return 1;
     }
+    event_loop = wl_display_get_event_loop(server);
+    if (!event_loop || pipe(pipe_fds) < 0)
+        goto transport_failed;
+    source = wl_event_loop_add_fd(event_loop, pipe_fds[0],
+                                  WL_EVENT_READABLE,
+                                  server_pipe_event, &loop_state);
+    if (!source ||
+        wl_event_source_fd_update(source, WL_EVENT_READABLE) < 0 ||
+        write(pipe_fds[1], "x", 1u) != 1 ||
+        wl_event_loop_dispatch(event_loop, 1000) != 1 ||
+        loop_state.pipe_events != 1 ||
+        wl_event_loop_dispatch(event_loop, 0) != 0)
+        goto transport_failed;
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    pipe_fds[0] = -1;
+    pipe_fds[1] = -1;
+    source = wl_event_loop_add_fd(
+        event_loop, wl_display_get_server_fd(server), WL_EVENT_READABLE,
+        server_accept_event, &loop_state);
+    if (!source)
+        goto transport_failed;
 
     child = fork();
     if (child == 0) {
@@ -928,22 +984,32 @@ static int test_transport(void)
         _exit(valid ? 0 : 2);
     }
     if (child < 0) {
-        wl_display_destroy(server);
-        return 1;
+        goto transport_failed;
     }
 
-    accepted = accept(wl_display_get_server_fd(server), NULL, NULL);
-    if (accepted >= 0)
-        close(accepted);
+    if (wl_event_loop_dispatch(event_loop, 1000) != 1)
+        goto child_failed;
     waitpid(child, &status, 0);
     wl_display_destroy(server);
 
-    if (accepted < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (loop_state.accepted != 1 ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         fprintf(stderr, "wayland-lib-test: transport failed\n");
         return 1;
     }
     printf("wayland-lib-test: client/server transport passed\n");
     return 0;
+
+child_failed:
+    waitpid(child, &status, 0);
+transport_failed:
+    if (pipe_fds[0] >= 0)
+        close(pipe_fds[0]);
+    if (pipe_fds[1] >= 0)
+        close(pipe_fds[1]);
+    wl_display_destroy(server);
+    fprintf(stderr, "wayland-lib-test: server event loop failed\n");
+    return 1;
 }
 
 int main(int argc, char **argv)
