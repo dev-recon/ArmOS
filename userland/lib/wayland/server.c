@@ -159,6 +159,9 @@ static int wl_registry_resource_dispatch(
     const void *implementation, void *target, uint32_t opcode,
     const struct wl_message *message, union wl_argument *arguments);
 static int wl_display_accept_event(int fd, uint32_t mask, void *data);
+static int wl_resource_implementation_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments);
 static int wl_resource_send_message(struct wl_client *client,
                                     const uint8_t *message, size_t size,
                                     const int *fds, size_t fd_count);
@@ -797,6 +800,7 @@ void wl_resource_set_implementation(
 {
     if (!resource || resource->destroying)
         return;
+    resource->dispatcher = wl_resource_implementation_dispatch;
     resource->implementation = implementation;
     resource->data = data;
     resource->destroy = destroy;
@@ -899,6 +903,165 @@ static const char *wl_signature_next(const char *signature)
     if (*signature == '?')
         signature++;
     return signature;
+}
+
+typedef void (*wl_implementation_method_t)(void);
+
+static int wl_resource_implementation_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments)
+{
+    struct wl_resource *resource = target;
+    struct wl_client *client = wl_resource_get_client(resource);
+    wl_implementation_method_t method;
+    uintptr_t values[12] = { 0u };
+    const char *signature;
+    size_t count = 0u;
+
+    if (!implementation || !resource || !client || !message) {
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(&method,
+           (const uint8_t *)implementation +
+               opcode * sizeof(wl_implementation_method_t),
+           sizeof(method));
+    if (!method) {
+        errno = EPROTO;
+        return -1;
+    }
+    signature = message->signature;
+    while (signature && *signature) {
+        if (count >= sizeof(values) / sizeof(values[0])) {
+            errno = E2BIG;
+            return -1;
+        }
+        signature = wl_signature_next(signature);
+        switch (*signature) {
+        case 'i':
+            values[count] = (uintptr_t)(uint32_t)arguments[count].i;
+            break;
+        case 'u':
+            values[count] = arguments[count].u;
+            break;
+        case 'f':
+            values[count] = (uintptr_t)(uint32_t)arguments[count].f;
+            break;
+        case 's':
+            values[count] = (uintptr_t)arguments[count].s;
+            break;
+        case 'o':
+            values[count] = (uintptr_t)arguments[count].o;
+            break;
+        case 'n':
+            values[count] = arguments[count].n;
+            break;
+        case 'a':
+            values[count] = (uintptr_t)arguments[count].a;
+            break;
+        case 'h':
+            values[count] = (uintptr_t)(uint32_t)arguments[count].h;
+            break;
+        case '\0':
+            continue;
+        default:
+            errno = EPROTO;
+            return -1;
+        }
+        count++;
+        signature++;
+    }
+    switch (count) {
+    case 0u:
+        ((void (*)(struct wl_client *, struct wl_resource *))method)(
+            client, resource);
+        break;
+    case 1u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t))method)(client, resource, values[0]);
+        break;
+    case 2u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1]);
+        break;
+    case 3u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2]);
+        break;
+    case 4u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3]);
+        break;
+    case 5u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4]);
+        break;
+    case 6u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5]);
+        break;
+    case 7u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6]);
+        break;
+    case 8u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6], values[7]);
+        break;
+    case 9u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6], values[7], values[8]);
+        break;
+    case 10u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6], values[7], values[8], values[9]);
+        break;
+    case 11u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6], values[7], values[8], values[9],
+            values[10]);
+        break;
+    case 12u:
+        ((void (*)(struct wl_client *, struct wl_resource *,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t,
+                   uintptr_t, uintptr_t, uintptr_t, uintptr_t))method)(
+            client, resource, values[0], values[1], values[2], values[3],
+            values[4], values[5], values[6], values[7], values[8], values[9],
+            values[10], values[11]);
+        break;
+    default:
+        errno = E2BIG;
+        return -1;
+    }
+    return 0;
 }
 
 static int wl_client_decode_request(struct wl_client *client,

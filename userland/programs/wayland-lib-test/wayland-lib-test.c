@@ -927,6 +927,11 @@ struct server_loop_test_state {
 static const int server_resource_implementation;
 static const int server_dispatch_implementation;
 
+struct server_test_implementation {
+    void (*request)(struct wl_client *client, struct wl_resource *resource,
+                    uint32_t value, const char *text, int32_t fd);
+};
+
 static int server_pipe_event(int fd, uint32_t mask, void *data)
 {
     struct server_loop_test_state *state = data;
@@ -1006,6 +1011,25 @@ static int server_request_dispatch(
     state->request_dispatches++;
     return 0;
 }
+
+static void server_generated_request(
+    struct wl_client *client, struct wl_resource *resource,
+    uint32_t value, const char *text, int32_t fd)
+{
+    struct server_loop_test_state *state =
+        wl_resource_get_user_data(resource);
+    char byte;
+
+    if (client == wl_resource_get_client(resource) && value == 77u &&
+        text && strcmp(text, "request") == 0 &&
+        read(fd, &byte, 1u) == 1 && byte == 'r')
+        state->request_dispatches++;
+    close(fd);
+}
+
+static const struct server_test_implementation server_generated_implementation = {
+    .request = server_generated_request
+};
 
 static int server_test_send_request(int peer_fd, uint32_t object_id)
 {
@@ -1198,6 +1222,14 @@ static int test_transport(void)
                                      wl_resource_get_id(event_resource)) < 0 ||
             wl_event_loop_dispatch(event_loop, 1000) != 1 ||
             loop_state.request_dispatches != 1)
+            goto transport_failed;
+        wl_resource_set_implementation(
+            new_resource, &server_generated_implementation,
+            &loop_state, NULL);
+        if (server_test_send_request(
+                object_fds[1], wl_resource_get_id(new_resource)) < 0 ||
+            wl_event_loop_dispatch(event_loop, 1000) != 1 ||
+            loop_state.request_dispatches != 2)
             goto transport_failed;
         wl_resource_destroy(resource);
         if (loop_state.resource_destroys != 1 ||
