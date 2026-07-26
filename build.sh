@@ -36,6 +36,10 @@ enable_complete_userland_build()
     BUILD_EPOLL_SHIM=1
     BUILD_PIXMAN=1
     BUILD_TLLIST=1
+    BUILD_UTF8PROC=1
+    BUILD_FREETYPE=1
+    BUILD_EXPAT=1
+    BUILD_FONTCONFIG=1
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -67,6 +71,10 @@ BUILD_NANO="${BUILD_NANO:-0}"
 BUILD_EPOLL_SHIM="${BUILD_EPOLL_SHIM:-0}"
 BUILD_PIXMAN="${BUILD_PIXMAN:-0}"
 BUILD_TLLIST="${BUILD_TLLIST:-0}"
+BUILD_UTF8PROC="${BUILD_UTF8PROC:-0}"
+BUILD_FREETYPE="${BUILD_FREETYPE:-0}"
+BUILD_EXPAT="${BUILD_EXPAT:-0}"
+BUILD_FONTCONFIG="${BUILD_FONTCONFIG:-0}"
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -248,6 +256,34 @@ if [ "$BUILD_TLLIST" = "1" ]; then
     WORK_DIR="$TARGET_BUNDLES/tllist" ARCH="$ARCH" \
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_tllist.sh
     rsync -a "$TARGET_BUNDLES/tllist/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_UTF8PROC" = "1" ]; then
+    echo "=== Building utf8proc Unicode bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/utf8proc" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_utf8proc.sh
+    rsync -a "$TARGET_BUNDLES/utf8proc/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FREETYPE" = "1" ]; then
+    echo "=== Building FreeType font rasterizer bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/freetype" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_freetype.sh
+    rsync -a "$TARGET_BUNDLES/freetype/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_EXPAT" = "1" ]; then
+    echo "=== Building Expat XML parser bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/expat" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_expat.sh
+    rsync -a "$TARGET_BUNDLES/expat/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FONTCONFIG" = "1" ]; then
+    echo "=== Building Fontconfig font discovery bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/fontconfig" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_fontconfig.sh
+    rsync -a "$TARGET_BUNDLES/fontconfig/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

@@ -2660,6 +2660,20 @@ int futimens(int fd, const struct timespec times[2])
     return ret_errno(sys_futimens(fd, copy_utimens_times(times, os_times)));
 }
 
+int utimes(const char *pathname, const struct timeval times[2])
+{
+    struct timespec converted[2];
+    int i;
+
+    if (!times)
+        return utimensat(AT_FDCWD, pathname, NULL, 0);
+    for (i = 0; i < 2; i++) {
+        converted[i].tv_sec = times[i].tv_sec;
+        converted[i].tv_nsec = times[i].tv_usec * 1000L;
+    }
+    return utimensat(AT_FDCWD, pathname, converted, 0);
+}
+
 int mknod(const char *pathname, mode_t mode, unsigned long dev)
 {
     return ret_errno(sys_mknod(pathname, (int)mode, dev));

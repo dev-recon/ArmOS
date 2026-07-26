@@ -149,6 +149,10 @@ BUILD_BSD=no
 BUILD_NCURSES=no
 BUILD_NANO=no
 BUILD_EPOLL_SHIM=no
+BUILD_UTF8PROC=no
+BUILD_FREETYPE=no
+BUILD_EXPAT=no
+BUILD_FONTCONFIG=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -156,8 +160,14 @@ BUILD_FBVIEW=no
 `BUILD_NANO=yes` requires either `BUILD_NCURSES=yes` or an ncurses bundle
 already installed in `userfs`. `BUILD_EPOLL_SHIM=yes` installs the common
 poll-backed epoll compatibility library and its regression test for ports such
-as Foot. `BUILD_ALL_USERLAND=yes` enables the complete third-party toolchain
-and graphics dependency set already handled by `build.sh`.
+as Foot. `BUILD_UTF8PROC=yes` installs the Unicode normalization and grapheme
+library used by Foot and its font stack. `BUILD_FREETYPE=yes` installs the
+FreeType rasterizer, the Meslo terminal font and its target-side regression
+test. `BUILD_EXPAT=yes` installs the XML parser needed by Fontconfig.
+`BUILD_FONTCONFIG=yes` installs font discovery and the generic monospace
+policy used by Foot. `BUILD_ALL_USERLAND=yes` enables the
+complete third-party toolchain and graphics dependency set already handled by
+`build.sh`.
 
 The repository intentionally shares one `userfs` source tree between ARM32
 and ARM64 builds. Before rebuilding, `build.sh` checks every installed ELF.
