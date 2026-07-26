@@ -60,6 +60,13 @@ struct wl_callback {
     struct wl_proxy proxy;
 };
 
+struct wl_compositor { struct wl_proxy proxy; };
+struct wl_surface { struct wl_proxy proxy; };
+struct wl_region { struct wl_proxy proxy; };
+struct wl_shm { struct wl_proxy proxy; };
+struct wl_shm_pool { struct wl_proxy proxy; };
+struct wl_buffer { struct wl_proxy proxy; };
+
 const struct wl_interface wl_display_interface = {
     "wl_display", 1, 2, NULL, 2, NULL
 };
@@ -70,6 +77,30 @@ const struct wl_interface wl_registry_interface = {
 
 const struct wl_interface wl_callback_interface = {
     "wl_callback", 1, 0, NULL, 1, NULL
+};
+
+const struct wl_interface wl_compositor_interface = {
+    "wl_compositor", 1, 2, NULL, 0, NULL
+};
+
+const struct wl_interface wl_surface_interface = {
+    "wl_surface", 1, 7, NULL, 2, NULL
+};
+
+const struct wl_interface wl_region_interface = {
+    "wl_region", 1, 3, NULL, 0, NULL
+};
+
+const struct wl_interface wl_shm_interface = {
+    "wl_shm", 1, 1, NULL, 1, NULL
+};
+
+const struct wl_interface wl_shm_pool_interface = {
+    "wl_shm_pool", 1, 3, NULL, 0, NULL
+};
+
+const struct wl_interface wl_buffer_interface = {
+    "wl_buffer", 1, 1, NULL, 1, NULL
 };
 
 static uint32_t wl_load_u32(const uint8_t *data)
@@ -156,7 +187,7 @@ static int wl_send_words(struct wl_display *display, uint32_t object_id,
                          uint16_t opcode, const uint32_t *words,
                          size_t word_count)
 {
-    uint8_t message[WL_WIRE_HEADER_SIZE + 16u];
+    uint8_t message[WL_WIRE_HEADER_SIZE + 64u];
     size_t size = WL_WIRE_HEADER_SIZE + word_count * sizeof(uint32_t);
 
     if (!display || display->fd < 0 || size > sizeof(message)) {
@@ -169,6 +200,50 @@ static int wl_send_words(struct wl_display *display, uint32_t object_id,
         memcpy(message + WL_WIRE_HEADER_SIZE, words,
                word_count * sizeof(uint32_t));
     if (wl_write_full(display->fd, message, size) < 0) {
+        display->error = errno ? errno : EPIPE;
+        return -1;
+    }
+    return 0;
+}
+
+static int wl_send_fd_words(struct wl_display *display, uint32_t object_id,
+                            uint16_t opcode, const uint32_t *words,
+                            size_t word_count, int fd)
+{
+    uint8_t message[WL_WIRE_HEADER_SIZE + 24u];
+    uint8_t control[CMSG_SPACE(sizeof(int))];
+    struct cmsghdr *header;
+    struct iovec iov;
+    struct msghdr packet;
+    size_t size = WL_WIRE_HEADER_SIZE + word_count * sizeof(uint32_t);
+    ssize_t sent;
+
+    if (!display || display->fd < 0 || fd < 0 || size > sizeof(message)) {
+        errno = EINVAL;
+        return -1;
+    }
+    wl_store_u32(message, object_id);
+    wl_store_u32(message + 4u, ((uint32_t)size << 16) | opcode);
+    if (word_count)
+        memcpy(message + WL_WIRE_HEADER_SIZE, words,
+               word_count * sizeof(uint32_t));
+    memset(control, 0, sizeof(control));
+    memset(&packet, 0, sizeof(packet));
+    iov.iov_base = message;
+    iov.iov_len = size;
+    packet.msg_iov = &iov;
+    packet.msg_iovlen = 1u;
+    packet.msg_control = control;
+    packet.msg_controllen = sizeof(control);
+    header = CMSG_FIRSTHDR(&packet);
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(header), &fd, sizeof(fd));
+    do {
+        sent = sendmsg(display->fd, &packet, 0);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != (ssize_t)size) {
         display->error = errno ? errno : EPIPE;
         return -1;
     }
@@ -455,6 +530,262 @@ void wl_callback_destroy(struct wl_callback *callback)
         wl_proxy_destroy(&callback->proxy);
 }
 
+static struct wl_proxy *wl_create_object(struct wl_proxy *factory,
+                                         uint16_t opcode, size_t size,
+                                         const struct wl_interface *interface)
+{
+    struct wl_proxy *proxy;
+    uint32_t id;
+
+    if (!factory || !(proxy = wl_proxy_allocate(factory->display, size,
+                                                 interface, 1u)))
+        return NULL;
+    id = proxy->id;
+    if (wl_send_words(factory->display, factory->id, opcode, &id, 1u) < 0) {
+        wl_proxy_destroy(proxy);
+        return NULL;
+    }
+    return proxy;
+}
+
+struct wl_surface *wl_compositor_create_surface(
+    struct wl_compositor *compositor)
+{
+    return (struct wl_surface *)wl_create_object(
+        &compositor->proxy, 0u, sizeof(struct wl_surface),
+        &wl_surface_interface);
+}
+
+struct wl_region *wl_compositor_create_region(
+    struct wl_compositor *compositor)
+{
+    return (struct wl_region *)wl_create_object(
+        &compositor->proxy, 1u, sizeof(struct wl_region),
+        &wl_region_interface);
+}
+
+void wl_compositor_destroy(struct wl_compositor *compositor)
+{
+    if (compositor)
+        wl_proxy_destroy(&compositor->proxy);
+}
+
+int wl_shm_add_listener(struct wl_shm *shm,
+                        const struct wl_shm_listener *listener, void *data)
+{
+    return wl_proxy_add_listener(&shm->proxy, (void (**)(void))listener,
+                                 data);
+}
+
+struct wl_shm_pool *wl_shm_create_pool(struct wl_shm *shm, int fd,
+                                       int32_t size)
+{
+    struct wl_shm_pool *pool;
+    uint32_t words[2];
+
+    if (!shm || fd < 0 || size <= 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    pool = (struct wl_shm_pool *)wl_proxy_allocate(
+        shm->proxy.display, sizeof(*pool), &wl_shm_pool_interface, 1u);
+    if (!pool)
+        return NULL;
+    words[0] = pool->proxy.id;
+    words[1] = (uint32_t)size;
+    if (wl_send_fd_words(shm->proxy.display, shm->proxy.id, 0u, words, 2u,
+                         fd) < 0) {
+        wl_proxy_destroy(&pool->proxy);
+        return NULL;
+    }
+    return pool;
+}
+
+void wl_shm_destroy(struct wl_shm *shm)
+{
+    if (shm)
+        wl_proxy_destroy(&shm->proxy);
+}
+
+struct wl_buffer *wl_shm_pool_create_buffer(struct wl_shm_pool *pool,
+                                             int32_t offset, int32_t width,
+                                             int32_t height, int32_t stride,
+                                             uint32_t format)
+{
+    struct wl_buffer *buffer;
+    uint32_t words[6];
+
+    if (!pool || offset < 0 || width <= 0 || height <= 0 || stride <= 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    buffer = (struct wl_buffer *)wl_proxy_allocate(
+        pool->proxy.display, sizeof(*buffer), &wl_buffer_interface, 1u);
+    if (!buffer)
+        return NULL;
+    words[0] = buffer->proxy.id;
+    words[1] = (uint32_t)offset;
+    words[2] = (uint32_t)width;
+    words[3] = (uint32_t)height;
+    words[4] = (uint32_t)stride;
+    words[5] = format;
+    if (wl_send_words(pool->proxy.display, pool->proxy.id, 0u, words, 6u)
+        < 0) {
+        wl_proxy_destroy(&buffer->proxy);
+        return NULL;
+    }
+    return buffer;
+}
+
+void wl_shm_pool_resize(struct wl_shm_pool *pool, int32_t size)
+{
+    uint32_t word = (uint32_t)size;
+
+    if (pool && size > 0)
+        (void)wl_send_words(pool->proxy.display, pool->proxy.id, 2u,
+                            &word, 1u);
+}
+
+void wl_shm_pool_destroy(struct wl_shm_pool *pool)
+{
+    if (!pool)
+        return;
+    (void)wl_send_words(pool->proxy.display, pool->proxy.id, 1u, NULL, 0u);
+    wl_proxy_destroy(&pool->proxy);
+}
+
+int wl_buffer_add_listener(struct wl_buffer *buffer,
+                           const struct wl_buffer_listener *listener,
+                           void *data)
+{
+    return wl_proxy_add_listener(&buffer->proxy, (void (**)(void))listener,
+                                 data);
+}
+
+void wl_buffer_destroy(struct wl_buffer *buffer)
+{
+    if (!buffer)
+        return;
+    (void)wl_send_words(buffer->proxy.display, buffer->proxy.id, 0u,
+                        NULL, 0u);
+    wl_proxy_destroy(&buffer->proxy);
+}
+
+int wl_surface_add_listener(struct wl_surface *surface,
+                            const struct wl_surface_listener *listener,
+                            void *data)
+{
+    return wl_proxy_add_listener(&surface->proxy, (void (**)(void))listener,
+                                 data);
+}
+
+void wl_surface_attach(struct wl_surface *surface, struct wl_buffer *buffer,
+                       int32_t x, int32_t y)
+{
+    uint32_t words[3];
+
+    if (!surface)
+        return;
+    words[0] = buffer ? buffer->proxy.id : 0u;
+    words[1] = (uint32_t)x;
+    words[2] = (uint32_t)y;
+    (void)wl_send_words(surface->proxy.display, surface->proxy.id, 1u,
+                        words, 3u);
+}
+
+void wl_surface_damage(struct wl_surface *surface, int32_t x, int32_t y,
+                       int32_t width, int32_t height)
+{
+    uint32_t words[4] = {
+        (uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height
+    };
+
+    if (surface)
+        (void)wl_send_words(surface->proxy.display, surface->proxy.id, 2u,
+                            words, 4u);
+}
+
+struct wl_callback *wl_surface_frame(struct wl_surface *surface)
+{
+    return (struct wl_callback *)wl_create_object(
+        &surface->proxy, 3u, sizeof(struct wl_callback),
+        &wl_callback_interface);
+}
+
+static void wl_surface_set_region(struct wl_surface *surface,
+                                  struct wl_region *region, uint16_t opcode)
+{
+    uint32_t id;
+
+    if (!surface)
+        return;
+    id = region ? region->proxy.id : 0u;
+    (void)wl_send_words(surface->proxy.display, surface->proxy.id, opcode,
+                        &id, 1u);
+}
+
+void wl_surface_set_opaque_region(struct wl_surface *surface,
+                                  struct wl_region *region)
+{
+    wl_surface_set_region(surface, region, 4u);
+}
+
+void wl_surface_set_input_region(struct wl_surface *surface,
+                                 struct wl_region *region)
+{
+    wl_surface_set_region(surface, region, 5u);
+}
+
+void wl_surface_commit(struct wl_surface *surface)
+{
+    if (surface)
+        (void)wl_send_words(surface->proxy.display, surface->proxy.id, 6u,
+                            NULL, 0u);
+}
+
+void wl_surface_destroy(struct wl_surface *surface)
+{
+    if (!surface)
+        return;
+    (void)wl_send_words(surface->proxy.display, surface->proxy.id, 0u,
+                        NULL, 0u);
+    wl_proxy_destroy(&surface->proxy);
+}
+
+static void wl_region_modify(struct wl_region *region, uint16_t opcode,
+                             int32_t x, int32_t y, int32_t width,
+                             int32_t height)
+{
+    uint32_t words[4] = {
+        (uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height
+    };
+
+    if (region)
+        (void)wl_send_words(region->proxy.display, region->proxy.id, opcode,
+                            words, 4u);
+}
+
+void wl_region_add(struct wl_region *region, int32_t x, int32_t y,
+                   int32_t width, int32_t height)
+{
+    wl_region_modify(region, 1u, x, y, width, height);
+}
+
+void wl_region_subtract(struct wl_region *region, int32_t x, int32_t y,
+                        int32_t width, int32_t height)
+{
+    wl_region_modify(region, 2u, x, y, width, height);
+}
+
+void wl_region_destroy(struct wl_region *region)
+{
+    if (!region)
+        return;
+    (void)wl_send_words(region->proxy.display, region->proxy.id, 0u,
+                        NULL, 0u);
+    wl_proxy_destroy(&region->proxy);
+}
+
 static int wl_dispatch_registry_event(struct wl_proxy *proxy,
                                       uint16_t opcode,
                                       const uint8_t *payload, size_t size)
@@ -558,6 +889,24 @@ int wl_display_dispatch(struct wl_display *display)
             listener->done(proxy->listener_data,
                            (struct wl_callback *)proxy,
                            wl_load_u32(payload));
+        result = 0;
+    } else if (proxy->interface == &wl_shm_interface &&
+               opcode == 0u && size == 4u) {
+        const struct wl_shm_listener *listener =
+            (const struct wl_shm_listener *)proxy->listener;
+
+        if (listener && listener->format)
+            listener->format(proxy->listener_data, (struct wl_shm *)proxy,
+                             wl_load_u32(payload));
+        result = 0;
+    } else if (proxy->interface == &wl_buffer_interface &&
+               opcode == 0u && size == 0u) {
+        const struct wl_buffer_listener *listener =
+            (const struct wl_buffer_listener *)proxy->listener;
+
+        if (listener && listener->release)
+            listener->release(proxy->listener_data,
+                              (struct wl_buffer *)proxy);
         result = 0;
     } else if (proxy == &display->proxy)
         result = wl_dispatch_display_event(display, opcode, payload, size);
