@@ -30,6 +30,11 @@ typedef struct {
     signed long long nsec;
 } armos_timespec_t;
 
+struct armos_itimerspec {
+    armos_timespec_t interval;
+    armos_timespec_t value;
+};
+
 #define ARMOS_CLOCK_REALTIME  0
 #define ARMOS_CLOCK_MONOTONIC 1
 

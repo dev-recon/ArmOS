@@ -22,9 +22,10 @@
 #include <kernel/types.h>
 #include <kernel/memory.h>
 
-#define SHM_NAME_MAX        32
-#define SHM_MAX_OBJECTS     32
-#define SHM_MAX_PAGES       64
+#define SHM_NAME_MAX          32
+#define SHM_MAX_OBJECTS       32
+#define SHM_GLOBAL_MAX_BYTES  (256u * 1024u * 1024u)
+#define SHM_GLOBAL_MAX_PAGES  (SHM_GLOBAL_MAX_BYTES / PAGE_SIZE)
 
 #define SHM_O_CREAT         0x01
 #define SHM_O_EXCL          0x02

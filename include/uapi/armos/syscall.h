@@ -77,6 +77,10 @@
 #define ARMOS_NR_SOCKETPAIR    334
 #define ARMOS_NR_SENDMSG       335
 #define ARMOS_NR_RECVMSG       336
+#define ARMOS_NR_EVENTFD2      337
+#define ARMOS_NR_TIMERFD_CREATE 338
+#define ARMOS_NR_TIMERFD_SETTIME 339
+#define ARMOS_NR_TIMERFD_GETTIME 340
 #define ARMOS_SYSCALL_MAX 512
 
 /* Values shared with the newlib _SC_* namespace used by ArmOS. */

@@ -10,10 +10,14 @@
  *
  * Responsibilities:
  * - Validate user-facing syscall requests.
- * - Bridge user ABI arguments to kernel subsystems.
+ * - Manage named, growable shared-memory objects and their descriptors.
+ * - Enforce one global physical-page budget across all shared-memory objects.
+ * - Map complete objects or page-aligned prefixes into process VM spaces.
  *
  * Notes:
  * - Never trust user pointers; copy through checked helpers.
+ * - Page vectors are dynamically sized and impose no per-object page ceiling.
+ * - The implementation is common to every architecture and platform.
  */
 
 #include <kernel/shm.h>
@@ -34,13 +38,15 @@ typedef struct shm_object {
     char name[SHM_NAME_MAX];
     size_t size;
     uint32_t pages;
-    paddr_t phys[SHM_MAX_PAGES];
+    uint32_t page_capacity;
+    paddr_t *phys;
     uint32_t mappings;
     uint32_t handles;
 } shm_object_t;
 
 static shm_object_t shm_objects[SHM_MAX_OBJECTS];
 static uint32_t shm_next_id = 1;
+static uint32_t shm_global_pages;
 static spinlock_t shm_lock = SPINLOCK_INIT("shm");
 
 static shm_object_t *shm_find_by_name(const char *name)
@@ -80,6 +86,87 @@ static void shm_free_object_pages(shm_object_t *obj)
             obj->phys[i] = 0;
         }
     }
+    if (obj->pages <= shm_global_pages)
+        shm_global_pages -= obj->pages;
+    else
+        shm_global_pages = 0;
+    kfree(obj->phys);
+    obj->phys = NULL;
+    obj->pages = 0;
+    obj->page_capacity = 0;
+}
+
+static int shm_resize_locked(shm_object_t *obj, size_t requested_size)
+{
+    paddr_t *new_phys;
+    uint32_t old_pages;
+    uint32_t new_pages;
+    uint32_t allocated;
+
+    if (!obj || !obj->used)
+        return -EINVAL;
+    if (requested_size > SHM_GLOBAL_MAX_BYTES)
+        return -EFBIG;
+
+    requested_size = ALIGN_UP(requested_size, PAGE_SIZE);
+    new_pages = (uint32_t)(requested_size / PAGE_SIZE);
+    old_pages = obj->pages;
+    if (new_pages == old_pages) {
+        obj->size = requested_size;
+        return 0;
+    }
+
+    if (new_pages < old_pages) {
+        if (obj->mappings != 0)
+            return -EBUSY;
+        for (uint32_t i = new_pages; i < old_pages; i++) {
+            free_page((void *)obj->phys[i]);
+            obj->phys[i] = 0;
+        }
+        shm_global_pages -= old_pages - new_pages;
+        obj->pages = new_pages;
+        obj->size = requested_size;
+        return 0;
+    }
+
+    if (new_pages - old_pages >
+        SHM_GLOBAL_MAX_PAGES - shm_global_pages)
+        return -ENOSPC;
+
+    if (new_pages > obj->page_capacity) {
+        new_phys = kcalloc(new_pages, sizeof(*new_phys));
+        if (!new_phys)
+            return -ENOMEM;
+        if (old_pages != 0)
+            memcpy(new_phys, obj->phys, old_pages * sizeof(*new_phys));
+    } else {
+        new_phys = obj->phys;
+    }
+
+    for (allocated = old_pages; allocated < new_pages; allocated++) {
+        void *page = allocate_page();
+
+        if (!page)
+            break;
+        new_phys[allocated] = (paddr_t)page;
+    }
+    if (allocated != new_pages) {
+        while (allocated > old_pages)
+            free_page((void *)new_phys[--allocated]);
+        if (new_phys != obj->phys)
+            kfree(new_phys);
+        return -ENOMEM;
+    }
+
+    if (new_phys != obj->phys) {
+        kfree(obj->phys);
+        obj->phys = new_phys;
+        obj->page_capacity = new_pages;
+    }
+    shm_global_pages += new_pages - old_pages;
+    obj->pages = new_pages;
+    obj->size = requested_size;
+    return 0;
 }
 
 static void shm_try_destroy_locked(shm_object_t *obj)
@@ -107,6 +194,22 @@ static int shm_file_close(file_t *file)
     return 0;
 }
 
+static int shm_file_truncate(file_t *file, off_t length)
+{
+    shm_object_t *obj = file ? file->private_data : NULL;
+    int result;
+
+    if (!obj || length < 0)
+        return -EINVAL;
+
+    spin_lock(&shm_lock);
+    result = shm_resize_locked(obj, (size_t)length);
+    if (result == 0 && file->inode)
+        file->inode->size = obj->size;
+    spin_unlock(&shm_lock);
+    return result;
+}
+
 static file_operations_t shm_file_operations = {
     .read = NULL,
     .write = NULL,
@@ -114,19 +217,25 @@ static file_operations_t shm_file_operations = {
     .close = shm_file_close,
     .lseek = NULL,
     .readdir = NULL,
-    .truncate = NULL,
+    .truncate = shm_file_truncate,
 };
 
 static int shm_install_handle(shm_object_t *obj)
 {
     task_t *task = task_current_local();
     file_t *file;
+    inode_t *inode;
     int fd;
 
     if (!task || !task->process || !obj)
         return -EINVAL;
     file = create_file();
-    if (!file) {
+    inode = file ? create_inode() : NULL;
+    if (!file || !inode) {
+        if (file)
+            close_file(file);
+        if (inode)
+            put_inode(inode);
         spin_lock(&shm_lock);
         if (obj->used && obj->handles > 0)
             obj->handles--;
@@ -139,6 +248,10 @@ static int shm_install_handle(shm_object_t *obj)
     file->flags = O_RDWR;
     file->f_op = &shm_file_operations;
     file->private_data = obj;
+    inode->mode = S_IFREG | 0600;
+    inode->size = obj->size;
+    inode->f_op = &shm_file_operations;
+    file->inode = inode;
     fd = vfs_install_file(task, file, 0u);
     if (fd < 0)
         close_file(file);
@@ -173,7 +286,7 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
 {
     char name[SHM_NAME_MAX];
     shm_object_t *obj;
-    uint32_t pages;
+    int result;
 
     if (!user_name)
         return -EINVAL;
@@ -184,10 +297,9 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
     if (flags & ~(SHM_O_CREAT | SHM_O_EXCL))
         return -EINVAL;
 
+    if (size > SHM_GLOBAL_MAX_BYTES)
+        return -EFBIG;
     size = ALIGN_UP(size, PAGE_SIZE);
-    if (size == 0 || size > SHM_MAX_PAGES * PAGE_SIZE)
-        return -EINVAL;
-    pages = size / PAGE_SIZE;
 
     spin_lock(&shm_lock);
 
@@ -222,19 +334,13 @@ int sys_shm_open(const char *user_name, size_t size, int flags)
     obj->id = shm_next_id++;
     if (shm_next_id == 0)
         shm_next_id = 1;
-    obj->size = size;
-    obj->pages = pages;
     strncpy(obj->name, name, sizeof(obj->name) - 1);
 
-    for (uint32_t i = 0; i < pages; i++) {
-        void *page = allocate_page();
-        if (!page) {
-            shm_free_object_pages(obj);
-            memset(obj, 0, sizeof(*obj));
-            spin_unlock(&shm_lock);
-            return -ENOMEM;
-        }
-        obj->phys[i] = (paddr_t)page;
+    result = shm_resize_locked(obj, size);
+    if (result < 0) {
+        memset(obj, 0, sizeof(*obj));
+        spin_unlock(&shm_lock);
+        return result;
     }
 
     obj->handles = 1u;
@@ -275,6 +381,8 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
     vm_space_t *vm;
     vaddr_t vaddr;
     vma_t *vma;
+    size_t mapping_size;
+    uint32_t mapping_pages;
     void *result = NULL;
 
     if (!task || !task->process || !task->process->vm)
@@ -296,42 +404,48 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
         result = (void *)-ENOENT;
         goto out;
     }
-    if (requested_size != 0u &&
-        ALIGN_UP(requested_size, PAGE_SIZE) != obj->size) {
+    if (requested_size > obj->size) {
         result = (void *)-EINVAL;
         goto out;
     }
+    mapping_size = requested_size != 0u ?
+        ALIGN_UP(requested_size, PAGE_SIZE) : obj->size;
+    if (mapping_size == 0 || mapping_size > obj->size) {
+        result = (void *)-EINVAL;
+        goto out;
+    }
+    mapping_pages = (uint32_t)(mapping_size / PAGE_SIZE);
 
     if (addr) {
         vaddr = (vaddr_t)addr;
         if ((vaddr & (PAGE_SIZE - 1)) || vaddr < USER_SHM_START ||
-            obj->size > USER_SHM_END - USER_SHM_START ||
-            vaddr > USER_SHM_END - obj->size) {
+            mapping_size > USER_SHM_END - USER_SHM_START ||
+            vaddr > USER_SHM_END - mapping_size) {
             result = (void *)-EINVAL;
             goto out;
         }
     } else {
-        vaddr = shm_find_free_vaddr(vm, obj->size);
+        vaddr = shm_find_free_vaddr(vm, mapping_size);
         if (!vaddr) {
             result = (void *)-ENOMEM;
             goto out;
         }
     }
 
-    vma = create_vma(vm, vaddr, obj->size, vma_flags);
+    vma = create_vma(vm, vaddr, mapping_size, vma_flags);
     if (!vma) {
         result = (void *)-ENOMEM;
         goto out;
     }
     vma->shm_id = obj->id;
 
-    for (uint32_t i = 0; i < obj->pages; i++) {
+    for (uint32_t i = 0; i < mapping_pages; i++) {
         if (page_ref_inc((void *)obj->phys[i]) < 0) {
             for (uint32_t j = 0; j < i; j++) {
                 unmap_user_page(vm->pgdir, vaddr + j * PAGE_SIZE, vm->asid);
                 free_page((void *)obj->phys[j]);
             }
-            remove_vma(vm, vaddr, vaddr + obj->size);
+            remove_vma(vm, vaddr, vaddr + mapping_size);
             result = (void *)-ENOMEM;
             goto out;
         }
@@ -343,7 +457,7 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
                 unmap_user_page(vm->pgdir, vaddr + j * PAGE_SIZE, vm->asid);
                 free_page((void *)obj->phys[j]);
             }
-            remove_vma(vm, vaddr, vaddr + obj->size);
+            remove_vma(vm, vaddr, vaddr + mapping_size);
             result = (void *)-ENOMEM;
             goto out;
         }

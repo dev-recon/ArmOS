@@ -44,6 +44,7 @@
 #include <kernel/virtio_block.h>
 #include <kernel/input.h>
 #include <kernel/pty.h>
+#include <kernel/event_timer.h>
 
 #define PIPE_BUF_SIZE 4096
 
@@ -855,6 +856,12 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_PTY_MASTER)
         return pty_master_read_ready(file);
 
+    if (file->type == FILE_TYPE_EVENTFD)
+        return eventfd_read_ready(file);
+
+    if (file->type == FILE_TYPE_TIMERFD)
+        return timerfd_read_ready(file);
+
     return file->f_op && file->f_op->read;
 }
 
@@ -875,6 +882,9 @@ static bool fd_write_ready(file_t *file)
 
     if (file->type == FILE_TYPE_PTY_MASTER)
         return pty_master_write_ready(file);
+
+    if (file->type == FILE_TYPE_EVENTFD)
+        return eventfd_write_ready(file);
 
     return file->f_op && file->f_op->write;
 }

@@ -171,6 +171,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/uart.o \
 	kernel/drivers/tty.o \
 	kernel/drivers/pty.o \
+	kernel/drivers/event_timer.o \
 	kernel/drivers/null.o \
 	kernel/drivers/input.o \
 	kernel/drivers/power.o \

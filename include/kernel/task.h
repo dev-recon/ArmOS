@@ -186,6 +186,8 @@ typedef enum file_type {
     FILE_TYPE_NETCTL,
     FILE_TYPE_INPUT,
     FILE_TYPE_PTY_MASTER,
+    FILE_TYPE_EVENTFD,
+    FILE_TYPE_TIMERFD,
 } file_type_t;
 typedef struct inode_operations inode_operations_t;
 

@@ -165,6 +165,13 @@ extern long sys_clock_getres(int clock_id, armos_timespec_t *res);
 extern long sys_clock_nanosleep(int clock_id, int flags,
                                 const armos_timespec_t *req,
                                 armos_timespec_t *rem);
+extern long sys_eventfd2(unsigned int initial_value, int flags);
+extern long sys_timerfd_create(int clock_id, int flags);
+extern long sys_timerfd_settime(int fd, int flags,
+                                const struct armos_itimerspec *new_value,
+                                struct armos_itimerspec *old_value);
+extern long sys_timerfd_gettime(int fd,
+                                struct armos_itimerspec *current_value);
 extern long sys_mknod(const char *pathname, int mode, unsigned long dev);
 extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int fd);
 extern long sys_munmap(void *addr, unsigned long length);
@@ -2169,6 +2176,89 @@ int clock_getres(clockid_t clock_id, struct timespec *res)
         res->tv_sec = (time_t)value.sec;
         res->tv_nsec = (long)value.nsec;
     }
+    return 0;
+}
+
+int eventfd(unsigned int initial_value, int flags)
+{
+    return ret_errno(sys_eventfd2(initial_value, flags));
+}
+
+int eventfd_read(int fd, uint64_t *value)
+{
+    ssize_t count = read(fd, value, sizeof(*value));
+
+    return count == (ssize_t)sizeof(*value) ? 0 : -1;
+}
+
+int eventfd_write(int fd, uint64_t value)
+{
+    ssize_t count = write(fd, &value, sizeof(value));
+
+    return count == (ssize_t)sizeof(value) ? 0 : -1;
+}
+
+int timerfd_create(clockid_t clock_id, int flags)
+{
+    if (clock_id != CLOCK_MONOTONIC) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ret_errno(sys_timerfd_create(ARMOS_CLOCK_MONOTONIC, flags));
+}
+
+static void timerfd_to_armos(const struct itimerspec *source,
+                             struct armos_itimerspec *destination)
+{
+    destination->interval.sec = source->it_interval.tv_sec;
+    destination->interval.nsec = source->it_interval.tv_nsec;
+    destination->value.sec = source->it_value.tv_sec;
+    destination->value.nsec = source->it_value.tv_nsec;
+}
+
+static void timerfd_from_armos(const struct armos_itimerspec *source,
+                               struct itimerspec *destination)
+{
+    destination->it_interval.tv_sec = (time_t)source->interval.sec;
+    destination->it_interval.tv_nsec = (long)source->interval.nsec;
+    destination->it_value.tv_sec = (time_t)source->value.sec;
+    destination->it_value.tv_nsec = (long)source->value.nsec;
+}
+
+int timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
+                    struct itimerspec *old_value)
+{
+    struct armos_itimerspec requested;
+    struct armos_itimerspec previous;
+    long ret;
+
+    if (!new_value) {
+        errno = EFAULT;
+        return -1;
+    }
+    timerfd_to_armos(new_value, &requested);
+    ret = sys_timerfd_settime(fd, flags, &requested,
+                              old_value ? &previous : NULL);
+    if (ret < 0)
+        return ret_errno(ret);
+    if (old_value)
+        timerfd_from_armos(&previous, old_value);
+    return 0;
+}
+
+int timerfd_gettime(int fd, struct itimerspec *current_value)
+{
+    struct armos_itimerspec value;
+    long ret;
+
+    if (!current_value) {
+        errno = EFAULT;
+        return -1;
+    }
+    ret = sys_timerfd_gettime(fd, &value);
+    if (ret < 0)
+        return ret_errno(ret);
+    timerfd_from_armos(&value, current_value);
     return 0;
 }
 

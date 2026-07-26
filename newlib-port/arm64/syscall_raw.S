@@ -154,6 +154,10 @@ RAW_SYSCALL sys_get_tls_info, 333
 RAW_SYSCALL sys_socketpair, 334
 RAW_SYSCALL sys_sendmsg, 335
 RAW_SYSCALL sys_recvmsg, 336
+RAW_SYSCALL sys_eventfd2, 337
+RAW_SYSCALL sys_timerfd_create, 338
+RAW_SYSCALL sys_timerfd_settime, 339
+RAW_SYSCALL sys_timerfd_gettime, 340
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function

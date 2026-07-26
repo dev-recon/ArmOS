@@ -173,6 +173,10 @@ struct process;
 #define __NR_socketpair         ARMOS_NR_SOCKETPAIR
 #define __NR_sendmsg            ARMOS_NR_SENDMSG
 #define __NR_recvmsg            ARMOS_NR_RECVMSG
+#define __NR_eventfd2           ARMOS_NR_EVENTFD2
+#define __NR_timerfd_create     ARMOS_NR_TIMERFD_CREATE
+#define __NR_timerfd_settime    ARMOS_NR_TIMERFD_SETTIME
+#define __NR_timerfd_gettime    ARMOS_NR_TIMERFD_GETTIME
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -433,6 +437,12 @@ int sys_clock_getres(int clock_id, armos_timespec_t *res);
 int sys_clock_nanosleep(int clock_id, int flags,
                         const armos_timespec_t *req,
                         armos_timespec_t *rem);
+int sys_eventfd2(uint32_t initial_value, int flags);
+int sys_timerfd_create(int clock_id, int flags);
+int sys_timerfd_settime(int fd, int flags,
+                        const struct armos_itimerspec *new_value,
+                        struct armos_itimerspec *old_value);
+int sys_timerfd_gettime(int fd, struct armos_itimerspec *current_value);
 
 /* Memory syscalls */
 long sys_brk(void* addr);
