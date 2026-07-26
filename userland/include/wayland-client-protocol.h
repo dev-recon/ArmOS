@@ -31,6 +31,9 @@ struct wl_shm;
 struct wl_shm_pool;
 struct wl_buffer;
 struct wl_output;
+struct wl_seat;
+struct wl_pointer;
+struct wl_keyboard;
 
 extern const struct wl_interface wl_display_interface;
 extern const struct wl_interface wl_registry_interface;
@@ -41,6 +44,9 @@ extern const struct wl_interface wl_region_interface;
 extern const struct wl_interface wl_shm_interface;
 extern const struct wl_interface wl_shm_pool_interface;
 extern const struct wl_interface wl_buffer_interface;
+extern const struct wl_interface wl_seat_interface;
+extern const struct wl_interface wl_pointer_interface;
+extern const struct wl_interface wl_keyboard_interface;
 
 struct wl_registry_listener {
     void (*global)(void *data, struct wl_registry *registry, uint32_t name,
@@ -69,9 +75,67 @@ struct wl_surface_listener {
                   struct wl_output *output);
 };
 
+struct wl_seat_listener {
+    void (*capabilities)(void *data, struct wl_seat *seat,
+                         uint32_t capabilities);
+    void (*name)(void *data, struct wl_seat *seat, const char *name);
+};
+
+struct wl_pointer_listener {
+    void (*enter)(void *data, struct wl_pointer *pointer, uint32_t serial,
+                  struct wl_surface *surface, wl_fixed_t surface_x,
+                  wl_fixed_t surface_y);
+    void (*leave)(void *data, struct wl_pointer *pointer, uint32_t serial,
+                  struct wl_surface *surface);
+    void (*motion)(void *data, struct wl_pointer *pointer, uint32_t time,
+                   wl_fixed_t surface_x, wl_fixed_t surface_y);
+    void (*button)(void *data, struct wl_pointer *pointer, uint32_t serial,
+                   uint32_t time, uint32_t button, uint32_t state);
+    void (*axis)(void *data, struct wl_pointer *pointer, uint32_t time,
+                 uint32_t axis, wl_fixed_t value);
+};
+
+struct wl_keyboard_listener {
+    void (*keymap)(void *data, struct wl_keyboard *keyboard, uint32_t format,
+                   int32_t fd, uint32_t size);
+    void (*enter)(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+                  struct wl_surface *surface, struct wl_array *keys);
+    void (*leave)(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+                  struct wl_surface *surface);
+    void (*key)(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+                uint32_t time, uint32_t key, uint32_t state);
+    void (*modifiers)(void *data, struct wl_keyboard *keyboard,
+                      uint32_t serial, uint32_t mods_depressed,
+                      uint32_t mods_latched, uint32_t mods_locked,
+                      uint32_t group);
+    void (*repeat_info)(void *data, struct wl_keyboard *keyboard,
+                        int32_t rate, int32_t delay);
+};
+
 enum wl_shm_format {
     WL_SHM_FORMAT_ARGB8888 = 0,
     WL_SHM_FORMAT_XRGB8888 = 1
+};
+
+enum wl_seat_capability {
+    WL_SEAT_CAPABILITY_POINTER = 1,
+    WL_SEAT_CAPABILITY_KEYBOARD = 2,
+    WL_SEAT_CAPABILITY_TOUCH = 4
+};
+
+enum wl_pointer_button_state {
+    WL_POINTER_BUTTON_STATE_RELEASED = 0,
+    WL_POINTER_BUTTON_STATE_PRESSED = 1
+};
+
+enum wl_pointer_axis {
+    WL_POINTER_AXIS_VERTICAL_SCROLL = 0,
+    WL_POINTER_AXIS_HORIZONTAL_SCROLL = 1
+};
+
+enum wl_keyboard_key_state {
+    WL_KEYBOARD_KEY_STATE_RELEASED = 0,
+    WL_KEYBOARD_KEY_STATE_PRESSED = 1
 };
 
 struct wl_registry *wl_display_get_registry(struct wl_display *display);
@@ -137,5 +201,24 @@ void wl_region_add(struct wl_region *region, int32_t x, int32_t y,
 void wl_region_subtract(struct wl_region *region, int32_t x, int32_t y,
                         int32_t width, int32_t height);
 void wl_region_destroy(struct wl_region *region);
+
+int wl_seat_add_listener(struct wl_seat *seat,
+                         const struct wl_seat_listener *listener, void *data);
+struct wl_pointer *wl_seat_get_pointer(struct wl_seat *seat);
+struct wl_keyboard *wl_seat_get_keyboard(struct wl_seat *seat);
+void wl_seat_destroy(struct wl_seat *seat);
+
+int wl_pointer_add_listener(struct wl_pointer *pointer,
+                            const struct wl_pointer_listener *listener,
+                            void *data);
+void wl_pointer_set_cursor(struct wl_pointer *pointer, uint32_t serial,
+                           struct wl_surface *surface, int32_t hotspot_x,
+                           int32_t hotspot_y);
+void wl_pointer_destroy(struct wl_pointer *pointer);
+
+int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
+                             const struct wl_keyboard_listener *listener,
+                             void *data);
+void wl_keyboard_destroy(struct wl_keyboard *keyboard);
 
 #endif /* ARMOS_WAYLAND_CLIENT_PROTOCOL_H */

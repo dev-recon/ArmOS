@@ -11,6 +11,7 @@
  * Responsibilities:
  * - Publish the devices shared by supported BCM2836/BCM2837 boards.
  * - Avoid probing qemu-virt-only devices on Raspberry Pi hardware.
+ * - Reserve the primary framebuffer for the shell console milestone.
  */
 
 #include <kernel/block_device.h>
@@ -82,6 +83,11 @@ static void raspberrypi_use_uart_fallback_console(void)
 
 platform_devices_state_t platform_devices_init(void)
 {
+    /*
+     * Keep compositor_allowed false: the Raspberry Pi primary framebuffer
+     * remains owned by the HDMI/ILI9341 shell until Wayland support on the
+     * physical platforms is explicitly enabled and validated.
+     */
     platform_devices_state_t state = {0};
 #if defined(ARMOS_ENABLE_HDMI) || \
     (defined(ARMOS_PLATFORM_RASPI3) && defined(ARMOS_ENABLE_ILI9341))

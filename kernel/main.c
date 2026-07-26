@@ -307,7 +307,8 @@ void kernel_main(void)
     if (rootfs_ready)
         process_release_init();
 
-    if (rootfs_ready && platform_devices.display_ready) {
+    if (rootfs_ready && platform_devices.display_ready &&
+        platform_devices.compositor_allowed) {
         if (windowserverd_start() == 0)
             KBOOT_OK("WindowServer: userland compositor");
         else

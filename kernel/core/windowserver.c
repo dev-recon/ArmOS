@@ -33,7 +33,8 @@ static void armos_compositor_main(void *argument)
 {
     const char *path = "/sbin/armos-wlcomp";
     char *name = "armos-compositor";
-    char *const argv[] = {name, NULL};
+    char *quiet = "--quiet";
+    char *const argv[] = {name, quiet, NULL};
     char *const envp[] = {
         "PATH=/sbin:/bin:/usr/bin",
         "HOME=/root",

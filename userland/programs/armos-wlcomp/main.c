@@ -12,6 +12,7 @@
  * - Own the Wayland local socket and accept bounded client connections.
  * - Drive protocol dispatch and framebuffer presentation through poll(2).
  * - Provide a headless mode for deterministic protocol validation.
+ * - Support silent supervised startup without writing over shell prompts.
  *
  * Notes:
  * - The compositor is a root userland service, not a kernel subsystem.
@@ -34,7 +35,8 @@
 
 static void wl_server_usage(const char *program)
 {
-    fprintf(stderr, "usage: %s [--headless] [--socket path]\n", program);
+    fprintf(stderr,
+            "usage: %s [--headless] [--quiet] [--socket path]\n", program);
 }
 
 static int wl_server_open_socket(const char *path)
@@ -171,10 +173,13 @@ int main(int argc, char **argv)
     struct wl_server server;
     const char *socket_path = ARMOS_WLCOMP_SOCKET_PATH;
     bool headless = false;
+    bool quiet = false;
 
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--headless") == 0) {
             headless = true;
+        } else if (strcmp(argv[index], "--quiet") == 0) {
+            quiet = true;
         } else if (strcmp(argv[index], "--socket") == 0 &&
                    index + 1 < argc) {
             socket_path = argv[++index];
@@ -218,10 +223,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("armos-wlcomp: ready on %s (%ux%u%s)\n", socket_path,
-           (unsigned)server.renderer.framebuffer.width,
-           (unsigned)server.renderer.framebuffer.height,
-           headless ? ", headless" : "");
+    if (!quiet) {
+        printf("armos-wlcomp: ready on %s (%ux%u%s)\n", socket_path,
+               (unsigned)server.renderer.framebuffer.width,
+               (unsigned)server.renderer.framebuffer.height,
+               headless ? ", headless" : "");
+    }
     if (wl_server_run(&server) < 0)
         perror("armos-wlcomp: event loop");
     close(server.listen_fd);

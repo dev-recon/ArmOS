@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <wayland-server.h>
+#include <xdg-shell-client-protocol.h>
 
 struct registry_state {
     unsigned int globals;
@@ -36,8 +37,30 @@ struct registry_state {
     unsigned int shell;
     uint32_t compositor_name;
     uint32_t shm_name;
+    uint32_t seat_name;
+    uint32_t shell_name;
     unsigned int formats;
     unsigned int releases;
+    uint32_t seat_capabilities;
+    unsigned int xdg_configures;
+    unsigned int toplevel_configures;
+};
+
+static const struct wl_message generated_compositor_methods[] = {
+    {"create_surface", "n", NULL},
+    {"create_region", "n", NULL}
+};
+
+static const struct wl_interface generated_compositor_interface = {
+    "wl_compositor", 1, 2, generated_compositor_methods, 0, NULL
+};
+
+static const struct wl_message generated_shm_methods[] = {
+    {"create_pool", "nhi", NULL}
+};
+
+static const struct wl_interface generated_shm_interface = {
+    "wl_shm", 1, 1, generated_shm_methods, 1, NULL
 };
 
 static void registry_global(void *data, struct wl_registry *registry,
@@ -58,8 +81,14 @@ static void registry_global(void *data, struct wl_registry *registry,
         state->shm++;
         state->shm_name = name;
     }
-    state->seat += strcmp(interface, "wl_seat") == 0;
-    state->shell += strcmp(interface, "xdg_wm_base") == 0;
+    if (strcmp(interface, "wl_seat") == 0) {
+        state->seat++;
+        state->seat_name = name;
+    }
+    if (strcmp(interface, "xdg_wm_base") == 0) {
+        state->shell++;
+        state->shell_name = name;
+    }
 }
 
 static void registry_global_remove(void *data, struct wl_registry *registry,
@@ -88,6 +117,58 @@ static void buffer_release(void *data, struct wl_buffer *buffer)
     state->releases++;
 }
 
+static void seat_capabilities(void *data, struct wl_seat *seat,
+                              uint32_t capabilities)
+{
+    struct registry_state *state = data;
+
+    (void)seat;
+    state->seat_capabilities = capabilities;
+}
+
+static void seat_name(void *data, struct wl_seat *seat, const char *name)
+{
+    (void)data;
+    (void)seat;
+    (void)name;
+}
+
+static void xdg_ping(void *data, struct xdg_wm_base *xdg_wm_base,
+                     uint32_t serial)
+{
+    (void)data;
+    xdg_wm_base_pong(xdg_wm_base, serial);
+}
+
+static void xdg_configure(void *data, struct xdg_surface *xdg_surface,
+                          uint32_t serial)
+{
+    struct registry_state *state = data;
+
+    state->xdg_configures++;
+    xdg_surface_ack_configure(xdg_surface, serial);
+}
+
+static void toplevel_configure(void *data,
+                               struct xdg_toplevel *xdg_toplevel,
+                               int32_t width, int32_t height,
+                               struct wl_array *states)
+{
+    struct registry_state *state = data;
+
+    (void)xdg_toplevel;
+    (void)width;
+    (void)height;
+    (void)states;
+    state->toplevel_configures++;
+}
+
+static void toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
+{
+    (void)data;
+    (void)xdg_toplevel;
+}
+
 static int test_registry(void)
 {
     static const struct wl_registry_listener listener = {
@@ -100,6 +181,20 @@ static int test_registry(void)
     static const struct wl_buffer_listener buffer_listener = {
         buffer_release
     };
+    static const struct wl_seat_listener seat_listener = {
+        seat_capabilities,
+        seat_name
+    };
+    static const struct xdg_wm_base_listener wm_base_listener = {
+        xdg_ping
+    };
+    static const struct xdg_surface_listener xdg_surface_listener = {
+        xdg_configure
+    };
+    static const struct xdg_toplevel_listener toplevel_listener = {
+        toplevel_configure,
+        toplevel_close
+    };
     struct registry_state state = { 0 };
     struct wl_display *display;
     struct wl_registry *registry;
@@ -108,6 +203,12 @@ static int test_registry(void)
     struct wl_shm *shm = NULL;
     struct wl_shm_pool *pool = NULL;
     struct wl_buffer *buffer = NULL;
+    struct wl_seat *seat = NULL;
+    struct wl_pointer *pointer = NULL;
+    struct wl_keyboard *keyboard = NULL;
+    struct xdg_wm_base *wm_base = NULL;
+    struct xdg_surface *xdg_surface = NULL;
+    struct xdg_toplevel *xdg_toplevel = NULL;
     uint32_t *pixels = MAP_FAILED;
     char shm_name[48];
     int shm_fd = -1;
@@ -132,12 +233,39 @@ static int test_registry(void)
     if (!valid)
         goto protocol_failed;
     compositor = wl_registry_bind(registry, state.compositor_name,
-                                  &wl_compositor_interface, 1u);
-    shm = wl_registry_bind(registry, state.shm_name, &wl_shm_interface, 1u);
-    if (!compositor || !shm ||
-        wl_shm_add_listener(shm, &shm_listener, &state) < 0)
+                                  &generated_compositor_interface, 1u);
+    shm = wl_registry_bind(registry, state.shm_name,
+                           &generated_shm_interface, 1u);
+    seat = wl_registry_bind(registry, state.seat_name, &wl_seat_interface,
+                            1u);
+    wm_base = wl_registry_bind(registry, state.shell_name,
+                               &xdg_wm_base_interface, 1u);
+    if (!compositor || !shm || !seat || !wm_base ||
+        wl_seat_add_listener(seat, &seat_listener, &state) < 0 ||
+        wl_shm_add_listener(shm, &shm_listener, &state) < 0 ||
+        xdg_wm_base_add_listener(wm_base, &wm_base_listener, &state) < 0)
         goto protocol_failed;
-    surface = wl_compositor_create_surface(compositor);
+    pointer = wl_seat_get_pointer(seat);
+    keyboard = wl_seat_get_keyboard(seat);
+    if (!pointer || !keyboard)
+        goto protocol_failed;
+    surface = (struct wl_surface *)wl_proxy_marshal_flags(
+        (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 1u, 0u,
+        NULL);
+    xdg_surface = surface ?
+        xdg_wm_base_get_xdg_surface(wm_base, surface) : NULL;
+    if (!xdg_surface ||
+        xdg_surface_add_listener(xdg_surface, &xdg_surface_listener,
+                                 &state) < 0)
+        goto protocol_failed;
+    xdg_toplevel = xdg_surface_get_toplevel(xdg_surface);
+    if (!xdg_toplevel ||
+        xdg_toplevel_add_listener(xdg_toplevel, &toplevel_listener,
+                                  &state) < 0)
+        goto protocol_failed;
+    xdg_toplevel_set_title(xdg_toplevel, "ArmOS Wayland library test");
+    xdg_toplevel_set_app_id(xdg_toplevel, "org.armos.wayland-lib-test");
+    xdg_surface_set_window_geometry(xdg_surface, 0, 0, 16, 16);
     snprintf(shm_name, sizeof(shm_name), "/wayland-lib-%d", getpid());
     shm_fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (shm_fd < 0 || shm_unlink(shm_name) < 0 ||
@@ -148,7 +276,9 @@ static int test_registry(void)
         goto protocol_failed;
     for (size_t index = 0; index < 16u * 16u; index++)
         pixels[index] = 0xff336699u;
-    pool = wl_shm_create_pool(shm, shm_fd, 4096);
+    pool = (struct wl_shm_pool *)wl_proxy_marshal_flags(
+        (struct wl_proxy *)shm, 0u, &wl_shm_pool_interface, 1u, 0u,
+        NULL, shm_fd, 4096);
     buffer = pool ? wl_shm_pool_create_buffer(
         pool, 0, 16, 16, 64, WL_SHM_FORMAT_XRGB8888) : NULL;
     if (!surface || !pool || !buffer ||
@@ -158,9 +288,22 @@ static int test_registry(void)
     wl_surface_damage(surface, 0, 0, 16, 16);
     wl_surface_commit(surface);
     if (wl_display_roundtrip(display) < 0 ||
-        state.formats != 2u || state.releases != 1u)
+        state.formats != 2u || state.releases != 1u ||
+        state.seat_capabilities !=
+            (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
+        state.xdg_configures != 1u || state.toplevel_configures != 1u)
         goto protocol_failed;
+    for (unsigned int iteration = 0; iteration < 600u; iteration++) {
+        if (wl_display_roundtrip(display) < 0)
+            goto protocol_failed;
+    }
 
+    wl_keyboard_destroy(keyboard);
+    wl_pointer_destroy(pointer);
+    wl_seat_destroy(seat);
+    xdg_toplevel_destroy(xdg_toplevel);
+    xdg_surface_destroy(xdg_surface);
+    xdg_wm_base_destroy(wm_base);
     wl_surface_destroy(surface);
     wl_buffer_destroy(buffer);
     wl_shm_pool_destroy(pool);
@@ -170,13 +313,27 @@ static int test_registry(void)
     wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
-    printf("wayland-lib-test: registry, SHM and surface passed\n");
+    printf("wayland-lib-test: registry, SHM, input and xdg-shell passed\n");
     return 0;
 
 protocol_failed:
     fprintf(stderr,
-            "wayland-lib-test: protocol failed (globals=%u formats=%u release=%u)\n",
-            state.globals, state.formats, state.releases);
+            "wayland-lib-test: protocol failed (globals=%u formats=%u release=%u seat=%u xdg=%u/%u)\n",
+            state.globals, state.formats, state.releases,
+            (unsigned)state.seat_capabilities, state.xdg_configures,
+            state.toplevel_configures);
+    if (keyboard)
+        wl_keyboard_destroy(keyboard);
+    if (pointer)
+        wl_pointer_destroy(pointer);
+    if (seat)
+        wl_seat_destroy(seat);
+    if (xdg_toplevel)
+        xdg_toplevel_destroy(xdg_toplevel);
+    if (xdg_surface)
+        xdg_surface_destroy(xdg_surface);
+    if (wm_base)
+        xdg_wm_base_destroy(wm_base);
     if (surface)
         wl_surface_destroy(surface);
     if (buffer)

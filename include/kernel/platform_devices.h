@@ -10,12 +10,14 @@
  *
  * Responsibilities:
  * - Expose board-specific device bring-up to the generic boot path.
+ * - Report whether the primary framebuffer may be owned by a compositor.
  * - Keep kernel/main.c from knowing concrete QEMU, Raspberry Pi, or VirtIO
  *   probing details.
  *
  * Notes:
  * - Platforms register transports; the common TTY layer owns terminal
  *   semantics and the logical console policy.
+ * - A display can be ready while remaining reserved for its shell console.
  */
 
 #ifndef _KERNEL_PLATFORM_DEVICES_H
@@ -25,6 +27,7 @@
 
 typedef struct {
     bool display_ready;
+    bool compositor_allowed;
 } platform_devices_state_t;
 
 void platform_console_early_init(void);
