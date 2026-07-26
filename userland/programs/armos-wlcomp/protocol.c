@@ -9,7 +9,7 @@
  * Layer: Userland / graphical services
  *
  * Responsibilities:
- * - Dispatch the version 1 Wayland core protocol implemented by ArmOS.
+ * - Dispatch the Wayland core and stable xdg-shell protocols used by ArmOS.
  * - Manage registries, SHM pools, buffers, surfaces and frame callbacks.
  * - Reject malformed requests before they can affect compositor state.
  *
@@ -164,7 +164,9 @@ static int wl_dispatch_display(struct wl_server *server,
             wl_client_send_global(client, new_id, WL_GLOBAL_SHM,
                                   "wl_shm", 1u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_SEAT,
-                                  "wl_seat", 1u) < 0)
+                                  "wl_seat", 1u) < 0 ||
+            wl_client_send_global(client, new_id, WL_GLOBAL_XDG_SHELL,
+                                  "xdg_wm_base", 1u) < 0)
             return -1;
         return 0;
     }
@@ -217,9 +219,133 @@ static int wl_dispatch_registry(struct wl_server_client *client,
             return -1;
         return wl_client_send_words(client, new_id, 0, &capabilities, 1);
     }
+    if (name == WL_GLOBAL_XDG_SHELL &&
+        strcmp(interface_name, "xdg_wm_base") == 0) {
+        return wl_client_add_object(client, new_id,
+                                    WL_SERVER_OBJECT_XDG_WM_BASE, 1u, NULL);
+    }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_OBJECT,
                             "unknown registry global");
+}
+
+static int wl_dispatch_xdg_wm_base(struct wl_server *server,
+                                   struct wl_server_client *client,
+                                   struct wl_server_object *object,
+                                   uint16_t opcode,
+                                   struct wl_request *request)
+{
+    uint32_t new_id;
+    uint32_t surface_id;
+    struct wl_server_object *surface_object;
+
+    (void)server;
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode == 2u &&
+        wl_request_u32(request, &new_id) == 0 &&
+        wl_request_u32(request, &surface_id) == 0 &&
+        wl_request_complete(request)) {
+        surface_object = wl_client_find_object(client, surface_id);
+        if (!surface_object ||
+            surface_object->type != WL_SERVER_OBJECT_SURFACE)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "xdg_wm_base needs a wl_surface");
+        return wl_client_add_object(client, new_id,
+                                    WL_SERVER_OBJECT_XDG_SURFACE, 1u,
+                                    surface_object->resource);
+    }
+    if (opcode == 3u && request->size == 4u) {
+        request->cursor = request->size;
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported xdg_wm_base request");
+}
+
+static int wl_dispatch_xdg_surface(struct wl_server *server,
+                                   struct wl_server_client *client,
+                                   struct wl_server_object *object,
+                                   uint16_t opcode,
+                                   struct wl_request *request)
+{
+    struct wl_server_surface *surface = object->resource;
+
+    if (!surface || !surface->used)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "xdg_surface lost its wl_surface");
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode == 1u) {
+        uint32_t new_id;
+        uint32_t configure[3] = {0u, 0u, 0u};
+        uint32_t serial;
+
+        if (wl_request_u32(request, &new_id) < 0 ||
+            !wl_request_complete(request) ||
+            wl_client_add_object(client, new_id,
+                                 WL_SERVER_OBJECT_XDG_TOPLEVEL, 1u,
+                                 surface) < 0)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "invalid xdg_toplevel object");
+        if (wl_client_send_words(client, new_id, 0u, configure, 3u) < 0)
+            return -1;
+        serial = ++server->serial;
+        return wl_client_send_words(client, object->id, 0u, &serial, 1u);
+    }
+    if (opcode == 3u && request->size == 16u) {
+        request->cursor = request->size;
+        return 0;
+    }
+    if (opcode == 4u && request->size == 4u) {
+        request->cursor = request->size;
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported xdg_surface request");
+}
+
+static int wl_dispatch_xdg_toplevel(struct wl_server_client *client,
+                                    struct wl_server_object *object,
+                                    uint16_t opcode,
+                                    struct wl_request *request)
+{
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode == 2u || opcode == 3u) {
+        const char *text;
+
+        if (wl_request_string(request, &text, NULL) == 0 &&
+            wl_request_complete(request)) {
+            (void)text;
+            return 0;
+        }
+    }
+    if ((opcode == 7u || opcode == 8u) && request->size == 8u) {
+        request->cursor = request->size;
+        return 0;
+    }
+    if ((opcode == 9u || opcode == 11u) && request->size == 4u) {
+        request->cursor = request->size;
+        return 0;
+    }
+    if ((opcode == 10u || opcode == 12u || opcode == 13u) &&
+        wl_request_complete(request))
+        return 0;
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported xdg_toplevel request");
 }
 
 static int wl_dispatch_compositor(struct wl_server *server,
@@ -640,6 +766,14 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_POINTER:
     case WL_SERVER_OBJECT_KEYBOARD:
         return wl_dispatch_input_object(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_XDG_WM_BASE:
+        return wl_dispatch_xdg_wm_base(server, client, object, opcode,
+                                       &request);
+    case WL_SERVER_OBJECT_XDG_SURFACE:
+        return wl_dispatch_xdg_surface(server, client, object, opcode,
+                                       &request);
+    case WL_SERVER_OBJECT_XDG_TOPLEVEL:
+        return wl_dispatch_xdg_toplevel(client, object, opcode, &request);
     default:
         return wl_protocol_fail(client, object_id,
                                 WL_PROTOCOL_ERROR_INVALID_METHOD,

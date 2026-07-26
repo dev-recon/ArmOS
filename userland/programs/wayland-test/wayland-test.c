@@ -197,7 +197,8 @@ static int test_connect(const char *path)
 }
 
 static int test_discover_globals(int fd, uint32_t *compositor_name,
-                                 uint32_t *shm_name, uint32_t *seat_name)
+                                 uint32_t *shm_name, uint32_t *seat_name,
+                                 uint32_t *xdg_shell_name)
 {
     uint32_t registry = 2u;
     uint32_t callback = 3u;
@@ -227,22 +228,27 @@ static int test_discover_globals(int fd, uint32_t *compositor_name,
                 *shm_name = name;
             else if (strcmp(interface_name, "wl_seat") == 0)
                 *seat_name = name;
+            else if (strcmp(interface_name, "xdg_wm_base") == 0)
+                *xdg_shell_name = name;
         } else if (event.object_id == 3u && event.opcode == 0u) {
             synchronized = 1;
         }
     }
-    return *compositor_name && *shm_name && *seat_name ? 0 : -1;
+    return *compositor_name && *shm_name && *seat_name &&
+           *xdg_shell_name ? 0 : -1;
 }
 
 static int test_bind_globals(int fd, uint32_t compositor_name,
-                             uint32_t shm_name, uint32_t seat_name)
+                             uint32_t shm_name, uint32_t seat_name,
+                             uint32_t xdg_shell_name)
 {
     int formats = 0;
     int seat = 0;
 
     if (test_send_bind(fd, 2u, compositor_name, "wl_compositor", 4u) < 0 ||
         test_send_bind(fd, 2u, shm_name, "wl_shm", 5u) < 0 ||
-        test_send_bind(fd, 2u, seat_name, "wl_seat", 6u) < 0)
+        test_send_bind(fd, 2u, seat_name, "wl_seat", 6u) < 0 ||
+        test_send_bind(fd, 2u, xdg_shell_name, "xdg_wm_base", 13u) < 0)
         return -1;
     while (formats < 2 || !seat) {
         struct test_event event;
@@ -383,6 +389,8 @@ static int test_surface_roundtrip(int fd, bool interactive)
     int shm_fd = -1;
     int released = 0;
     int frame_done = 0;
+    int xdg_surface_configured = 0;
+    int xdg_toplevel_configured = 0;
     int result = -1;
 
     snprintf(shm_name, sizeof(shm_name), "wayland-test-%d", getpid());
@@ -407,13 +415,16 @@ static int test_surface_roundtrip(int fd, bool interactive)
         test_send_pool(fd, shm_fd) < 0 ||
         test_send_words(fd, 7u, 0u, create_buffer, 6u) < 0 ||
         test_send_words(fd, 4u, 0u, &surface_id, 1u) < 0 ||
+        test_send_words(fd, 13u, 2u, (uint32_t[]){14u, 9u}, 2u) < 0 ||
+        test_send_words(fd, 14u, 1u, (uint32_t[]){15u}, 1u) < 0 ||
         test_send_words(fd, 9u, 1u, attach, 3u) < 0 ||
         test_send_words(fd, 9u, 2u, damage, 4u) < 0 ||
         test_send_words(fd, 9u, 3u, &callback_id, 1u) < 0 ||
         test_send_words(fd, 9u, 6u, NULL, 0u) < 0)
         goto out;
 
-    while (!released || !frame_done) {
+    while (!released || !frame_done || !xdg_surface_configured ||
+           !xdg_toplevel_configured) {
         struct test_event event;
 
         if (test_receive_event(fd, &event) < 0)
@@ -424,6 +435,17 @@ static int test_surface_roundtrip(int fd, bool interactive)
         if (event.object_id == 10u && event.opcode == 0u &&
             event.payload_size == 4u)
             frame_done = 1;
+        if (event.object_id == 14u && event.opcode == 0u &&
+            event.payload_size == 4u) {
+            uint32_t serial = test_load_u32(event.payload);
+
+            xdg_surface_configured = 1;
+            if (test_send_words(fd, 14u, 4u, &serial, 1u) < 0)
+                goto out;
+        }
+        if (event.object_id == 15u && event.opcode == 0u &&
+            event.payload_size == 12u)
+            xdg_toplevel_configured = 1;
     }
     result = 0;
     while (interactive) {
@@ -485,6 +507,7 @@ int main(int argc, char **argv)
     uint32_t compositor_name = 0u;
     uint32_t shm_name = 0u;
     uint32_t seat_name = 0u;
+    uint32_t xdg_shell_name = 0u;
     int fd;
 
     fd = test_connect(socket_path);
@@ -493,14 +516,15 @@ int main(int argc, char **argv)
         return 1;
     }
     if (test_discover_globals(fd, &compositor_name, &shm_name,
-                              &seat_name) < 0 ||
-        test_bind_globals(fd, compositor_name, shm_name, seat_name) < 0 ||
+                              &seat_name, &xdg_shell_name) < 0 ||
+        test_bind_globals(fd, compositor_name, shm_name, seat_name,
+                          xdg_shell_name) < 0 ||
         test_surface_roundtrip(fd, interactive) < 0) {
         fprintf(stderr, "WAYLAND_TEST_FAILED\n");
         close(fd);
         return 1;
     }
     close(fd);
-    printf("WAYLAND_TEST_OK registry shm surface frame\n");
+    printf("WAYLAND_TEST_OK registry shm xdg-shell surface frame\n");
     return 0;
 }
