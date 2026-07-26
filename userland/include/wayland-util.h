@@ -26,6 +26,7 @@
 typedef int32_t wl_fixed_t;
 
 struct wl_interface;
+struct wl_object;
 
 struct wl_message {
     const char *name;
@@ -46,6 +47,17 @@ struct wl_array {
     size_t size;
     size_t alloc;
     void *data;
+};
+
+union wl_argument {
+    int32_t i;
+    uint32_t u;
+    wl_fixed_t f;
+    const char *s;
+    struct wl_object *o;
+    uint32_t n;
+    struct wl_array *a;
+    int32_t h;
 };
 
 static inline double wl_fixed_to_double(wl_fixed_t value)

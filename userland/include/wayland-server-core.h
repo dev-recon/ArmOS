@@ -91,6 +91,11 @@ struct wl_resource *wl_resource_create(
 void wl_resource_set_implementation(
     struct wl_resource *resource, const void *implementation, void *data,
     wl_resource_destroy_func_t destroy);
+void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode,
+                            ...);
+void wl_resource_post_event_array(struct wl_resource *resource,
+                                  uint32_t opcode,
+                                  union wl_argument *arguments);
 void wl_resource_destroy(struct wl_resource *resource);
 uint32_t wl_resource_get_id(struct wl_resource *resource);
 int wl_resource_get_version(struct wl_resource *resource);

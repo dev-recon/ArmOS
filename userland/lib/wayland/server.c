@@ -22,11 +22,13 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
@@ -734,4 +736,295 @@ int wl_resource_instance_of(struct wl_resource *resource,
 {
     return resource && resource->interface == interface &&
         resource->implementation == implementation;
+}
+
+static size_t wl_wire_align(size_t size)
+{
+    return (size + 3u) & ~(size_t)3u;
+}
+
+static const char *wl_signature_next(const char *signature)
+{
+    while (*signature >= '0' && *signature <= '9')
+        signature++;
+    if (*signature == '?')
+        signature++;
+    return signature;
+}
+
+static int wl_resource_event_size(const char *signature,
+                                  union wl_argument *arguments,
+                                  size_t *size_out, size_t *fd_count_out)
+{
+    size_t argument_index = 0u;
+    size_t size = 8u;
+    size_t fd_count = 0u;
+
+    while (signature && *signature) {
+        size_t addition = 0u;
+
+        signature = wl_signature_next(signature);
+        switch (*signature) {
+        case 'i':
+        case 'u':
+        case 'f':
+        case 'o':
+        case 'n':
+            addition = 4u;
+            break;
+        case 's':
+            addition = 4u;
+            if (arguments[argument_index].s)
+                addition += wl_wire_align(
+                    strlen(arguments[argument_index].s) + 1u);
+            break;
+        case 'a':
+            addition = 4u;
+            if (arguments[argument_index].a)
+                addition += wl_wire_align(arguments[argument_index].a->size);
+            break;
+        case 'h':
+            fd_count++;
+            break;
+        case '\0':
+            continue;
+        default:
+            errno = EINVAL;
+            return -1;
+        }
+        if (addition > UINT16_MAX || size > UINT16_MAX - addition) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        size += addition;
+        argument_index++;
+        signature++;
+    }
+    *size_out = size;
+    *fd_count_out = fd_count;
+    return 0;
+}
+
+static void wl_wire_store_u32(uint8_t *destination, uint32_t value)
+{
+    memcpy(destination, &value, sizeof(value));
+}
+
+static int wl_resource_send_message(struct wl_client *client,
+                                    const uint8_t *message, size_t size,
+                                    const int *fds, size_t fd_count)
+{
+    struct msghdr header;
+    struct iovec vector;
+    uint8_t control[CMSG_SPACE(16u * sizeof(int))];
+    size_t sent = 0u;
+
+    if (fd_count > 16u) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    memset(&header, 0, sizeof(header));
+    memset(control, 0, sizeof(control));
+    vector.iov_base = (void *)message;
+    vector.iov_len = size;
+    header.msg_iov = &vector;
+    header.msg_iovlen = 1u;
+    if (fd_count != 0u) {
+        struct cmsghdr *control_header;
+
+        header.msg_control = control;
+        header.msg_controllen = CMSG_SPACE(fd_count * sizeof(int));
+        control_header = CMSG_FIRSTHDR(&header);
+        control_header->cmsg_level = SOL_SOCKET;
+        control_header->cmsg_type = SCM_RIGHTS;
+        control_header->cmsg_len = CMSG_LEN(fd_count * sizeof(int));
+        memcpy(CMSG_DATA(control_header), fds, fd_count * sizeof(int));
+    }
+    while (sent < size) {
+        ssize_t result;
+
+        vector.iov_base = (void *)(message + sent);
+        vector.iov_len = size - sent;
+        result = sendmsg(client->fd, &header, 0);
+        if (result < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (result == 0) {
+            errno = EPIPE;
+            return -1;
+        }
+        sent += (size_t)result;
+        header.msg_control = NULL;
+        header.msg_controllen = 0u;
+    }
+    return 0;
+}
+
+void wl_resource_post_event_array(struct wl_resource *resource,
+                                  uint32_t opcode,
+                                  union wl_argument *arguments)
+{
+    const struct wl_message *event;
+    const char *signature;
+    uint8_t *message;
+    int fds[16];
+    size_t size;
+    size_t fd_count;
+    size_t argument_index = 0u;
+    size_t fd_index = 0u;
+    size_t offset = 8u;
+
+    if (!resource || resource->destroying || !resource->client ||
+        !resource->interface || opcode >=
+        (uint32_t)resource->interface->event_count) {
+        errno = EINVAL;
+        return;
+    }
+    event = &resource->interface->events[opcode];
+    signature = event->signature;
+    if (wl_resource_event_size(signature, arguments, &size, &fd_count) < 0)
+        return;
+    message = calloc(1u, size);
+    if (!message)
+        return;
+    wl_wire_store_u32(message, resource->id);
+    wl_wire_store_u32(message + 4u, ((uint32_t)size << 16) | opcode);
+    while (signature && *signature) {
+        uint32_t value;
+
+        signature = wl_signature_next(signature);
+        switch (*signature) {
+        case 'i':
+            value = (uint32_t)arguments[argument_index].i;
+            wl_wire_store_u32(message + offset, value);
+            offset += 4u;
+            break;
+        case 'u':
+            wl_wire_store_u32(message + offset,
+                              arguments[argument_index].u);
+            offset += 4u;
+            break;
+        case 'f':
+            wl_wire_store_u32(message + offset,
+                              (uint32_t)arguments[argument_index].f);
+            offset += 4u;
+            break;
+        case 'o': {
+            struct wl_resource *object =
+                (struct wl_resource *)arguments[argument_index].o;
+
+            wl_wire_store_u32(message + offset,
+                              object ? object->id : 0u);
+            offset += 4u;
+            break;
+        }
+        case 'n':
+            wl_wire_store_u32(message + offset,
+                              arguments[argument_index].n);
+            offset += 4u;
+            break;
+        case 's': {
+            const char *string = arguments[argument_index].s;
+            uint32_t length = string ? (uint32_t)strlen(string) + 1u : 0u;
+
+            wl_wire_store_u32(message + offset, length);
+            offset += 4u;
+            if (length != 0u) {
+                memcpy(message + offset, string, length);
+                offset += wl_wire_align(length);
+            }
+            break;
+        }
+        case 'a': {
+            struct wl_array *array = arguments[argument_index].a;
+            uint32_t length = array ? (uint32_t)array->size : 0u;
+
+            wl_wire_store_u32(message + offset, length);
+            offset += 4u;
+            if (length != 0u) {
+                memcpy(message + offset, array->data, length);
+                offset += wl_wire_align(length);
+            }
+            break;
+        }
+        case 'h':
+            fds[fd_index++] = arguments[argument_index].h;
+            break;
+        case '\0':
+            continue;
+        default:
+            free(message);
+            errno = EINVAL;
+            return;
+        }
+        argument_index++;
+        signature++;
+    }
+    (void)wl_resource_send_message(resource->client, message, size,
+                                   fds, fd_count);
+    free(message);
+}
+
+void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode,
+                            ...)
+{
+    union wl_argument arguments[32];
+    const char *signature;
+    size_t count = 0u;
+    va_list values;
+
+    if (!resource || resource->destroying || !resource->interface ||
+        opcode >= (uint32_t)resource->interface->event_count) {
+        errno = EINVAL;
+        return;
+    }
+    signature = resource->interface->events[opcode].signature;
+    va_start(values, opcode);
+    while (signature && *signature && count < 32u) {
+        signature = wl_signature_next(signature);
+        switch (*signature) {
+        case 'i':
+        case 'f':
+            arguments[count].i = va_arg(values, int32_t);
+            break;
+        case 'u':
+            arguments[count].u = va_arg(values, uint32_t);
+            break;
+        case 'n': {
+            struct wl_resource *new_resource =
+                va_arg(values, struct wl_resource *);
+
+            arguments[count].n = new_resource ? new_resource->id : 0u;
+            break;
+        }
+        case 's':
+            arguments[count].s = va_arg(values, const char *);
+            break;
+        case 'o':
+            arguments[count].o = va_arg(values, struct wl_object *);
+            break;
+        case 'a':
+            arguments[count].a = va_arg(values, struct wl_array *);
+            break;
+        case 'h':
+            arguments[count].h = va_arg(values, int);
+            break;
+        case '\0':
+            continue;
+        default:
+            va_end(values);
+            errno = EINVAL;
+            return;
+        }
+        count++;
+        signature++;
+    }
+    va_end(values);
+    if (signature && *signature) {
+        errno = E2BIG;
+        return;
+    }
+    wl_resource_post_event_array(resource, opcode, arguments);
 }

@@ -82,6 +82,16 @@ static const struct wl_interface generated_shm_interface = {
     "wl_shm", 1, 1, generated_shm_methods, 1, NULL
 };
 
+static const struct wl_message server_test_events[] = {
+    {"words", "us", NULL},
+    {"descriptor", "uhu", NULL},
+    {"new_object", "n", NULL}
+};
+
+static const struct wl_interface server_test_interface = {
+    "armos_server_test", 1, 0, NULL, 3, server_test_events
+};
+
 static void registry_global(void *data, struct wl_registry *registry,
                             uint32_t name, const char *interface,
                             uint32_t version)
@@ -971,6 +981,80 @@ static void server_resource_destroy(struct wl_resource *resource)
         state->resource_destroys++;
 }
 
+static uint32_t server_test_u32(const uint8_t *data)
+{
+    uint32_t value;
+
+    memcpy(&value, data, sizeof(value));
+    return value;
+}
+
+static int server_test_resource_events(struct wl_resource *resource,
+                                       struct wl_resource *new_resource,
+                                       int peer_fd)
+{
+    uint8_t message[32];
+    union wl_argument arguments[2];
+    int descriptor_pipe[2] = { -1, -1 };
+    int received_fd = -1;
+    unsigned char control[CMSG_SPACE(sizeof(int))];
+    struct iovec vector;
+    struct msghdr header;
+    struct cmsghdr *control_header;
+    ssize_t count;
+
+    arguments[0].u = 42u;
+    arguments[1].s = "ok";
+    wl_resource_post_event_array(resource, 0u, arguments);
+    if (read(peer_fd, message, 20u) != 20 ||
+        server_test_u32(message) != wl_resource_get_id(resource) ||
+        server_test_u32(message + 4u) != ((20u << 16) | 0u) ||
+        server_test_u32(message + 8u) != 42u ||
+        server_test_u32(message + 12u) != 3u ||
+        strcmp((char *)message + 16u, "ok") != 0)
+        return -1;
+
+    if (pipe(descriptor_pipe) < 0)
+        return -1;
+    wl_resource_post_event(resource, 1u, 1u, descriptor_pipe[0], 64u);
+    memset(message, 0, sizeof(message));
+    memset(control, 0, sizeof(control));
+    memset(&header, 0, sizeof(header));
+    vector.iov_base = message;
+    vector.iov_len = 16u;
+    header.msg_iov = &vector;
+    header.msg_iovlen = 1u;
+    header.msg_control = control;
+    header.msg_controllen = sizeof(control);
+    count = recvmsg(peer_fd, &header, MSG_CMSG_CLOEXEC);
+    control_header = CMSG_FIRSTHDR(&header);
+    if (count != 16 || server_test_u32(message + 8u) != 1u ||
+        server_test_u32(message + 12u) != 64u || !control_header ||
+        control_header->cmsg_level != SOL_SOCKET ||
+        control_header->cmsg_type != SCM_RIGHTS ||
+        control_header->cmsg_len != CMSG_LEN(sizeof(int)))
+        goto failed;
+    memcpy(&received_fd, CMSG_DATA(control_header), sizeof(received_fd));
+    if (received_fd < 0)
+        goto failed;
+    close(received_fd);
+    close(descriptor_pipe[0]);
+    close(descriptor_pipe[1]);
+    wl_resource_post_event(resource, 2u, new_resource);
+    if (read(peer_fd, message, 12u) != 12 ||
+        server_test_u32(message + 8u) !=
+            wl_resource_get_id(new_resource))
+        return -1;
+    return 0;
+
+failed:
+    if (received_fd >= 0)
+        close(received_fd);
+    close(descriptor_pipe[0]);
+    close(descriptor_pipe[1]);
+    return -1;
+}
+
 static int test_transport(void)
 {
     struct wl_display *server;
@@ -995,6 +1079,8 @@ static int test_transport(void)
         struct wl_client *server_client =
             wl_client_create(server, object_fds[0]);
         struct wl_resource *resource;
+        struct wl_resource *event_resource;
+        struct wl_resource *new_resource;
         struct wl_global *global;
 
         if (!server_client)
@@ -1028,6 +1114,14 @@ static int test_transport(void)
             wl_global_get_version(global) != 1u ||
             wl_global_get_interface(global) != &wl_compositor_interface ||
             wl_global_get_user_data(global) != &loop_state)
+            goto transport_failed;
+        event_resource = wl_resource_create(server_client,
+                                            &server_test_interface, 1, 8u);
+        new_resource = wl_resource_create(server_client,
+                                          &server_test_interface, 1, 9u);
+        if (!event_resource || !new_resource ||
+            server_test_resource_events(event_resource, new_resource,
+                                        object_fds[1]) < 0)
             goto transport_failed;
         wl_resource_destroy(resource);
         if (loop_state.resource_destroys != 1 ||
