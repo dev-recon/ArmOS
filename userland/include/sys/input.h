@@ -38,6 +38,14 @@
 #define ARMOS_INPUT_BUTTON_RIGHT     0x111u
 #define ARMOS_INPUT_BUTTON_MIDDLE    0x112u
 
+#define ARMOS_INPUT_KEY_LEFTCTRL     29u
+#define ARMOS_INPUT_KEY_LEFTSHIFT    42u
+#define ARMOS_INPUT_KEY_RIGHTSHIFT   54u
+#define ARMOS_INPUT_KEY_LEFTALT      56u
+#define ARMOS_INPUT_KEY_CAPSLOCK     58u
+#define ARMOS_INPUT_KEY_RIGHTCTRL    97u
+#define ARMOS_INPUT_KEY_RIGHTALT     100u
+
 struct armos_input_event {
     uint32_t timestamp_ms;
     uint16_t type;

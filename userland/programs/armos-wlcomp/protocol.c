@@ -165,7 +165,7 @@ static int wl_dispatch_display(struct wl_server *server,
             wl_client_send_global(client, new_id, WL_GLOBAL_SHM,
                                   "wl_shm", 1u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_SEAT,
-                                  "wl_seat", 1u) < 0 ||
+                                  "wl_seat", 4u) < 0 ||
             wl_client_send_global(client, new_id, WL_GLOBAL_XDG_SHELL,
                                   "xdg_wm_base", 1u) < 0)
             return -1;
@@ -214,9 +214,11 @@ static int wl_dispatch_registry(struct wl_server_client *client,
     }
     if (name == WL_GLOBAL_SEAT && strcmp(interface_name, "wl_seat") == 0) {
         uint32_t capabilities = 3u;
+        uint32_t version = requested_version < 4u ?
+            requested_version : 4u;
 
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_SEAT,
-                                 1u, NULL) < 0)
+                                 version, NULL) < 0)
             return -1;
         return wl_client_send_words(client, new_id, 0, &capabilities, 1);
     }
@@ -696,15 +698,25 @@ static int wl_dispatch_seat(struct wl_server_client *client,
                                 "malformed wl_seat request");
     if (opcode == 0u)
         return wl_client_add_object(client, new_id,
-                                    WL_SERVER_OBJECT_POINTER, 1u, NULL);
+                                    WL_SERVER_OBJECT_POINTER,
+                                    object->version, NULL);
     if (opcode == 1u) {
         if (wl_client_add_object(client, new_id,
-                                 WL_SERVER_OBJECT_KEYBOARD, 1u, NULL) < 0)
+                                 WL_SERVER_OBJECT_KEYBOARD,
+                                 object->version, NULL) < 0)
             return -1;
         if (wl_server_send_keymap(client, new_id) < 0) {
             perror("armos-wlcomp: keyboard keymap");
             wl_client_remove_object(client, new_id, false);
             return -1;
+        }
+        if (object->version >= 4u) {
+            uint32_t repeat[2] = { 25u, 600u };
+
+            if (wl_client_send_words(client, new_id, 5u, repeat, 2u) < 0) {
+                wl_client_remove_object(client, new_id, false);
+                return -1;
+            }
         }
         return 0;
     }
@@ -721,6 +733,16 @@ static int wl_dispatch_input_object(struct wl_server_client *client,
     if (object->type == WL_SERVER_OBJECT_POINTER && opcode == 0u &&
         request->size == 16u) {
         request->cursor = request->size;
+        return 0;
+    }
+    if (object->type == WL_SERVER_OBJECT_POINTER && opcode == 1u &&
+        object->version >= 3u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (object->type == WL_SERVER_OBJECT_KEYBOARD && opcode == 0u &&
+        object->version >= 3u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
         return 0;
     }
     return wl_protocol_fail(client, object->id,

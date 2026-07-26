@@ -25,6 +25,11 @@
 
 #define WL_WINDOW_TITLE_HEIGHT 28
 
+#define WL_XKB_MOD_SHIFT   (1u << 0)
+#define WL_XKB_MOD_LOCK    (1u << 1)
+#define WL_XKB_MOD_CONTROL (1u << 2)
+#define WL_XKB_MOD_ALT     (1u << 3)
+
 static struct wl_server_object *wl_find_input_object(
     struct wl_server_client *client, enum wl_server_object_type type)
 {
@@ -86,6 +91,22 @@ static void wl_send_pointer_motion(struct wl_server *server,
     (void)wl_client_send_words(client, pointer->id, 2u, words, 3u);
 }
 
+static void wl_send_keyboard_modifiers(struct wl_server *server,
+                                       struct wl_server_client *client,
+                                       struct wl_server_object *keyboard)
+{
+    uint32_t words[5];
+
+    if (!server || !client || !keyboard)
+        return;
+    words[0] = ++server->serial;
+    words[1] = server->modifiers_depressed;
+    words[2] = 0u;
+    words[3] = server->modifiers_locked;
+    words[4] = 0u;
+    (void)wl_client_send_words(client, keyboard->id, 4u, words, 5u);
+}
+
 static void wl_focus_surface(struct wl_server *server,
                              struct wl_server_client *client,
                              struct wl_server_surface *surface)
@@ -112,6 +133,7 @@ static void wl_focus_surface(struct wl_server *server,
         keyboard_enter[2] = 0u;
         (void)wl_client_send_words(client, keyboard->id, 1u,
                                    keyboard_enter, 3u);
+        wl_send_keyboard_modifiers(server, client, keyboard);
     }
 }
 
@@ -161,9 +183,36 @@ static void wl_handle_key(struct wl_server *server,
 {
     struct wl_server_object *keyboard;
     uint32_t words[4];
+    uint32_t previous_depressed;
+    uint32_t previous_locked;
+    uint32_t mask = 0u;
+    bool modifiers_changed;
 
     if (event->code >= ARMOS_INPUT_BUTTON_LEFT)
         return;
+    previous_depressed = server->modifiers_depressed;
+    previous_locked = server->modifiers_locked;
+    if (event->code == ARMOS_INPUT_KEY_LEFTSHIFT ||
+        event->code == ARMOS_INPUT_KEY_RIGHTSHIFT)
+        mask = WL_XKB_MOD_SHIFT;
+    else if (event->code == ARMOS_INPUT_KEY_LEFTCTRL ||
+             event->code == ARMOS_INPUT_KEY_RIGHTCTRL)
+        mask = WL_XKB_MOD_CONTROL;
+    else if (event->code == ARMOS_INPUT_KEY_LEFTALT ||
+             event->code == ARMOS_INPUT_KEY_RIGHTALT)
+        mask = WL_XKB_MOD_ALT;
+    if (mask != 0u) {
+        if (event->value != 0)
+            server->modifiers_depressed |= mask;
+        else
+            server->modifiers_depressed &= ~mask;
+    } else if (event->code == ARMOS_INPUT_KEY_CAPSLOCK &&
+               event->value == 1) {
+        server->modifiers_locked ^= WL_XKB_MOD_LOCK;
+    }
+    modifiers_changed =
+        server->modifiers_depressed != previous_depressed ||
+        server->modifiers_locked != previous_locked;
     if (!server->focus_client || !server->focus_client->used ||
         !server->focus_surface || !server->focus_surface->used)
         return;
@@ -177,6 +226,8 @@ static void wl_handle_key(struct wl_server *server,
     words[3] = event->value != 0 ? 1u : 0u;
     (void)wl_client_send_words(server->focus_client, keyboard->id, 3u,
                                words, 4u);
+    if (modifiers_changed)
+        wl_send_keyboard_modifiers(server, server->focus_client, keyboard);
 }
 
 static void wl_handle_input_event(struct wl_server *server,

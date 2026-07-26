@@ -46,6 +46,7 @@ struct registry_state {
     unsigned int xdg_configures;
     unsigned int toplevel_configures;
     unsigned int keymaps;
+    unsigned int repeat_info;
 };
 
 static const struct wl_message generated_compositor_methods[] = {
@@ -201,10 +202,11 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
 static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,
                                  int32_t rate, int32_t delay)
 {
-    (void)data;
+    struct registry_state *state = data;
+
     (void)keyboard;
-    (void)rate;
-    (void)delay;
+    if (rate == 25 && delay == 600)
+        state->repeat_info++;
 }
 
 static void xdg_ping(void *data, struct xdg_wm_base *xdg_wm_base,
@@ -319,7 +321,7 @@ static int test_registry(void)
     shm = wl_registry_bind(registry, state.shm_name,
                            &generated_shm_interface, 1u);
     seat = wl_registry_bind(registry, state.seat_name, &wl_seat_interface,
-                            1u);
+                            4u);
     wm_base = wl_registry_bind(registry, state.shell_name,
                                &xdg_wm_base_interface, 1u);
     if (!compositor || !shm || !seat || !wm_base ||
@@ -374,7 +376,7 @@ static int test_registry(void)
         state.formats != 2u || state.releases != 1u ||
         state.seat_capabilities !=
             (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
-        state.keymaps != 1u ||
+        state.keymaps != 1u || state.repeat_info != 1u ||
         state.xdg_configures != 1u || state.toplevel_configures != 1u)
         goto protocol_failed;
     for (unsigned int iteration = 0; iteration < 600u; iteration++) {
@@ -402,10 +404,11 @@ static int test_registry(void)
 
 protocol_failed:
     fprintf(stderr,
-            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u xdg=%u/%u)\n",
+            "wayland-lib-test: protocol failed (error=%d errno=%d globals=%u formats=%u release=%u seat=%u keymap=%u repeat=%u xdg=%u/%u)\n",
             wl_display_get_error(display), errno,
             state.globals, state.formats, state.releases,
             (unsigned)state.seat_capabilities, state.keymaps,
+            state.repeat_info,
             state.xdg_configures, state.toplevel_configures);
     if (keyboard)
         wl_keyboard_destroy(keyboard);

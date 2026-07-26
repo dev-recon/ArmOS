@@ -114,15 +114,15 @@ const struct wl_interface wl_buffer_interface = {
 };
 
 const struct wl_interface wl_seat_interface = {
-    "wl_seat", 1, 3, NULL, 2, NULL
+    "wl_seat", 4, 3, NULL, 2, NULL
 };
 
 const struct wl_interface wl_pointer_interface = {
-    "wl_pointer", 1, 1, NULL, 5, NULL
+    "wl_pointer", 4, 2, NULL, 5, NULL
 };
 
 const struct wl_interface wl_keyboard_interface = {
-    "wl_keyboard", 1, 0, NULL, 6, NULL
+    "wl_keyboard", 4, 1, NULL, 6, NULL
 };
 
 const struct wl_interface xdg_wm_base_interface = {
@@ -863,8 +863,14 @@ static struct wl_proxy *wl_create_object(struct wl_proxy *factory,
     struct wl_proxy *proxy;
     uint32_t id;
 
-    if (!factory || !(proxy = wl_proxy_allocate(factory->display, size,
-                                                 interface, 1u)))
+    uint32_t version;
+
+    if (!factory || !interface)
+        return NULL;
+    version = factory->version < (uint32_t)interface->version ?
+        factory->version : (uint32_t)interface->version;
+    if (!(proxy = wl_proxy_allocate(factory->display, size, interface,
+                                    version)))
         return NULL;
     id = proxy->id;
     if (wl_send_words(factory->display, factory->id, opcode, &id, 1u) < 0) {
@@ -1172,8 +1178,12 @@ void wl_pointer_set_cursor(struct wl_pointer *pointer, uint32_t serial,
 
 void wl_pointer_destroy(struct wl_pointer *pointer)
 {
-    if (pointer)
-        wl_proxy_destroy(&pointer->proxy);
+    if (!pointer)
+        return;
+    if (pointer->proxy.version >= 3u)
+        (void)wl_send_words(pointer->proxy.display, pointer->proxy.id, 1u,
+                            NULL, 0u);
+    wl_proxy_destroy(&pointer->proxy);
 }
 
 int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
@@ -1186,8 +1196,12 @@ int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
 
 void wl_keyboard_destroy(struct wl_keyboard *keyboard)
 {
-    if (keyboard)
-        wl_proxy_destroy(&keyboard->proxy);
+    if (!keyboard)
+        return;
+    if (keyboard->proxy.version >= 3u)
+        (void)wl_send_words(keyboard->proxy.display, keyboard->proxy.id, 0u,
+                            NULL, 0u);
+    wl_proxy_destroy(&keyboard->proxy);
 }
 
 int xdg_wm_base_add_listener(

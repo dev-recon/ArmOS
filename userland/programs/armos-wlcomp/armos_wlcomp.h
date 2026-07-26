@@ -149,6 +149,8 @@ struct wl_server {
     int32_t pointer_x;
     int32_t pointer_y;
     bool pointer_left;
+    uint32_t modifiers_depressed;
+    uint32_t modifiers_locked;
     int32_t drag_offset_x;
     int32_t drag_offset_y;
     struct wl_server_client *focus_client;
