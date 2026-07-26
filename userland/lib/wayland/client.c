@@ -167,6 +167,37 @@ static int wl_proxy_is(const struct wl_proxy *proxy,
         strcmp(proxy->interface->name, interface->name) == 0;
 }
 
+static struct wl_proxy *wl_proxy_find(struct wl_display *display,
+                                      uint32_t id)
+{
+    if (!display || id == 0u)
+        return NULL;
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        struct wl_proxy *proxy = display->objects[index];
+
+        if (proxy && proxy->id == id)
+            return proxy;
+    }
+    return NULL;
+}
+
+static int wl_proxy_store(struct wl_display *display, struct wl_proxy *proxy)
+{
+    if (!display || !proxy || proxy->id == 0u ||
+        wl_proxy_find(display, proxy->id)) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        if (!display->objects[index]) {
+            display->objects[index] = proxy;
+            return 0;
+        }
+    }
+    errno = EMFILE;
+    return -1;
+}
+
 static int wl_display_queue_control_fds(struct wl_display *display,
                                         struct msghdr *message)
 {
@@ -279,9 +310,9 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
         return NULL;
     }
     id = display->next_id;
-    while (display->objects[id]) {
+    while (wl_proxy_find(display, id)) {
         id++;
-        if (id >= WL_CLIENT_MAX_OBJECTS)
+        if (id >= 0xff000000u)
             id = 2u;
         if (id == display->next_id) {
             errno = EMFILE;
@@ -289,12 +320,8 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
         }
     }
     display->next_id = id + 1u;
-    if (display->next_id >= WL_CLIENT_MAX_OBJECTS)
+    if (display->next_id >= 0xff000000u)
         display->next_id = 2u;
-    if (id < 2u) {
-        errno = EMFILE;
-        return NULL;
-    }
     proxy = calloc(1, size);
     if (!proxy)
         return NULL;
@@ -302,7 +329,10 @@ static struct wl_proxy *wl_proxy_allocate(struct wl_display *display,
     proxy->version = version;
     proxy->interface = interface;
     proxy->display = display;
-    display->objects[id] = proxy;
+    if (wl_proxy_store(display, proxy) < 0) {
+        free(proxy);
+        return NULL;
+    }
     return proxy;
 }
 
@@ -485,7 +515,7 @@ struct wl_display *wl_display_connect(const char *name)
     display->proxy.display = display;
     display->fd = fd;
     display->next_id = 2u;
-    display->objects[1] = &display->proxy;
+    display->objects[0] = &display->proxy;
     return display;
 }
 
@@ -497,8 +527,10 @@ void wl_display_disconnect(struct wl_display *display)
         close(display->fd);
     for (size_t index = 0; index < display->pending_fd_count; index++)
         close(display->pending_fds[index]);
-    for (size_t index = 2u; index < WL_CLIENT_MAX_OBJECTS; index++)
-        free(display->objects[index]);
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        if (display->objects[index] != &display->proxy)
+            free(display->objects[index]);
+    }
     free(display);
 }
 
@@ -716,9 +748,14 @@ void wl_proxy_destroy(struct wl_proxy *proxy)
     if (!proxy || proxy->id == 1u)
         return;
     display = proxy->display;
-    if (display && proxy->id < WL_CLIENT_MAX_OBJECTS &&
-        display->objects[proxy->id] == proxy)
-        display->objects[proxy->id] = NULL;
+    if (display) {
+        for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+            if (display->objects[index] == proxy) {
+                display->objects[index] = NULL;
+                break;
+            }
+        }
+    }
     free(proxy);
 }
 
@@ -1419,9 +1456,7 @@ static struct wl_surface *wl_event_surface(struct wl_display *display,
 {
     struct wl_proxy *proxy;
 
-    if (id == 0u || id >= WL_CLIENT_MAX_OBJECTS)
-        return NULL;
-    proxy = display->objects[id];
+    proxy = wl_proxy_find(display, id);
     return wl_proxy_is(proxy, &wl_surface_interface) ?
         (struct wl_surface *)proxy : NULL;
 }
@@ -1668,8 +1703,7 @@ static int wl_dispatch_surface_event(struct wl_proxy *proxy, uint16_t opcode,
     if ((opcode != 0u && opcode != 1u) || size != 4u)
         return -1;
     output_id = wl_load_u32(payload);
-    if (output_id >= WL_CLIENT_MAX_OBJECTS ||
-        !(output = proxy->display->objects[output_id]) ||
+    if (!(output = wl_proxy_find(proxy->display, output_id)) ||
         !wl_proxy_is(output, &wl_output_interface))
         return -1;
     if (opcode == 0u && listener && listener->enter)
@@ -1835,8 +1869,7 @@ int wl_display_dispatch(struct wl_display *display)
         if (wl_display_read_full(display, payload, size) < 0)
             goto transport_error;
     }
-    if (object_id >= WL_CLIENT_MAX_OBJECTS ||
-        !(proxy = display->objects[object_id]))
+    if (!(proxy = wl_proxy_find(display, object_id)))
         goto protocol_error;
     if (wl_proxy_is(proxy, &wl_registry_interface))
         result = wl_dispatch_registry_event(proxy, opcode, payload, size);
