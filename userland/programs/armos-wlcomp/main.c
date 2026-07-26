@@ -123,11 +123,21 @@ static int wl_server_listen_event(int fd, uint32_t mask, void *data)
 static int wl_server_render_event(void *data)
 {
     struct wl_server *server = data;
+    int result;
 
     server->render_pending = false;
-    if ((server->move_damage_pending ?
-            wl_renderer_compose_move(server) :
-            wl_renderer_compose_pointer(server)) < 0) {
+    if (server->move_damage_pending) {
+        result = wl_renderer_compose_move(server);
+        if (result == 0)
+            server->scene_damage_pending = false;
+    } else if (server->scene_damage_pending) {
+        result = wl_renderer_compose(server);
+        if (result == 0)
+            server->scene_damage_pending = false;
+    } else {
+        result = wl_renderer_compose_pointer(server);
+    }
+    if (result < 0) {
         server->fatal_error = true;
         return -1;
     }

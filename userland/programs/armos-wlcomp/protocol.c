@@ -135,6 +135,7 @@ static struct wl_server_surface *wl_allocate_surface(
 
             memset(surface, 0, sizeof(*surface));
             surface->used = true;
+            surface->z_order = ++server->next_surface_z;
             surface->x = (int32_t)(24u + (position * 36u) %
                                    (width > 300u ? width - 300u : 1u));
             surface->y = (int32_t)(24u + (position * 28u) %

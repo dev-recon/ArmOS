@@ -135,6 +135,7 @@ struct wl_server_callback {
 struct wl_server_surface {
     bool used;
     uint32_t object_id;
+    uint64_t z_order;
     struct wl_server_buffer *pending_buffer;
     bool pending_attach;
     bool mapped;
@@ -188,12 +189,14 @@ struct wl_server {
     struct wl_event_source *input_source;
     struct wl_event_source *render_timer;
     bool render_pending;
+    bool scene_damage_pending;
     bool fatal_error;
     bool pointer_presented;
     int32_t presented_pointer_x;
     int32_t presented_pointer_y;
     uint32_t serial;
     uint32_t next_surface_position;
+    uint64_t next_surface_z;
     int32_t pointer_x;
     int32_t pointer_y;
     bool pointer_left;

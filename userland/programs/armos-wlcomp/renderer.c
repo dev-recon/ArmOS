@@ -346,6 +346,10 @@ static void wl_renderer_draw_pointer(struct wl_server *server)
 
 static void wl_renderer_draw_surfaces(struct wl_server *server)
 {
+    struct wl_server_surface *ordered[
+        WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
+    size_t count = 0u;
+
     for (size_t client_index = 0;
          client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
         struct wl_server_client *client = &server->clients[client_index];
@@ -355,10 +359,21 @@ static void wl_renderer_draw_surfaces(struct wl_server *server)
         for (size_t index = 0; index < WL_SERVER_MAX_SURFACES; index++) {
             struct wl_server_surface *surface = &client->surfaces[index];
 
-            if (surface->used && surface->mapped && surface->pixels)
-                wl_renderer_draw_surface(&server->renderer, surface);
+            if (!surface->used || !surface->mapped || !surface->pixels)
+                continue;
+            size_t position = count;
+
+            while (position > 0u &&
+                   ordered[position - 1u]->z_order > surface->z_order) {
+                ordered[position] = ordered[position - 1u];
+                position--;
+            }
+            ordered[position] = surface;
+            count++;
         }
     }
+    for (size_t index = 0u; index < count; index++)
+        wl_renderer_draw_surface(&server->renderer, ordered[index]);
 }
 
 static int wl_renderer_build_canvas(struct wl_server *server)

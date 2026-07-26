@@ -46,13 +46,16 @@ static struct wl_server_surface *wl_surface_at(
     struct wl_server *server, int32_t x, int32_t y,
     struct wl_server_client **owner)
 {
-    for (size_t ci = WL_SERVER_MAX_CLIENTS; ci > 0u; ci--) {
-        struct wl_server_client *client = &server->clients[ci - 1u];
+    struct wl_server_surface *top = NULL;
+    struct wl_server_client *top_owner = NULL;
+
+    for (size_t ci = 0u; ci < WL_SERVER_MAX_CLIENTS; ci++) {
+        struct wl_server_client *client = &server->clients[ci];
 
         if (!client->used)
             continue;
-        for (size_t si = WL_SERVER_MAX_SURFACES; si > 0u; si--) {
-            struct wl_server_surface *surface = &client->surfaces[si - 1u];
+        for (size_t si = 0u; si < WL_SERVER_MAX_SURFACES; si++) {
+            struct wl_server_surface *surface = &client->surfaces[si];
             int32_t bottom;
 
             if (!surface->used || !surface->mapped)
@@ -62,13 +65,15 @@ static struct wl_server_surface *wl_surface_at(
             if (x >= surface->x &&
                 x < surface->x + (int32_t)surface->width &&
                 y >= surface->y && y < bottom) {
-                *owner = client;
-                return surface;
+                if (!top || surface->z_order > top->z_order) {
+                    top = surface;
+                    top_owner = client;
+                }
             }
         }
     }
-    *owner = NULL;
-    return NULL;
+    *owner = top_owner;
+    return top;
 }
 
 static void wl_send_pointer_motion(struct wl_server *server,
@@ -176,6 +181,10 @@ static void wl_handle_button(struct wl_server *server,
         surface = wl_surface_at(server, server->pointer_x, server->pointer_y,
                                 &client);
         if (surface) {
+            if (surface->z_order != server->next_surface_z) {
+                surface->z_order = ++server->next_surface_z;
+                server->scene_damage_pending = true;
+            }
             wl_focus_surface(server, client, surface);
             if (server->pointer_y <
                 surface->y + WL_WINDOW_TITLE_HEIGHT) {
