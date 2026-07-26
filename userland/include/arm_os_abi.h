@@ -107,7 +107,7 @@ int tcsetpgrp(int fd, pid_t pgrp);
 pid_t tcgetpgrp(int fd);
 int shm_open(const char *name, size_t size, int flags);
 int shm_unlink(const char *name);
-void *shm_map(int id, void *addr, int flags);
+void *shm_map(int fd, void *addr, int flags);
 int shm_unmap(void *addr, size_t size);
 int nanosleep(const struct timespec *req, struct timespec *rem);
 unsigned int sleep(unsigned int seconds);

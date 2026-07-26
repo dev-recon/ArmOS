@@ -7,7 +7,8 @@ Build and stage it with:
 
 ```sh
 ./tools/build_libjpeg.sh
-rsync -a build/libjpeg/bundle/ userfs/
+rsync -a build/arm32/qemu-virt/bundles/libjpeg/bundle/ \
+  build/arm32/qemu-virt/userfs/
 ```
 
 Or include it in a full image build:

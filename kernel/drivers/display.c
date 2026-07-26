@@ -228,6 +228,9 @@ static void framebuffer_mark_dirty(uint32_t x, uint32_t y,
 
 static void framebuffer_flush_dirty(void)
 {
+    const display_backend_ops_t *backend;
+    uint8_t *framebuffer;
+    uint32_t pitch;
     unsigned long console_flags;
 
     if (!display_backend || !display_backend->flush_rect)
@@ -288,13 +291,15 @@ static void framebuffer_flush_dirty(void)
     y0 = dirty_y0;
     x1 = dirty_x1;
     y1 = dirty_y1;
+    backend = display_backend;
+    framebuffer = framebuffer_base;
+    pitch = display.pitch;
     framebuffer_dirty = false;
     spin_unlock_irqrestore(&dirty_lock, flags);
+    spin_unlock(&display_geometry_lock);
 
     /* Submit outside the lock: device I/O is the slow part. */
-    display_backend->flush_rect(framebuffer_base, display.pitch,
-                                x0, y0, x1 - x0, y1 - y0);
-    spin_unlock(&display_geometry_lock);
+    backend->flush_rect(framebuffer, pitch, x0, y0, x1 - x0, y1 - y0);
 }
 
 void display_set_backend(const display_backend_ops_t *backend)

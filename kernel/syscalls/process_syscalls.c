@@ -23,6 +23,7 @@
 #include <kernel/address_space.h>
 #include <kernel/vfs.h>
 #include <kernel/net/armos_socket.h>
+#include <kernel/shm.h>
 #include <kernel/fd.h>
 #include <kernel/string.h>
 #include <kernel/task.h>
@@ -516,8 +517,10 @@ int pipe_close(file_t* file) {
 
 int sys_pipe(int pipefd[2])
 {
-    int fd_read, fd_write;
-    file_t *read_file, *write_file;
+    int fd_read = -1;
+    int fd_write = -1;
+    file_t *read_file = NULL;
+    file_t *write_file = NULL;
     struct pipe_buffer *buffer;
     struct pipe_inode_info *read_pipe, *write_pipe;
     inode_t *inode;
@@ -529,24 +532,9 @@ int sys_pipe(int pipefd[2])
         return -EFAULT;
     }
 
-    /* Allouer deux descripteurs de fichiers */
-    fd_read = allocate_fd(task);
-    if (fd_read < 0) return fd_read;
-
-    task->process->files[fd_read] = (file_t *)1;   //FIX ME -> Set to a non NULL value
-    task->process->fd_flags[fd_read] = 0;
-    
-    fd_write = allocate_fd(task);
-    if (fd_write < 0) {
-        free_fd(task, fd_read);
-        return fd_write;
-    }
-    
     /* Créer le buffer du pipe */
     buffer = kzalloc(sizeof(struct pipe_buffer));
     if (!buffer) {
-        free_fd(task, fd_read);
-        free_fd(task, fd_write);
         return -ENOMEM;
     }
     
@@ -563,8 +551,6 @@ int sys_pipe(int pipefd[2])
     inode = create_inode();
     if (!inode) {
         kfree(buffer);
-        free_fd(task, fd_read);
-        free_fd(task, fd_write);
         return -ENOMEM;
     }
     
@@ -578,8 +564,6 @@ int sys_pipe(int pipefd[2])
         kfree(read_pipe);
         kfree(write_pipe);
         put_inode(inode);
-        free_fd(task, fd_read);
-        free_fd(task, fd_write);
         return -ENOMEM;
     }
     
@@ -590,7 +574,13 @@ int sys_pipe(int pipefd[2])
     read_file = create_file();
     write_file = create_file();
     if (!read_file || !write_file) {
-        goto cleanup;
+        close_file(read_file);
+        close_file(write_file);
+        kfree(buffer);
+        kfree(read_pipe);
+        kfree(write_pipe);
+        put_inode(inode);
+        return -ENOMEM;
     }
     
     /* Configurer le fichier de lecture */
@@ -616,11 +606,18 @@ int sys_pipe(int pipefd[2])
     write_file->f_op = &pipe_write_fops;
     write_file->private_data = write_pipe;
     
-    /* Associer aux descripteurs */
-    task->process->files[fd_read] = read_file;
-    task->process->files[fd_write] = write_file;
-    task->process->fd_flags[fd_read] = 0;
-    task->process->fd_flags[fd_write] = 0;
+    /* Installer atomiquement chaque fichier dans la table du processus. */
+    fd_read = vfs_install_file(task, read_file, 0u);
+    if (fd_read < 0)
+        goto cleanup_configured;
+    read_file = NULL;
+    fd_write = vfs_install_file(task, write_file, 0u);
+    if (fd_write < 0) {
+        (void)sys_close(fd_read);
+        close_file(write_file);
+        return fd_write;
+    }
+    write_file = NULL;
     
     /* Préparer les fd pour l'userspace */
     fds[0] = fd_read;
@@ -636,16 +633,10 @@ int sys_pipe(int pipefd[2])
     //KDEBUG("Created pipe: read_fd=%d, write_fd=%d\n", fd_read, fd_write);
     return 0;
     
-cleanup:
-    kfree(buffer);
-    kfree(read_pipe);
-    kfree(write_pipe);
-    if (read_file) close_file(read_file);
-    if (write_file) close_file(write_file);
-    put_inode(inode);
-    free_fd(task, fd_read);
-    free_fd(task, fd_write);
-    return -ENOMEM;
+cleanup_configured:
+    close_file(read_file);
+    close_file(write_file);
+    return fd_read;
 }
 
 
@@ -3243,11 +3234,14 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
     bool lazy_anon;
     vma_t *vma;
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process || !task->process->vm)
+    if (!task || !task->process || !task->process->vm)
         return (void *)-EINVAL;
 
-    if ((flags & ARMOS_MAP_SHARED) || !(flags & ARMOS_MAP_PRIVATE))
-        return (void *)-ENOSYS;
+    if (flags & ~(ARMOS_MAP_SHARED | ARMOS_MAP_PRIVATE |
+                  ARMOS_MAP_FIXED | ARMOS_MAP_ANON))
+        return (void *)-EINVAL;
+    if (!!(flags & ARMOS_MAP_SHARED) == !!(flags & ARMOS_MAP_PRIVATE))
+        return (void *)-EINVAL;
     if (flags & ARMOS_MAP_FIXED)
         return (void *)-ENOSYS;
     is_anon = (flags & ARMOS_MAP_ANON) != 0;
@@ -3272,6 +3266,13 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
         vma_flags |= VMA_WRITE;
     if (prot & ARMOS_PROT_EXEC)
         vma_flags |= VMA_EXEC;
+
+    if (flags & ARMOS_MAP_SHARED) {
+        if (is_anon || (prot & ARMOS_PROT_EXEC))
+            return (void *)-ENOSYS;
+        return shm_map_fd(fd, addr, length, vma_flags | VMA_SHARED);
+    }
+
     lazy_anon = is_anon && !(prot & ARMOS_PROT_EXEC);
     if (lazy_anon)
         vma_flags |= VMA_LAZY;
@@ -3301,17 +3302,18 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
     }
 
     if (!is_anon) {
-        file_t *file = task->process->files[fd];
-        uint32_t saved_offset;
+        file_t *file = vfs_get_file_from_fd(task, fd);
+        file_t positioned;
         size_t copied = 0;
 
         if (!file || !can_read(file) || !file->f_op || !file->f_op->read) {
+            close_file(file);
             vm_unmap_range(vm, vaddr, size);
             return (void *)-EBADF;
         }
 
-        saved_offset = file->offset;
-        file->offset = 0;
+        positioned = *file;
+        positioned.offset = 0;
         while (copied < length) {
             vaddr_t page = vaddr + ALIGN_DOWN(copied, PAGE_SIZE);
             paddr_t phys = get_physical_address(vm->pgdir, page);
@@ -3320,16 +3322,17 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
             int ret;
 
             if (!phys) {
-                file->offset = saved_offset;
+                close_file(file);
                 vm_unmap_range(vm, vaddr, size);
                 return (void *)-EFAULT;
             }
             if (chunk > length - copied)
                 chunk = length - copied;
 
-            ret = file->f_op->read(file, (void *)(phys_to_virt(phys) + page_off), chunk);
+            ret = positioned.f_op->read(
+                &positioned, (void *)(phys_to_virt(phys) + page_off), chunk);
             if (ret < 0) {
-                file->offset = saved_offset;
+                close_file(file);
                 vm_unmap_range(vm, vaddr, size);
                 return (void *)(intptr_t)ret;
             }
@@ -3339,7 +3342,7 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
             if ((size_t)ret < chunk)
                 break;
         }
-        file->offset = saved_offset;
+        close_file(file);
     }
 
     return (void *)vaddr;
@@ -3351,7 +3354,7 @@ int sys_munmap(void* addr, size_t length)
     vaddr_t start = (vaddr_t)addr;
     size_t size;
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process || !task->process->vm)
+    if (!task || !task->process || !task->process->vm)
         return -EINVAL;
     if (!addr || !IS_PAGE_ALIGNED(start) || length == 0)
         return -EINVAL;
@@ -3372,7 +3375,7 @@ int sys_mprotect(void* addr, size_t length, int prot)
     size_t size;
     uint32_t flags = 0;
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process || !task->process->vm)
+    if (!task || !task->process || !task->process->vm)
         return -EINVAL;
     if (!addr || !IS_PAGE_ALIGNED(start) || length == 0)
         return -EINVAL;

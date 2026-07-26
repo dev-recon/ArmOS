@@ -31,6 +31,15 @@
 #define ARMOS_SOCKET_PATH_MAX       108u
 #define ARMOS_SOCKET_BUFFER_SIZE    16384u
 #define ARMOS_SOCKET_BACKLOG_MAX    16u
+#define ARMOS_SOCKET_IOV_MAX        64u
+#define ARMOS_SOCKET_MESSAGE_MAX    (1024u * 1024u)
+#define ARMOS_SOCKET_RIGHTS_MAX     16u
+#define ARMOS_SOCKET_CONTROL_MAX    64u
+
+#define ARMOS_SOL_SOCKET            1
+#define ARMOS_SCM_RIGHTS            1
+#define ARMOS_MSG_CTRUNC            0x0008
+#define ARMOS_MSG_CMSG_CLOEXEC      0x40000000
 
 typedef struct armos_socket_address {
     uint16_t family;
@@ -45,11 +54,23 @@ typedef enum armos_socket_state {
     ARMOS_SOCKET_CLOSED,
 } armos_socket_state_t;
 
+typedef struct armos_socket_control {
+    struct armos_socket_control *next;
+    uint64_t stream_offset;
+    uint32_t file_count;
+    file_t *files[ARMOS_SOCKET_RIGHTS_MAX];
+} armos_socket_control_t;
+
 typedef struct armos_socket_channel {
     uint8_t *data[2];
     uint32_t read_pos[2];
     uint32_t write_pos[2];
     uint32_t count[2];
+    uint64_t read_sequence[2];
+    uint64_t write_sequence[2];
+    armos_socket_control_t *control_head[2];
+    armos_socket_control_t *control_tail[2];
+    uint32_t control_count[2];
     uint8_t read_closed[2];
     uint8_t write_closed[2];
     uint8_t refs;
@@ -113,10 +134,24 @@ static armos_socket_channel_t *armos_socket_channel_create(void)
     return channel;
 }
 
+static void armos_socket_control_free(armos_socket_control_t *control)
+{
+    while (control) {
+        armos_socket_control_t *next = control->next;
+
+        for (uint32_t index = 0u; index < control->file_count; index++)
+            close_file(control->files[index]);
+        kfree(control);
+        control = next;
+    }
+}
+
 static void armos_socket_channel_free(armos_socket_channel_t *channel)
 {
     if (!channel)
         return;
+    armos_socket_control_free(channel->control_head[0]);
+    armos_socket_control_free(channel->control_head[1]);
     kfree(channel->data[0]);
     kfree(channel->data[1]);
     kfree(channel);
@@ -161,6 +196,7 @@ static armos_socket_t *armos_bound_find_locked(const char *path)
 static void armos_socket_destroy(armos_socket_t *socket)
 {
     armos_socket_t *pending;
+    armos_socket_control_t *discard_control = NULL;
     armos_socket_channel_t *free_channel = NULL;
     unsigned long flags;
 
@@ -178,6 +214,10 @@ static void armos_socket_destroy(armos_socket_t *socket)
 
         channel->read_closed[side] = 1u;
         channel->write_closed[side] = 1u;
+        discard_control = channel->control_head[side];
+        channel->control_head[side] = NULL;
+        channel->control_tail[side] = NULL;
+        channel->control_count[side] = 0u;
         if (channel->refs > 0u)
             channel->refs--;
         if (channel->refs == 0u)
@@ -194,23 +234,51 @@ static void armos_socket_destroy(armos_socket_t *socket)
         armos_socket_destroy(pending);
         pending = next;
     }
+    armos_socket_control_free(discard_control);
     armos_socket_channel_free(free_channel);
     kfree(socket);
 }
 
-static ssize_t armos_socket_file_read(file_t *file, void *buffer, size_t length)
+static armos_socket_control_t *
+armos_socket_detach_control_locked(armos_socket_channel_t *channel,
+                                   uint8_t side)
 {
-    armos_socket_t *socket = file ? file->private_data : NULL;
+    armos_socket_control_t *head = NULL;
+    armos_socket_control_t *tail = NULL;
+
+    while (channel->control_head[side] &&
+           channel->control_head[side]->stream_offset <
+               channel->read_sequence[side]) {
+        armos_socket_control_t *control = channel->control_head[side];
+
+        channel->control_head[side] = control->next;
+        if (!channel->control_head[side])
+            channel->control_tail[side] = NULL;
+        if (channel->control_count[side] > 0u)
+            channel->control_count[side]--;
+        control->next = NULL;
+        if (tail)
+            tail->next = control;
+        else
+            head = control;
+        tail = control;
+    }
+    return head;
+}
+
+static ssize_t
+armos_socket_channel_read(armos_socket_t *socket, void *buffer, size_t length,
+                          armos_socket_control_t **received_control)
+{
     size_t read = 0u;
 
-    if (!socket)
-        return -EINVAL;
-    if (length == 0u)
-        return 0;
-    if (!buffer)
-        return -EINVAL;
+    if (received_control)
+        *received_control = NULL;
+    if (!socket || !buffer || length == 0u)
+        return !socket || !buffer ? -EINVAL : 0;
     while (1) {
         armos_socket_channel_t *channel;
+        armos_socket_control_t *control = NULL;
         uint8_t side;
         uint8_t peer;
         unsigned long flags;
@@ -233,9 +301,17 @@ static ssize_t armos_socket_file_read(file_t *file, void *buffer, size_t length)
             channel->read_pos[side] =
                 (channel->read_pos[side] + 1u) % ARMOS_SOCKET_BUFFER_SIZE;
             channel->count[side]--;
+            channel->read_sequence[side]++;
         }
-        if (read > 0u) {
+        if (read > 0u)
+            control = armos_socket_detach_control_locked(channel, side);
+        if (read > 0u)
             spin_unlock_irqrestore(&armos_socket_lock, flags);
+        if (read > 0u) {
+            if (received_control)
+                *received_control = control;
+            else
+                armos_socket_control_free(control);
             return (ssize_t)read;
         }
         if (channel->write_closed[peer]) {
@@ -248,9 +324,11 @@ static ssize_t armos_socket_file_read(file_t *file, void *buffer, size_t length)
     }
 }
 
-static ssize_t armos_socket_file_write(file_t *file, const void *buffer, size_t length)
+static ssize_t
+armos_socket_channel_write(armos_socket_t *socket, const void *buffer,
+                           size_t length,
+                           armos_socket_control_t **pending_control)
 {
-    armos_socket_t *socket = file ? file->private_data : NULL;
     size_t written = 0u;
 
     if (!socket || (!buffer && length != 0u))
@@ -273,6 +351,27 @@ static ssize_t armos_socket_file_write(file_t *file, const void *buffer, size_t 
             spin_unlock_irqrestore(&armos_socket_lock, flags);
             return written > 0u ? (ssize_t)written : -EPIPE;
         }
+        if (pending_control && *pending_control &&
+            channel->control_count[peer] >= ARMOS_SOCKET_CONTROL_MAX) {
+            spin_unlock_irqrestore(&armos_socket_lock, flags);
+            if (task_poll_wait_once() != 0)
+                return written > 0u ? (ssize_t)written : -EINTR;
+            continue;
+        }
+        if (pending_control && *pending_control &&
+            channel->count[peer] < ARMOS_SOCKET_BUFFER_SIZE) {
+            armos_socket_control_t *control = *pending_control;
+
+            control->stream_offset = channel->write_sequence[peer];
+            control->next = NULL;
+            if (channel->control_tail[peer])
+                channel->control_tail[peer]->next = control;
+            else
+                channel->control_head[peer] = control;
+            channel->control_tail[peer] = control;
+            channel->control_count[peer]++;
+            *pending_control = NULL;
+        }
         while (written < length &&
                channel->count[peer] < ARMOS_SOCKET_BUFFER_SIZE) {
             channel->data[peer][channel->write_pos[peer]] =
@@ -280,6 +379,7 @@ static ssize_t armos_socket_file_write(file_t *file, const void *buffer, size_t 
             channel->write_pos[peer] =
                 (channel->write_pos[peer] + 1u) % ARMOS_SOCKET_BUFFER_SIZE;
             channel->count[peer]++;
+            channel->write_sequence[peer]++;
         }
         spin_unlock_irqrestore(&armos_socket_lock, flags);
         if (written == length)
@@ -288,6 +388,21 @@ static ssize_t armos_socket_file_write(file_t *file, const void *buffer, size_t 
             return written > 0u ? (ssize_t)written : -EINTR;
     }
     return (ssize_t)written;
+}
+
+static ssize_t armos_socket_file_read(file_t *file, void *buffer, size_t length)
+{
+    armos_socket_t *socket = file ? file->private_data : NULL;
+
+    return armos_socket_channel_read(socket, buffer, length, NULL);
+}
+
+static ssize_t armos_socket_file_write(file_t *file, const void *buffer,
+                                       size_t length)
+{
+    armos_socket_t *socket = file ? file->private_data : NULL;
+
+    return armos_socket_channel_write(socket, buffer, length, NULL);
 }
 
 static int armos_socket_file_close(file_t *file)
@@ -350,7 +465,6 @@ static int armos_socket_install(armos_socket_t *socket)
 {
     task_t *task = task_current_local();
     file_t *file;
-    unsigned long flags;
     int fd;
 
     if (!task || !task->process)
@@ -358,17 +472,12 @@ static int armos_socket_install(armos_socket_t *socket)
     file = armos_socket_create_file(socket);
     if (!file)
         return -ENOMEM;
-    spin_lock_irqsave(&armos_socket_lock, &flags);
-    fd = allocate_fd(task);
+    fd = vfs_install_file(task, file, 0u);
     if (fd < 0) {
-        spin_unlock_irqrestore(&armos_socket_lock, flags);
         file->private_data = NULL;
         close_file(file);
         return fd;
     }
-    task->process->files[fd] = file;
-    task->process->fd_flags[fd] = 0u;
-    spin_unlock_irqrestore(&armos_socket_lock, flags);
     return fd;
 }
 
@@ -689,6 +798,369 @@ int armos_socket_accept(int fd, void *user_address, uint32_t *user_length)
     return accepted_fd;
 }
 
+typedef struct armos_socket_cmsghdr {
+    size_t length;
+    int level;
+    int type;
+} armos_socket_cmsghdr_t;
+
+static size_t armos_socket_control_align(size_t length)
+{
+    return (length + sizeof(size_t) - 1u) & ~(sizeof(size_t) - 1u);
+}
+
+static void armos_socket_close_installed(const int *descriptors,
+                                         uint32_t count)
+{
+    for (uint32_t index = 0u; index < count; index++)
+        (void)sys_close(descriptors[index]);
+}
+
+static int armos_socket_copy_iov(
+    const struct armos_msghdr_kernel *message,
+    struct iovec_kernel *iov, size_t *total_length)
+{
+    size_t total = 0u;
+
+    if (message->msg_iovlen > ARMOS_SOCKET_IOV_MAX)
+        return -EMSGSIZE;
+    if (message->msg_iovlen != 0u && !message->msg_iov)
+        return -EFAULT;
+    if (message->msg_iovlen != 0u &&
+        copy_from_user(iov, message->msg_iov,
+                       message->msg_iovlen * sizeof(iov[0])) < 0)
+        return -EFAULT;
+    for (size_t index = 0u; index < message->msg_iovlen; index++) {
+        if (iov[index].iov_len != 0u && !iov[index].iov_base)
+            return -EFAULT;
+        if (iov[index].iov_len > ARMOS_SOCKET_MESSAGE_MAX - total)
+            return -EMSGSIZE;
+        total += iov[index].iov_len;
+    }
+    *total_length = total;
+    return 0;
+}
+
+static int armos_socket_copy_payload_from_user(
+    uint8_t *payload, const struct iovec_kernel *iov, size_t iov_count)
+{
+    size_t copied = 0u;
+
+    for (size_t index = 0u; index < iov_count; index++) {
+        if (iov[index].iov_len == 0u)
+            continue;
+        if (copy_from_user(payload + copied, iov[index].iov_base,
+                           iov[index].iov_len) < 0)
+            return -EFAULT;
+        copied += iov[index].iov_len;
+    }
+    return 0;
+}
+
+static int armos_socket_copy_payload_to_user(
+    const uint8_t *payload, size_t length,
+    const struct iovec_kernel *iov, size_t iov_count)
+{
+    size_t copied = 0u;
+
+    for (size_t index = 0u; index < iov_count && copied < length; index++) {
+        size_t chunk = iov[index].iov_len;
+
+        if (chunk > length - copied)
+            chunk = length - copied;
+        if (chunk != 0u &&
+            copy_to_user(iov[index].iov_base, payload + copied, chunk) < 0)
+            return -EFAULT;
+        copied += chunk;
+    }
+    return 0;
+}
+
+static int armos_socket_control_from_user(
+    const struct armos_msghdr_kernel *message,
+    armos_socket_control_t **result)
+{
+    task_t *task = task_current_local();
+    armos_socket_control_t *control = NULL;
+    uint8_t *buffer = NULL;
+    size_t offset = 0u;
+    uint32_t descriptor_count = 0u;
+    int descriptors[ARMOS_SOCKET_RIGHTS_MAX];
+    int error = 0;
+
+    *result = NULL;
+    if (message->msg_controllen == 0u)
+        return message->msg_control ? 0 : 0;
+    if (!message->msg_control)
+        return -EFAULT;
+    if (message->msg_controllen > 1024u)
+        return -EMSGSIZE;
+    if (!task || !task->process)
+        return -EBADF;
+
+    buffer = kmalloc(message->msg_controllen);
+    if (!buffer)
+        return -ENOMEM;
+    if (copy_from_user(buffer, message->msg_control,
+                       message->msg_controllen) < 0) {
+        error = -EFAULT;
+        goto out;
+    }
+
+    while (offset + sizeof(armos_socket_cmsghdr_t) <=
+           message->msg_controllen) {
+        armos_socket_cmsghdr_t *header =
+            (armos_socket_cmsghdr_t *)(void *)(buffer + offset);
+        size_t data_offset = armos_socket_control_align(
+            sizeof(armos_socket_cmsghdr_t));
+        size_t data_length;
+        size_t next;
+
+        if (header->length < data_offset ||
+            header->length > message->msg_controllen - offset) {
+            error = -EINVAL;
+            goto out;
+        }
+        if (header->level != ARMOS_SOL_SOCKET ||
+            header->type != ARMOS_SCM_RIGHTS) {
+            error = -ENOTSUP;
+            goto out;
+        }
+        data_length = header->length - data_offset;
+        if (data_length == 0u || data_length % sizeof(int) != 0u ||
+            data_length / sizeof(int) >
+                ARMOS_SOCKET_RIGHTS_MAX - descriptor_count) {
+            error = -EMSGSIZE;
+            goto out;
+        }
+        memcpy(&descriptors[descriptor_count], buffer + offset + data_offset,
+               data_length);
+        descriptor_count += (uint32_t)(data_length / sizeof(int));
+        next = armos_socket_control_align(header->length);
+        if (next > message->msg_controllen - offset) {
+            if (header->length != message->msg_controllen - offset) {
+                error = -EINVAL;
+                goto out;
+            }
+            offset = message->msg_controllen;
+            break;
+        }
+        offset += next;
+    }
+    if (offset != message->msg_controllen) {
+        error = -EINVAL;
+        goto out;
+    }
+    if (descriptor_count == 0u)
+        goto out;
+
+    control = kzalloc(sizeof(*control));
+    if (!control) {
+        error = -ENOMEM;
+        goto out;
+    }
+    for (uint32_t index = 0u; index < descriptor_count; index++) {
+        int descriptor = descriptors[index];
+        file_t *file;
+
+        if (descriptor < 0 || descriptor >= MAX_FILES) {
+            error = -EBADF;
+            goto out;
+        }
+        file = vfs_get_file_from_fd(task, descriptor);
+        control->files[index] = file;
+        if (!control->files[index]) {
+            error = -EBADF;
+            goto out;
+        }
+        control->file_count++;
+    }
+    *result = control;
+    control = NULL;
+
+out:
+    armos_socket_control_free(control);
+    kfree(buffer);
+    return error;
+}
+
+ssize_t armos_socket_send_message(
+    int fd, const struct armos_msghdr_kernel *user_message, int flags)
+{
+    armos_socket_t *socket = armos_socket_from_fd(fd);
+    struct armos_msghdr_kernel message;
+    struct iovec_kernel iov[ARMOS_SOCKET_IOV_MAX];
+    armos_socket_control_t *control = NULL;
+    uint8_t *payload = NULL;
+    size_t length;
+    ssize_t result;
+    int error;
+
+    if (!socket)
+        return -EBADF;
+    if (!user_message)
+        return -EFAULT;
+    if (flags != 0)
+        return -ENOTSUP;
+    if (copy_from_user(&message, user_message, sizeof(message)) < 0)
+        return -EFAULT;
+    if (message.msg_name || message.msg_namelen != 0u)
+        return -EISCONN;
+    error = armos_socket_copy_iov(&message, iov, &length);
+    if (error < 0)
+        return error;
+    error = armos_socket_control_from_user(&message, &control);
+    if (error < 0)
+        return error;
+    if (control && length == 0u) {
+        armos_socket_control_free(control);
+        return -EINVAL;
+    }
+    if (length == 0u)
+        return 0;
+
+    payload = kmalloc(length);
+    if (!payload) {
+        armos_socket_control_free(control);
+        return -ENOMEM;
+    }
+    error = armos_socket_copy_payload_from_user(payload, iov,
+                                                 message.msg_iovlen);
+    if (error < 0) {
+        kfree(payload);
+        armos_socket_control_free(control);
+        return error;
+    }
+    result = armos_socket_channel_write(socket, payload, length, &control);
+    kfree(payload);
+    armos_socket_control_free(control);
+    return result;
+}
+
+static uint32_t armos_socket_install_control(
+    armos_socket_control_t *control, uint32_t capacity, bool close_on_exec,
+    int *installed, bool *truncated)
+{
+    task_t *task = task_current_local();
+    uint32_t count = 0u;
+
+    while (control) {
+        for (uint32_t index = 0u; index < control->file_count; index++) {
+            file_t *file = control->files[index];
+            int descriptor = -1;
+
+            if (file && count < capacity &&
+                count < ARMOS_SOCKET_RIGHTS_MAX)
+                descriptor = vfs_install_file(
+                    task, file, close_on_exec ? O_CLOEXEC : 0u);
+            if (descriptor >= 0) {
+                control->files[index] = NULL;
+                installed[count++] = descriptor;
+            } else if (file) {
+                *truncated = true;
+            }
+        }
+        control = control->next;
+    }
+    return count;
+}
+
+ssize_t armos_socket_receive_message(
+    int fd, struct armos_msghdr_kernel *user_message, int flags)
+{
+    armos_socket_t *socket = armos_socket_from_fd(fd);
+    struct armos_msghdr_kernel message;
+    struct iovec_kernel iov[ARMOS_SOCKET_IOV_MAX];
+    armos_socket_control_t *control = NULL;
+    uint8_t control_buffer[256];
+    uint8_t *payload = NULL;
+    int installed[ARMOS_SOCKET_RIGHTS_MAX];
+    uint32_t installed_count = 0u;
+    uint32_t descriptor_capacity = 0u;
+    size_t control_header_size =
+        armos_socket_control_align(sizeof(armos_socket_cmsghdr_t));
+    size_t length;
+    ssize_t result;
+    bool truncated = false;
+    int error;
+
+    if (!socket)
+        return -EBADF;
+    if (!user_message)
+        return -EFAULT;
+    if (flags & ~ARMOS_MSG_CMSG_CLOEXEC)
+        return -ENOTSUP;
+    if (copy_from_user(&message, user_message, sizeof(message)) < 0)
+        return -EFAULT;
+    error = armos_socket_copy_iov(&message, iov, &length);
+    if (error < 0)
+        return error;
+    if (length == 0u)
+        return 0;
+
+    payload = kmalloc(length);
+    if (!payload)
+        return -ENOMEM;
+    result = armos_socket_channel_read(socket, payload, length, &control);
+    if (result <= 0) {
+        kfree(payload);
+        armos_socket_control_free(control);
+        return result;
+    }
+    error = armos_socket_copy_payload_to_user(payload, (size_t)result, iov,
+                                               message.msg_iovlen);
+    kfree(payload);
+    if (error < 0) {
+        armos_socket_control_free(control);
+        return error;
+    }
+
+    if (message.msg_control && message.msg_controllen >=
+        control_header_size + sizeof(int)) {
+        descriptor_capacity = (uint32_t)(
+            (message.msg_controllen - control_header_size) / sizeof(int));
+        if (descriptor_capacity > ARMOS_SOCKET_RIGHTS_MAX)
+            descriptor_capacity = ARMOS_SOCKET_RIGHTS_MAX;
+    }
+    installed_count = armos_socket_install_control(
+        control, descriptor_capacity,
+        (flags & ARMOS_MSG_CMSG_CLOEXEC) != 0, installed, &truncated);
+    if (control && installed_count == 0u)
+        truncated = true;
+
+    message.msg_flags = truncated ? ARMOS_MSG_CTRUNC : 0;
+    message.msg_namelen = 0u;
+    if (installed_count != 0u) {
+        armos_socket_cmsghdr_t *header =
+            (armos_socket_cmsghdr_t *)(void *)control_buffer;
+        size_t output_length =
+            control_header_size + installed_count * sizeof(int);
+
+        memset(control_buffer, 0, sizeof(control_buffer));
+        header->length = output_length;
+        header->level = ARMOS_SOL_SOCKET;
+        header->type = ARMOS_SCM_RIGHTS;
+        memcpy(control_buffer + control_header_size, installed,
+               installed_count * sizeof(int));
+        if (copy_to_user(message.msg_control, control_buffer,
+                         output_length) < 0) {
+            armos_socket_close_installed(installed, installed_count);
+            armos_socket_control_free(control);
+            return -EFAULT;
+        }
+        message.msg_controllen = output_length;
+    } else {
+        message.msg_controllen = 0u;
+    }
+    if (copy_to_user(user_message, &message, sizeof(message)) < 0) {
+        armos_socket_close_installed(installed, installed_count);
+        armos_socket_control_free(control);
+        return -EFAULT;
+    }
+    armos_socket_control_free(control);
+    return result;
+}
+
 ssize_t armos_socket_send(int fd, const void *buffer, size_t length, int flags,
                          const void *address, uint32_t address_length)
 {
@@ -735,6 +1207,7 @@ int armos_socket_shutdown(int fd, int how)
 {
     armos_socket_t *socket = armos_socket_from_fd(fd);
     armos_socket_channel_t *channel;
+    armos_socket_control_t *discard_control = NULL;
     unsigned long flags;
 
     if (!socket)
@@ -747,15 +1220,36 @@ int armos_socket_shutdown(int fd, int how)
         spin_unlock_irqrestore(&armos_socket_lock, flags);
         return -ENOTCONN;
     }
-    if (how == 0 || how == 2)
+    if (how == 0 || how == 2) {
         channel->read_closed[socket->side] = 1u;
+        discard_control = channel->control_head[socket->side];
+        channel->control_head[socket->side] = NULL;
+        channel->control_tail[socket->side] = NULL;
+        channel->control_count[socket->side] = 0u;
+    }
     if (how == 1 || how == 2)
         channel->write_closed[socket->side] = 1u;
     spin_unlock_irqrestore(&armos_socket_lock, flags);
+    armos_socket_control_free(discard_control);
     return 0;
 }
 
 int sys_socketpair(int domain, int type, int protocol, int *sockets)
 {
     return armos_socket_pair(domain, type, protocol, sockets);
+}
+
+ssize_t sys_sendmsg(int fd, const struct armos_msghdr_kernel *message,
+                    int flags)
+{
+    if (!armos_socket_is_fd(fd))
+        return -ENOTSUP;
+    return armos_socket_send_message(fd, message, flags);
+}
+
+ssize_t sys_recvmsg(int fd, struct armos_msghdr_kernel *message, int flags)
+{
+    if (!armos_socket_is_fd(fd))
+        return -ENOTSUP;
+    return armos_socket_receive_message(fd, message, flags);
 }

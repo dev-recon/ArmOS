@@ -1,5 +1,6 @@
 ARCH ?= arm-none-eabi-
 TARGET_ARCH ?= arm32
+TARGET_PLATFORM ?= qemu-virt
 CC := $(ARCH)gcc
 AS := $(ARCH)as
 ARMOS_SOURCE_ROOT := $(abspath ..)
@@ -13,13 +14,13 @@ ARCH_FLAGS := -mcpu=cortex-a53
 ASFLAGS := -mcpu=cortex-a53
 CRT0_SOURCE := arm64/crt0_newlib.S
 SYSCALL_SOURCE := arm64/syscall_raw.S
-BUILD_DIR := build/arm64
+BUILD_DIR ?= ../build/arm64/$(TARGET_PLATFORM)/newlib-port
 else
 ARCH_FLAGS := -mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft
 ASFLAGS := -mcpu=cortex-a15
 CRT0_SOURCE := crt0_newlib.S
 SYSCALL_SOURCE := syscall_raw.S
-BUILD_DIR := build
+BUILD_DIR ?= ../build/arm32/$(TARGET_PLATFORM)/newlib-port
 endif
 
 NEWLIB_SYSROOT ?= $(shell $(CC) -print-sysroot 2>/dev/null)

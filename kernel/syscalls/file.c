@@ -307,14 +307,11 @@ int sys_close(int fd)
 
     if (fd < 0 || fd >= MAX_FILES) return -EBADF;
     if (!task || !task->process) return -EBADF;
-    
-    file = task->process->files[fd];
+
+    file = vfs_take_file(task, fd);
     if (!file) return -EBADF;
-    
+
     close_file(file);
-    task->process->files[fd] = NULL;
-    task->process->fd_flags[fd] = 0;
-    
     return 0;
 }
 

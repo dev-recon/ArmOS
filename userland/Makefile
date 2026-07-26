@@ -17,14 +17,16 @@ REPRO_FLAGS := -ffile-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT)
                -fmacro-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT) \
                -fdebug-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT)
 
-BUILD_DIR := ../build/userland-$(TARGET_ARCH)
+TARGET_PLATFORM ?= qemu-virt
+TARGET_BUILD_ROOT ?= ../build/$(TARGET_ARCH)/$(TARGET_PLATFORM)
+BUILD_DIR := $(TARGET_BUILD_ROOT)/userland
 OUT_DIR := $(BUILD_DIR)/out
 OUT_BIN := $(OUT_DIR)/bin
 OUT_SBIN := $(OUT_DIR)/sbin
 OUT_USR_BIN := $(OUT_DIR)/usr/bin
 OUT_OPT := $(OUT_DIR)/opt
 NEWLIB_PORT := ../newlib-port
-USERFS_ROOT := ../userfs
+USERFS_ROOT ?= $(TARGET_BUILD_ROOT)/userfs
 USERFS_BIN := $(USERFS_ROOT)/bin
 USERFS_SBIN := $(USERFS_ROOT)/sbin
 USERFS_USR_BIN := $(USERFS_ROOT)/usr/bin
@@ -33,12 +35,11 @@ USERFS_OPT := $(USERFS_ROOT)/opt
 ifeq ($(TARGET_ARCH),arm64)
 ARCH_FLAGS := -mcpu=cortex-a53
 USER_TEXT_ADDRESS := 0x100000000
-PORT_BUILD_DIR := build/arm64
 else
 ARCH_FLAGS := -mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft
 USER_TEXT_ADDRESS := 0x8000
-PORT_BUILD_DIR := build
 endif
+NEWLIB_RUNTIME_DIR ?= $(TARGET_BUILD_ROOT)/newlib-port
 NEWLIB_SYSROOT ?= $(shell $(CC) -print-sysroot 2>/dev/null)
 NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
@@ -54,12 +55,12 @@ LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static \
            -Wl,-Ttext=$(USER_TEXT_ADDRESS) -Wl,-e,_start -Wl,--gc-sections \
            -Wl,--allow-multiple-definition
 
-PORT_OBJECTS := $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/crt0_newlib.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscall_raw.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscalls.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/stdio_lock.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread_sync.o
+PORT_OBJECTS := $(NEWLIB_RUNTIME_DIR)/crt0_newlib.o \
+                $(NEWLIB_RUNTIME_DIR)/syscall_raw.o \
+                $(NEWLIB_RUNTIME_DIR)/syscalls.o \
+                $(NEWLIB_RUNTIME_DIR)/stdio_lock.o \
+                $(NEWLIB_RUNTIME_DIR)/pthread.o \
+                $(NEWLIB_RUNTIME_DIR)/pthread_sync.o
 
 COREUTIL_SRCS := $(wildcard coreutils/src/*.c)
 COREUTILS := $(sort $(patsubst coreutils/src/%.c,%,$(COREUTIL_SRCS)))
@@ -121,7 +122,7 @@ check-newlib:
 	fi
 
 newlib-port:
-	$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" ARCH="$(ARCH)" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"
+	$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" ARCH="$(ARCH)" BUILD_DIR="$(abspath $(NEWLIB_RUNTIME_DIR))" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"
 
 list:
 	@printf '%s\n' $(TARGETS)

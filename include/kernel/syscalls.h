@@ -171,6 +171,8 @@ struct process;
 #define __NR_set_tls            ARMOS_NR_SET_TLS
 #define __NR_get_tls_info       ARMOS_NR_GET_TLS_INFO
 #define __NR_socketpair         ARMOS_NR_SOCKETPAIR
+#define __NR_sendmsg            ARMOS_NR_SENDMSG
+#define __NR_recvmsg            ARMOS_NR_RECVMSG
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -239,6 +241,16 @@ struct timezone {
 struct iovec_kernel {
     void *iov_base;
     size_t iov_len;
+};
+
+struct armos_msghdr_kernel {
+    void *msg_name;
+    uint32_t msg_namelen;
+    struct iovec_kernel *msg_iov;
+    size_t msg_iovlen;
+    void *msg_control;
+    size_t msg_controllen;
+    int msg_flags;
 };
 
 struct pollfd_kernel {
@@ -338,6 +350,10 @@ int sys_chown(const char* pathname, uid_t owner, gid_t group);
 int sys_fchown(int fd, uid_t owner, gid_t group);
 int sys_socket(int domain, int type, int protocol);
 int sys_socketpair(int domain, int type, int protocol, int* sockets);
+ssize_t sys_sendmsg(int sockfd, const struct armos_msghdr_kernel* message,
+                    int flags);
+ssize_t sys_recvmsg(int sockfd, struct armos_msghdr_kernel* message,
+                    int flags);
 int sys_bind(int sockfd, const void* addr, uint32_t addrlen);
 int sys_connect(int sockfd, const void* addr, uint32_t addrlen);
 int sys_listen(int sockfd, int backlog);
@@ -422,7 +438,7 @@ int sys_clock_nanosleep(int clock_id, int flags,
 long sys_brk(void* addr);
 int sys_shm_open(const char *name, size_t size, int flags);
 int sys_shm_unlink(const char *name);
-void *sys_shm_map(int id, void *addr, int flags);
+void *sys_shm_map(int fd, void *addr, int flags);
 int sys_shm_unmap(void *addr, size_t size);
 int sys_shutdown(void);
 void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd);

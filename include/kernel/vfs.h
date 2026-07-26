@@ -132,6 +132,9 @@ int vfs_kernel_dir_read(kernel_file_t* handle, dirent_t* entry);
 void free_fd(task_t* proc, int fd);
 int allocate_fd(task_t* process);
 uint32_t vfs_fd_limit(task_t* process);
+int vfs_install_file(task_t* task, file_t* file, uint32_t descriptor_flags);
+file_t* vfs_get_file_from_fd(task_t* task, int fd);
+file_t* vfs_take_file(task_t* task, int fd);
 
 /* File operations */
 file_t* get_file(file_t* file);

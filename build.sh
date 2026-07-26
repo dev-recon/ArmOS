@@ -11,6 +11,11 @@ armos_config_normalize
 
 TARGET_ARCH="${TARGET_ARCH:-arm32}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+TARGET_BUILD_ROOT="$ROOT_DIR/build/$TARGET_ARCH/$TARGET_PLATFORM"
+if [ "${ARMOS_BUILD_LOCK_HELD:-0}" != "1" ]; then
+    export ARMOS_BUILD_LOCK_DIR="$TARGET_BUILD_ROOT/.build.lock"
+    exec "$ROOT_DIR/tools/with_build_lock.sh" "$0" "$@"
+fi
 if [ "$TARGET_ARCH" = "arm64" ]; then
     ARCH="${ARCH:-${CROSS_COMPILE:-aarch64-elf-}}"
 else
@@ -64,6 +69,14 @@ armos_config_validate "$ROOT_DIR"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
 IMAGE_SUFFIX="${TARGET_ARCH}-${TARGET_PLATFORM}"
+TARGET_USERFS="$USERFS_ROOT"
+TARGET_BUNDLES="$BUNDLE_BUILD_ROOT"
+ZLIB_PREFIX="$TARGET_BUNDLES/zlib/bundle/opt/zlib"
+JPEG_PREFIX="$TARGET_BUNDLES/libjpeg/bundle/opt/libjpeg"
+PNG_PREFIX="$TARGET_BUNDLES/libpng/bundle/opt/libpng"
+TIFF_PREFIX="$TARGET_BUNDLES/libtiff/bundle/opt/libtiff"
+NCURSES_PREFIX="$TARGET_USERFS/opt/ncurses"
+export ZLIB_PREFIX JPEG_PREFIX PNG_PREFIX TIFF_PREFIX NCURSES_PREFIX
 
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 
@@ -92,6 +105,9 @@ for dir in userfs userland kernel newlib-port; do
     fi
 done
 
+TARGET_ARCH="$TARGET_ARCH" TARGET_PLATFORM="$TARGET_PLATFORM" \
+    USERFS_ROOT="$TARGET_USERFS" ./tools/prepare_target_userfs.sh
+
 for tool in make python3 "${ARCH}gcc" "${ARCH}ld" "${ARCH}objcopy" "${ARCH}objdump" "${ARCH}readelf" mkfs.fat mcopy mmd mke2fs debugfs; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Error: required tool '$tool' not found in PATH" >&2
@@ -101,8 +117,9 @@ done
 
 if [ "$BUILD_ALL_USERLAND" != "1" ] &&
    ! TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH" \
-       ./tools/validate_userfs_arch.sh --allow-empty --quiet; then
-    echo "=== Shared userfs architecture changed; rebuilding all userland ==="
+       ./tools/validate_userfs_arch.sh \
+           --root "$TARGET_USERFS" --allow-empty --quiet; then
+    echo "=== Target userfs architecture changed; rebuilding all userland ==="
     enable_complete_userland_build
 fi
 
@@ -112,15 +129,24 @@ if [ "$BUILD_NEWLIB" = "1" ]; then
        [ ! -f "$NEWLIB_SYSROOT/.armos-reproducible-paths-v1" ]; then
         echo "=== Building repo-local newlib sysroot ==="
         TARGET="$TARGET_TRIPLET" ARCH="$ARCH" \
-            NEWLIB_INSTALL_ROOT="$ROOT_DIR/build/newlib-sysroot" \
+            NEWLIB_BUILD_ROOT="$TARGET_BUILD_ROOT/newlib-build" \
+            NEWLIB_INSTALL_ROOT="$TARGET_BUILD_ROOT/newlib-sysroot" \
             ./tools/build_newlib.sh
     fi
 fi
 
 echo "=== Rebuilding userland ==="
-make -C userland clean TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH"
+make -C userland clean \
+    TARGET_ARCH="$TARGET_ARCH" \
+    TARGET_PLATFORM="$TARGET_PLATFORM" \
+    TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+    ARCH="$ARCH"
 make -C userland install \
     TARGET_ARCH="$TARGET_ARCH" \
+    TARGET_PLATFORM="$TARGET_PLATFORM" \
+    TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+    USERFS_ROOT="$TARGET_USERFS" \
+    NEWLIB_RUNTIME_DIR="$NEWLIB_RUNTIME_DIR" \
     BUILD_NEWLIB="$BUILD_NEWLIB" \
     ENABLE_TCC="$BUILD_TCC" \
     ARCH="$ARCH" \
@@ -129,132 +155,162 @@ make -C userland install \
 
 if [ "$BUILD_TCC" = "1" ]; then
     echo "=== Building native TinyCC bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_tcc_native.sh
-    rsync -a build/tcc-native/bundle/opt/tcc/ userfs/opt/tcc/
+    WORK_DIR="$TARGET_BUNDLES/tcc-native" \
+        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ./tools/build_tcc_native.sh
+    rsync -a "$TARGET_BUNDLES/tcc-native/bundle/opt/tcc/" \
+        "$TARGET_USERFS/opt/tcc/"
 fi
 
 if [ "$BUILD_BSD" = "1" ]; then
     echo "=== Building BSD tools bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bmake.sh
-    rsync -a build/bmake/bundle/ userfs/
-    cp build/bmake/bundle/opt/bmake/bin/bmake userfs/usr/bin/bmake
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdsed.sh
-    rsync -a build/bsdsed/bundle/ userfs/
-    ln -sfn ../opt/bsdsed/bin/sed userfs/bin/sed
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdawk.sh
-    rsync -a build/bsdawk/bundle/ userfs/
-    ln -sfn ../opt/bsdawk/bin/awk userfs/bin/awk
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdinstall.sh
-    rsync -a build/bsdinstall/bundle/ userfs/
-    ln -sfn ../../opt/bsdinstall/bin/install userfs/usr/bin/install
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdmtree.sh
-    rsync -a build/bsdmtree/bundle/ userfs/
-    mkdir -p userfs/usr/bin userfs/usr/sbin
-    ln -sfn ../../opt/bsdmtree/bin/mtree userfs/usr/bin/mtree
-    ln -sfn ../../opt/bsdmtree/bin/mtree userfs/usr/sbin/mtree
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdxargs.sh
-    rsync -a build/bsdxargs/bundle/ userfs/
-    ln -sfn ../../opt/bsdxargs/bin/xargs userfs/usr/bin/xargs
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsddiff.sh
-    rsync -a build/bsddiff/bundle/ userfs/
-    ln -sfn ../../opt/bsddiff/bin/diff userfs/usr/bin/diff
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdpatch.sh
-    rsync -a build/bsdpatch/bundle/ userfs/
-    ln -sfn ../../opt/bsdpatch/bin/patch userfs/usr/bin/patch
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdpax.sh
-    rsync -a build/bsdpax/bundle/ userfs/
-    ln -sfn ../../opt/bsdpax/bin/pax userfs/usr/bin/pax
-    ln -sfn ../../opt/bsdpax/bin/tar userfs/usr/bin/tar
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdm4.sh
-    rsync -a build/bsdm4/bundle/ userfs/
-    ln -sfn ../../opt/bsdm4/bin/m4 userfs/usr/bin/m4
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdelftools.sh
-    rsync -a build/bsdelftools/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/bmake" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bmake.sh
+    rsync -a "$TARGET_BUNDLES/bmake/bundle/" "$TARGET_USERFS/"
+    cp "$TARGET_BUNDLES/bmake/bundle/opt/bmake/bin/bmake" \
+        "$TARGET_USERFS/usr/bin/bmake"
+    WORK_DIR="$TARGET_BUNDLES/bsdsed" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdsed.sh
+    rsync -a "$TARGET_BUNDLES/bsdsed/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../opt/bsdsed/bin/sed "$TARGET_USERFS/bin/sed"
+    WORK_DIR="$TARGET_BUNDLES/bsdawk" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdawk.sh
+    rsync -a "$TARGET_BUNDLES/bsdawk/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../opt/bsdawk/bin/awk "$TARGET_USERFS/bin/awk"
+    WORK_DIR="$TARGET_BUNDLES/bsdinstall" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdinstall.sh
+    rsync -a "$TARGET_BUNDLES/bsdinstall/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsdinstall/bin/install "$TARGET_USERFS/usr/bin/install"
+    WORK_DIR="$TARGET_BUNDLES/bsdmtree" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdmtree.sh
+    rsync -a "$TARGET_BUNDLES/bsdmtree/bundle/" "$TARGET_USERFS/"
+    mkdir -p "$TARGET_USERFS/usr/bin" "$TARGET_USERFS/usr/sbin"
+    ln -sfn ../../opt/bsdmtree/bin/mtree "$TARGET_USERFS/usr/bin/mtree"
+    ln -sfn ../../opt/bsdmtree/bin/mtree "$TARGET_USERFS/usr/sbin/mtree"
+    WORK_DIR="$TARGET_BUNDLES/bsdxargs" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdxargs.sh
+    rsync -a "$TARGET_BUNDLES/bsdxargs/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsdxargs/bin/xargs "$TARGET_USERFS/usr/bin/xargs"
+    WORK_DIR="$TARGET_BUNDLES/bsddiff" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsddiff.sh
+    rsync -a "$TARGET_BUNDLES/bsddiff/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsddiff/bin/diff "$TARGET_USERFS/usr/bin/diff"
+    WORK_DIR="$TARGET_BUNDLES/bsdpatch" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdpatch.sh
+    rsync -a "$TARGET_BUNDLES/bsdpatch/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsdpatch/bin/patch "$TARGET_USERFS/usr/bin/patch"
+    WORK_DIR="$TARGET_BUNDLES/bsdpax" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdpax.sh
+    rsync -a "$TARGET_BUNDLES/bsdpax/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsdpax/bin/pax "$TARGET_USERFS/usr/bin/pax"
+    ln -sfn ../../opt/bsdpax/bin/tar "$TARGET_USERFS/usr/bin/tar"
+    WORK_DIR="$TARGET_BUNDLES/bsdm4" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdm4.sh
+    rsync -a "$TARGET_BUNDLES/bsdm4/bundle/" "$TARGET_USERFS/"
+    ln -sfn ../../opt/bsdm4/bin/m4 "$TARGET_USERFS/usr/bin/m4"
+    WORK_DIR="$TARGET_BUNDLES/bsdelftools" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_bsdelftools.sh
+    rsync -a "$TARGET_BUNDLES/bsdelftools/bundle/" "$TARGET_USERFS/"
     for tool in ar ranlib nm strip size; do
-        ln -sfn ../../opt/bsdelftools/bin/$tool userfs/usr/bin/$tool
+        ln -sfn ../../opt/bsdelftools/bin/$tool "$TARGET_USERFS/usr/bin/$tool"
     done
 fi
 
 if [ "$BUILD_ZLIB" = "1" ]; then
     echo "=== Building zlib bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
-    rsync -a build/zlib/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/zlib" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
+    rsync -a "$TARGET_BUNDLES/zlib/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then
     echo "=== Building libjpeg bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
-    rsync -a build/libjpeg/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/libjpeg" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
+    rsync -a "$TARGET_BUNDLES/libjpeg/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBPNG" = "1" ]; then
-    if [ ! -f build/zlib/bundle/opt/zlib/lib/libz.a ]; then
+    if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
         echo "=== Building zlib bundle for libpng ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
+        WORK_DIR="$TARGET_BUNDLES/zlib" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
     fi
-    rsync -a build/zlib/bundle/ userfs/
+    rsync -a "$TARGET_BUNDLES/zlib/bundle/" "$TARGET_USERFS/"
     echo "=== Building libpng bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libpng.sh
-    rsync -a build/libpng/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/libpng" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libpng.sh
+    rsync -a "$TARGET_BUNDLES/libpng/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBTIFF" = "1" ]; then
-    if [ ! -f build/zlib/bundle/opt/zlib/lib/libz.a ]; then
+    if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
         echo "=== Building zlib bundle for libtiff ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
+        WORK_DIR="$TARGET_BUNDLES/zlib" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
     fi
-    if [ ! -f build/libjpeg/bundle/opt/libjpeg/lib/libjpeg.a ]; then
+    if [ ! -f "$JPEG_PREFIX/lib/libjpeg.a" ]; then
         echo "=== Building libjpeg bundle for libtiff ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
+        WORK_DIR="$TARGET_BUNDLES/libjpeg" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
     fi
-    rsync -a build/zlib/bundle/ userfs/
-    rsync -a build/libjpeg/bundle/ userfs/
+    rsync -a "$TARGET_BUNDLES/zlib/bundle/" "$TARGET_USERFS/"
+    rsync -a "$TARGET_BUNDLES/libjpeg/bundle/" "$TARGET_USERFS/"
     echo "=== Building libtiff bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libtiff.sh
-    rsync -a build/libtiff/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/libtiff" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libtiff.sh
+    rsync -a "$TARGET_BUNDLES/libtiff/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_FBVIEW" = "1" ]; then
-    if [ ! -f build/zlib/bundle/opt/zlib/lib/libz.a ]; then
+    if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
         echo "=== Building zlib bundle for fbview ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
+        WORK_DIR="$TARGET_BUNDLES/zlib" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_zlib.sh
     fi
-    if [ ! -f build/libjpeg/bundle/opt/libjpeg/lib/libjpeg.a ]; then
+    if [ ! -f "$JPEG_PREFIX/lib/libjpeg.a" ]; then
         echo "=== Building libjpeg bundle for fbview ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
+        WORK_DIR="$TARGET_BUNDLES/libjpeg" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libjpeg.sh
     fi
-    if [ ! -f build/libpng/bundle/opt/libpng/lib/libpng.a ]; then
+    if [ ! -f "$PNG_PREFIX/lib/libpng.a" ]; then
         echo "=== Building libpng bundle for fbview ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libpng.sh
+        WORK_DIR="$TARGET_BUNDLES/libpng" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libpng.sh
     fi
-    if [ ! -f build/libtiff/bundle/opt/libtiff/lib/libtiff.a ]; then
+    if [ ! -f "$TIFF_PREFIX/lib/libtiff.a" ]; then
         echo "=== Building libtiff bundle for fbview ==="
-        ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libtiff.sh
+        WORK_DIR="$TARGET_BUNDLES/libtiff" ARCH="$ARCH" \
+            NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_libtiff.sh
     fi
-    rsync -a build/zlib/bundle/ userfs/
-    rsync -a build/libjpeg/bundle/ userfs/
-    rsync -a build/libpng/bundle/ userfs/
-    rsync -a build/libtiff/bundle/ userfs/
+    rsync -a "$TARGET_BUNDLES/zlib/bundle/" "$TARGET_USERFS/"
+    rsync -a "$TARGET_BUNDLES/libjpeg/bundle/" "$TARGET_USERFS/"
+    rsync -a "$TARGET_BUNDLES/libpng/bundle/" "$TARGET_USERFS/"
+    rsync -a "$TARGET_BUNDLES/libtiff/bundle/" "$TARGET_USERFS/"
     echo "=== Building fbview ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_fbview.sh
-    rsync -a build/fbview/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/fbview" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_fbview.sh
+    rsync -a "$TARGET_BUNDLES/fbview/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_NCURSES" = "1" ]; then
     echo "=== Building ncurses bundle ==="
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_ncurses.sh
-    rsync -a build/ncurses/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/ncurses" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_ncurses.sh
+    rsync -a "$TARGET_BUNDLES/ncurses/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_NANO" = "1" ]; then
     echo "=== Building nano bundle ==="
-    if [ "$BUILD_NCURSES" != "1" ] && [ ! -f userfs/opt/ncurses/lib/libncurses.a ]; then
-        echo "Error: nano requires the ncurses bundle in userfs/opt/ncurses" >&2
+    if [ "$BUILD_NCURSES" != "1" ] &&
+       [ ! -f "$TARGET_USERFS/opt/ncurses/lib/libncurses.a" ]; then
+        echo "Error: nano requires the target ncurses bundle" >&2
         echo "Hint: rerun with BUILD_NCURSES=1 BUILD_NANO=1" >&2
         exit 1
     fi
-    ARCH="$ARCH" NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_nano.sh
-    rsync -a build/nano/bundle/ userfs/
+    WORK_DIR="$TARGET_BUNDLES/nano" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_nano.sh
+    rsync -a "$TARGET_BUNDLES/nano/bundle/" "$TARGET_USERFS/"
 fi
 
 echo "=== Rebuilding kernel ==="
@@ -265,7 +321,8 @@ rm -f disk.img fat32.img ext2.img "build/images/disk-${IMAGE_SUFFIX}.img"
 make platform-disk ARCH="$ARCH" CROSS_COMPILE="$ARCH" TARGET_ARCH="$TARGET_ARCH" TARGET_PLATFORM="$TARGET_PLATFORM"
 
 echo "=== Validating installed userfs ELF architecture ==="
-TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH" ./tools/validate_userfs_arch.sh
+TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH" \
+    ./tools/validate_userfs_arch.sh --root "$TARGET_USERFS"
 
 echo "=== Auditing generated images for host information ==="
 ./tools/check_release_image_hygiene.sh \

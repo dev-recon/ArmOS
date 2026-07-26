@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$ROOT_DIR/userland/opt/tcc/src"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/tcc-native}"
+WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/tcc-native}"
 PATCHED_SRC="$WORK_DIR/src"
 BUILD_DIR="$WORK_DIR/build"
 BUNDLE_DIR="$WORK_DIR/bundle/opt/tcc"
@@ -173,7 +173,7 @@ file "$BUNDLE_DIR/bin/tcc"
 "${ARCH}objdump" -f "$BUNDLE_DIR/bin/tcc"
 echo
 echo "To stage it into the generated filesystem for testing:"
-echo "  rsync -a $BUNDLE_DIR/ $ROOT_DIR/userfs/opt/tcc/"
+echo "  rsync -a $BUNDLE_DIR/ $USERFS_ROOT/opt/tcc/"
 echo
 echo "Keep /opt/tcc/bin out of PATH: /usr/bin/tcc is the ArmOS wrapper that"
 echo "adds the startup objects and libraries needed for normal native builds."

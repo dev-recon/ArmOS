@@ -13,7 +13,7 @@ HOST_CC="${HOST_CC:-cc}"
 NANO_VERSION="${NANO_VERSION:-8.7}"
 NANO_URL="${NANO_URL:-https://www.nano-editor.org/dist/v8/nano-$NANO_VERSION.tar.xz}"
 
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/nano}"
+WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/nano}"
 DOWNLOAD_DIR="$WORK_DIR/download"
 SRC_ARCHIVE="$DOWNLOAD_DIR/nano-$NANO_VERSION.tar.xz"
 SRC_DIR="$WORK_DIR/src"
@@ -25,7 +25,7 @@ BUNDLE_ETC="$BUNDLE_PREFIX/etc"
 BUNDLE_SYNTAX="$BUNDLE_PREFIX/share/nano"
 
 LIBGCC="${LIBGCC:-$("$CC" $ARM_FLAGS -print-libgcc-file-name)}"
-NCURSES_PREFIX="${NCURSES_PREFIX:-$ROOT_DIR/userfs/opt/ncurses}"
+NCURSES_PREFIX="${NCURSES_PREFIX:-$USERFS_ROOT/opt/ncurses}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -37,7 +37,7 @@ fi
 
 if [ ! -f "$NCURSES_PREFIX/include/curses.h" ] || [ ! -f "$NCURSES_PREFIX/lib/libncurses.a" ]; then
     echo "error: missing ArmOS ncurses bundle: $NCURSES_PREFIX" >&2
-    echo "hint: run ./tools/build_ncurses.sh and stage build/ncurses/bundle first" >&2
+    echo "hint: run ./tools/build_ncurses.sh and stage its target bundle first" >&2
     exit 1
 fi
 
@@ -180,4 +180,4 @@ echo "ArmOS nano bundle built:"
 echo "  $BUNDLE_ROOT"
 echo
 echo "Stage with:"
-echo "  rsync -a $BUNDLE_ROOT/ $ROOT_DIR/userfs/"
+echo "  rsync -a $BUNDLE_ROOT/ $USERFS_ROOT/"

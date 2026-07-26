@@ -2011,11 +2011,14 @@ static void test_shared_memory(void)
     if (expect(id >= 0, "shm create", id) < 0)
         return;
 
-    shared = (volatile int *)shm_map(id, NULL, SHM_RDWR);
-    if (expect(shared != NULL, "shm map parent", id) < 0) {
+    shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, id, 0);
+    if (expect(shared != MAP_FAILED, "shm map parent", id) < 0) {
+        close(id);
         shm_unlink(name);
         return;
     }
+    expect(close(id) == 0, "shm descriptor close after map", id);
 
     shared[0] = 1234;
     shared[1] = 0;

@@ -38,6 +38,7 @@ static inode_t* inode_table[MAX_INODES] = {0};
 static inode_t* root_inode = NULL;
 static uint32_t next_inode_number = 1;
 static spinlock_t vfs_lock;
+static spinlock_t fd_table_lock = SPINLOCK_INIT("fd_table");
 
 /* Mount table */
 #define MAX_MOUNTS 8
@@ -901,6 +902,57 @@ int allocate_fd(task_t* process)
     return -EMFILE;
 }
 
+int vfs_install_file(task_t *task, file_t *file, uint32_t descriptor_flags)
+{
+    uint32_t limit;
+    unsigned long flags;
+    int fd = -EMFILE;
+
+    if (!task || !task->process || !file)
+        return -EINVAL;
+    limit = vfs_fd_limit(task);
+    spin_lock_irqsave(&fd_table_lock, &flags);
+    for (uint32_t index = 0u; index < limit; index++) {
+        if (!task->process->files[index]) {
+            task->process->files[index] = file;
+            task->process->fd_flags[index] = descriptor_flags;
+            fd = (int)index;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&fd_table_lock, flags);
+    return fd;
+}
+
+file_t *vfs_get_file_from_fd(task_t *task, int fd)
+{
+    file_t *file = NULL;
+    unsigned long flags;
+
+    if (!task || !task->process || fd < 0 || fd >= MAX_FILES)
+        return NULL;
+    spin_lock_irqsave(&fd_table_lock, &flags);
+    if (task->process->files[fd])
+        file = get_file(task->process->files[fd]);
+    spin_unlock_irqrestore(&fd_table_lock, flags);
+    return file;
+}
+
+file_t *vfs_take_file(task_t *task, int fd)
+{
+    file_t *file;
+    unsigned long flags;
+
+    if (!task || !task->process || fd < 0 || fd >= MAX_FILES)
+        return NULL;
+    spin_lock_irqsave(&fd_table_lock, &flags);
+    file = task->process->files[fd];
+    task->process->files[fd] = NULL;
+    task->process->fd_flags[fd] = 0u;
+    spin_unlock_irqrestore(&fd_table_lock, flags);
+    return file;
+}
+
 uint32_t vfs_fd_limit(task_t* process)
 {
     uint32_t limit;
@@ -914,15 +966,7 @@ uint32_t vfs_fd_limit(task_t* process)
 
 void free_fd(task_t* proc, int fd)
 {
-    if (!proc || !proc->process) {
-        KERROR("NULL PROC\n");
-        return ;
-    }
- 
-    if (fd >= 0 && fd < MAX_FILES) {
-        proc->process->files[fd] = NULL;
-        proc->process->fd_flags[fd] = 0;
-    }
+    (void)vfs_take_file(proc, fd);
 }
 
 inode_t* get_root_inode(void)

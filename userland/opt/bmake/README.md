@@ -27,11 +27,13 @@ Build from the repository root:
 ./tools/build_bmake.sh
 ```
 
-Stage the generated bundle into `userfs`:
+Stage the generated bundle into the target filesystem:
 
 ```sh
-rsync -a build/bmake/bundle/ userfs/
-cp build/bmake/bundle/opt/bmake/bin/bmake userfs/usr/bin/bmake
+rsync -a build/arm32/qemu-virt/bundles/bmake/bundle/ \
+  build/arm32/qemu-virt/userfs/
+cp build/arm32/qemu-virt/bundles/bmake/bundle/opt/bmake/bin/bmake \
+  build/arm32/qemu-virt/userfs/usr/bin/bmake
 ```
 
 `mash -c "command"` is required for bmake recipes and is implemented as a

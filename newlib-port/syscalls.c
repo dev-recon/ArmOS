@@ -181,10 +181,12 @@ extern long sys_sysinfo(void *resp);
 extern long sys_sysconf(int name);
 extern long sys_shm_open(const char *name, unsigned long size, int flags);
 extern long sys_shm_unlink(const char *name);
-extern long sys_shm_map(int id, void *addr, int flags);
+extern long sys_shm_map(int fd, void *addr, int flags);
 extern long sys_shm_unmap(void *addr, unsigned long size);
 extern long sys_socket(int domain, int type, int protocol);
 extern long sys_socketpair(int domain, int type, int protocol, int sockets[2]);
+extern long sys_sendmsg(int sockfd, const struct msghdr *message, int flags);
+extern long sys_recvmsg(int sockfd, struct msghdr *message, int flags);
 extern long sys_bind(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_connect(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_listen(int sockfd, int backlog);
@@ -282,11 +284,6 @@ struct os_sigaction {
 };
 
 typedef unsigned long nfds_t;
-
-struct iovec {
-    void *iov_base;
-    size_t iov_len;
-};
 
 struct pollfd {
     int fd;
@@ -1495,6 +1492,28 @@ int socketpair(int domain, int type, int protocol, int sockets[2])
     return ret_errno(sys_socketpair(domain, type, protocol, sockets));
 }
 
+ssize_t sendmsg(int sockfd, const struct msghdr *message, int flags)
+{
+    long ret = sys_sendmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *message, int flags)
+{
+    long ret = sys_recvmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
+}
+
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
     return ret_errno(sys_bind(sockfd, addr, addrlen));
@@ -2376,9 +2395,9 @@ int shm_unlink(const char *name)
     return ret_errno(sys_shm_unlink(name));
 }
 
-void *shm_map(int id, void *addr, int flags)
+void *shm_map(int fd, void *addr, int flags)
 {
-    long ret = sys_shm_map(id, addr, flags);
+    long ret = sys_shm_map(fd, addr, flags);
     if (ret < 0) {
         errno = (int)-ret;
         return NULL;

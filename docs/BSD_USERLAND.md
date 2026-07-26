@@ -26,8 +26,9 @@ is usually:
 BUILD_NEWLIB=0 BUILD_TCC=0 BUILD_BSD=1 BUILD_NCURSES=0 BUILD_NANO=0 ./build.sh
 ```
 
-The tools are cross-built as static ArmOS binaries and staged into `userfs`.
-Generated binaries under `userfs/opt/*` remain build artifacts.
+The tools are cross-built as static ArmOS binaries and staged into
+`build/<arch>/<platform>/userfs`. Generated files from distinct targets never
+share a staging directory.
 
 ## Installed Layout
 

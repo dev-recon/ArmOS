@@ -7,7 +7,8 @@ Build and stage it with:
 
 ```sh
 ./tools/build_zlib.sh
-rsync -a build/zlib/bundle/ userfs/
+rsync -a build/arm32/qemu-virt/bundles/zlib/bundle/ \
+  build/arm32/qemu-virt/userfs/
 ```
 
 Or include it in a full image build:

@@ -122,12 +122,12 @@ userfs/usr/src/armos/              Userland source snapshot installed in /
 Generated bundle output:
 
 ```text
-build/tcc-native/bundle/opt/tcc/
+build/<arch>/<platform>/bundles/tcc-native/bundle/opt/tcc/
 ```
 
-The generated filesystem staging directory `userfs/opt/tcc/` is ignored. Rebuild
-and stage it from the script instead of committing generated binaries and copied
-headers.
+The target filesystem staging directory is
+`build/<arch>/<platform>/userfs/`. Generated binaries from different targets
+are never staged together.
 
 ## Sources Installed In ArmOS
 
@@ -194,9 +194,11 @@ Build the native ArmOS bundle:
 Stage it into the generated filesystem manually for now:
 
 ```sh
-rsync -a build/tcc-native/bundle/opt/tcc/ userfs/opt/tcc/
-make -C userland tcc ENABLE_TCC=1
-cp build/userland/out/usr/bin/tcc userfs/usr/bin/tcc
+rsync -a build/arm32/qemu-virt/bundles/tcc-native/bundle/opt/tcc/ \
+  build/arm32/qemu-virt/userfs/opt/tcc/
+make -C userland tcc ENABLE_TCC=1 TARGET_ARCH=arm32 TARGET_PLATFORM=qemu-virt
+cp build/arm32/qemu-virt/userland/out/usr/bin/tcc \
+  build/arm32/qemu-virt/userfs/usr/bin/tcc
 ```
 
 Rebuild the disk:

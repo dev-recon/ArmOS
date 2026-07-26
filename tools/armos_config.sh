@@ -217,7 +217,7 @@ armos_config_validate() {
     done
 
     if [ "${BUILD_NANO:-0}" = 1 ] && [ "${BUILD_NCURSES:-0}" = 0 ] &&
-       [ ! -f "$root_dir/userfs/opt/ncurses/lib/libncurses.a" ]; then
+       [ ! -f "$root_dir/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/userfs/opt/ncurses/lib/libncurses.a" ]; then
         armos_config_error "BUILD_NANO=yes requires BUILD_NCURSES=yes or an installed ncurses bundle"
         return 1
     fi

@@ -181,6 +181,8 @@ RAW_SYSCALL sys_futex, 331
 RAW_SYSCALL sys_set_tls, 332
 RAW_SYSCALL sys_get_tls_info, 333
 RAW_SYSCALL sys_socketpair, 334
+RAW_SYSCALL sys_sendmsg, 335
+RAW_SYSCALL sys_recvmsg, 336
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function

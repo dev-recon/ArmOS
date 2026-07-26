@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$ROOT_DIR/userland/opt/tcc/src"
-BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/tcc-host-arm}"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/arm32/qemu-virt/tools/tcc-host}"
 CC_HOST="${CC_HOST:-clang}"
 
 if [ ! -f "$SRC_DIR/configure" ]; then

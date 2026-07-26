@@ -11,18 +11,25 @@
 #
 # Responsibilities:
 # - Build the complete generic ArmOS userland with the AArch64 newlib port.
-# - Optionally install ELF64 programs into the shared userfs hierarchy.
+# - Optionally install ELF64 programs into the target userfs hierarchy.
 # - Validate every generated and installed executable as AArch64 ELF64.
 #
 # Notes:
 # - ARM32 and ARM64 intentionally use the same userland target and path sets.
-# - Installing one architecture replaces generated executables in userfs; a
-#   later build of the other architecture replaces them at the same paths.
+# - Generated files remain below build/arm64/<platform>.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SYSROOT="${NEWLIB_SYSROOT:-$ROOT_DIR/build/newlib-sysroot/aarch64-elf}"
+TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+TARGET_BUILD_ROOT="$ROOT_DIR/build/arm64/$TARGET_PLATFORM"
+
+if [ "${ARMOS_BUILD_LOCK_HELD:-0}" != "1" ]; then
+    export ARMOS_BUILD_LOCK_DIR="$TARGET_BUILD_ROOT/.build.lock"
+    exec "$ROOT_DIR/tools/with_build_lock.sh" "$0" "$@"
+fi
+
+SYSROOT="${NEWLIB_SYSROOT:-$TARGET_BUILD_ROOT/newlib-sysroot/aarch64-elf}"
 LIBC="$SYSROOT/lib/libc.a"
 TARGETS=()
 REBUILD_NEWLIB=0
@@ -38,7 +45,7 @@ Builds the AArch64 ArmOS newlib glue and userland. With no target, builds the
 complete generic userland target set.
 
   --clean           remove previous ARM64 userland output first
-  --install         build all targets and install them into shared userfs
+  --install         build all targets and install them into target userfs
   --rebuild-newlib  rebuild the repo-local AArch64 newlib sysroot
 EOF
 }
@@ -84,11 +91,15 @@ if [ "$REBUILD_NEWLIB" -eq 1 ] ||
    [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$LIBC" ] ||
    [ ! -f "$SYSROOT/.armos-reproducible-paths-v1" ]; then
     TARGET=aarch64-elf ARCH=aarch64-elf- \
+        NEWLIB_BUILD_ROOT="$TARGET_BUILD_ROOT/newlib-build" \
+        NEWLIB_INSTALL_ROOT="$TARGET_BUILD_ROOT/newlib-sysroot" \
         "$ROOT_DIR/tools/build_newlib.sh"
 fi
 
 make -C "$ROOT_DIR/newlib-port" \
     TARGET_ARCH=arm64 \
+    TARGET_PLATFORM="$TARGET_PLATFORM" \
+    BUILD_DIR="$TARGET_BUILD_ROOT/newlib-port" \
     ARCH=aarch64-elf- \
     NEWLIB_SYSROOT="$SYSROOT" \
     NEWLIB_LIBC="$LIBC"
@@ -96,6 +107,8 @@ make -C "$ROOT_DIR/newlib-port" \
 if [ "$CLEAN" -eq 1 ]; then
     make -C "$ROOT_DIR/userland" \
         TARGET_ARCH=arm64 \
+        TARGET_PLATFORM="$TARGET_PLATFORM" \
+        TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
         ARCH=aarch64-elf- \
         NEWLIB_SYSROOT="$SYSROOT" \
         NEWLIB_LIBC="$LIBC" \
@@ -103,18 +116,25 @@ if [ "$CLEAN" -eq 1 ]; then
 fi
 
 if [ "$INSTALL" -eq 1 ]; then
-    rm -f "$ROOT_DIR/build/userland-arm64/out/usr/bin/hello64"
+    TARGET_ARCH=arm64 TARGET_PLATFORM="$TARGET_PLATFORM" \
+        USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
+        "$ROOT_DIR/tools/prepare_target_userfs.sh"
+    rm -f "$TARGET_BUILD_ROOT/userland/out/usr/bin/hello64"
 fi
 
 make -C "$ROOT_DIR/userland" \
     TARGET_ARCH=arm64 \
+    TARGET_PLATFORM="$TARGET_PLATFORM" \
+    TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+    USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
+    NEWLIB_RUNTIME_DIR="$TARGET_BUILD_ROOT/newlib-port" \
     ARCH=aarch64-elf- \
     NEWLIB_SYSROOT="$SYSROOT" \
     NEWLIB_LIBC="$LIBC" \
     "${TARGETS[@]}"
 
-OUT_DIR="$ROOT_DIR/build/userland-arm64/out"
-USERFS_DIR="$ROOT_DIR/userfs"
+OUT_DIR="$TARGET_BUILD_ROOT/userland/out"
+USERFS_DIR="$TARGET_BUILD_ROOT/userfs"
 EXECUTABLES=0
 while IFS= read -r binary; do
     if ! aarch64-elf-readelf -h "$binary" | grep -q 'Class:.*ELF64' ||
@@ -141,7 +161,7 @@ if [ "$INSTALL" -eq 1 ]; then
             exit 1
         fi
     done < <(find "$OUT_DIR" -type f | sort)
-    echo "AArch64 userland installed in shared userfs: $EXECUTABLES executables"
+    echo "AArch64 userland installed in target userfs: $EXECUTABLES executables"
 else
     echo "AArch64 userland ready: $EXECUTABLES executables"
 fi

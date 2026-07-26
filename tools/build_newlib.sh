@@ -9,17 +9,8 @@ ARCH="${ARCH:-${TARGET}-}"
 NEWLIB_VERSION="${NEWLIB_VERSION:-4.4.0.20231231}"
 ARCHIVE="${NEWLIB_ARCHIVE:-$ROOT_DIR/newlib-$NEWLIB_VERSION.tar.gz}"
 NEWLIB_URL="${NEWLIB_URL:-https://sourceware.org/pub/newlib/newlib-$NEWLIB_VERSION.tar.gz}"
-BUILD_ROOT="${NEWLIB_BUILD_ROOT:-$ROOT_DIR/build/newlib-build}"
-INSTALL_ROOT="${NEWLIB_INSTALL_ROOT:-$ROOT_DIR/build/newlib-sysroot}"
-SYSROOT="$INSTALL_ROOT/$TARGET"
-SRC_DIR="$BUILD_ROOT/src/newlib-$NEWLIB_VERSION"
-OBJ_DIR="$BUILD_ROOT/obj-$TARGET"
 PATCH_DIR="${NEWLIB_PATCH_DIR:-$ROOT_DIR/patches/newlib-$NEWLIB_VERSION}"
-PATCH_SERIES="$PATCH_DIR/series"
-PATCH_STAMP="$SRC_DIR/.arm-os-patches-applied"
 REPRODUCIBLE_ROOT="${ARMOS_REPRODUCIBLE_ROOT:-/usr/src/armos}"
-REPRODUCIBLE_STAMP="$SYSROOT/.armos-reproducible-paths-v1"
-OBJECT_CONTRACT_STAMP="$OBJ_DIR/.armos-build-contract"
 REPRODUCIBLE_FLAGS="\
 -ffile-prefix-map=$ROOT_DIR=$REPRODUCIBLE_ROOT \
 -fmacro-prefix-map=$ROOT_DIR=$REPRODUCIBLE_ROOT \
@@ -29,9 +20,11 @@ export PATH="/opt/homebrew/Cellar/arm-none-eabi-gcc/15.1.0/bin:/opt/homebrew/bin
 
 case "$TARGET" in
     arm-none-eabi)
+        TARGET_ARCH="${TARGET_ARCH:-arm32}"
         TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     aarch64-elf)
+        TARGET_ARCH="${TARGET_ARCH:-arm64}"
         TARGET_CFLAGS="-mcpu=cortex-a53 -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     *)
@@ -39,6 +32,18 @@ case "$TARGET" in
         exit 1
         ;;
 esac
+
+TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+TARGET_BUILD_ROOT="${TARGET_BUILD_ROOT:-$ROOT_DIR/build/$TARGET_ARCH/$TARGET_PLATFORM}"
+BUILD_ROOT="${NEWLIB_BUILD_ROOT:-$TARGET_BUILD_ROOT/newlib-build}"
+INSTALL_ROOT="${NEWLIB_INSTALL_ROOT:-$TARGET_BUILD_ROOT/newlib-sysroot}"
+SYSROOT="$INSTALL_ROOT/$TARGET"
+SRC_DIR="$BUILD_ROOT/src/newlib-$NEWLIB_VERSION"
+OBJ_DIR="$BUILD_ROOT/obj-$TARGET"
+PATCH_SERIES="$PATCH_DIR/series"
+PATCH_STAMP="$SRC_DIR/.arm-os-patches-applied"
+REPRODUCIBLE_STAMP="$SYSROOT/.armos-reproducible-paths-v1"
+OBJECT_CONTRACT_STAMP="$OBJ_DIR/.armos-build-contract"
 
 if ! command -v "${ARCH}gcc" >/dev/null 2>&1; then
     echo "Error: ${ARCH}gcc not found in PATH" >&2

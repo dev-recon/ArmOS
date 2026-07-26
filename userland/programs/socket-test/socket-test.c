@@ -18,15 +18,18 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <arm_os_abi.h>
 
 #define COLOR_GREEN "\033[32m"
 #define COLOR_RED   "\033[31m"
@@ -57,6 +60,60 @@ static int expect(int condition, const char *name, int value)
 static int status_exited(int status, int code)
 {
     return WIFEXITED(status) && WEXITSTATUS(status) == code;
+}
+
+static int send_descriptor(int socket_fd, int descriptor, unsigned char tag)
+{
+    unsigned char control[CMSG_SPACE(sizeof(int))];
+    struct cmsghdr *header;
+    struct iovec iov;
+    struct msghdr message;
+
+    memset(control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    iov.iov_base = &tag;
+    iov.iov_len = sizeof(tag);
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control;
+    message.msg_controllen = sizeof(control);
+    header = CMSG_FIRSTHDR(&message);
+    header->cmsg_len = CMSG_LEN(sizeof(int));
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    memcpy(CMSG_DATA(header), &descriptor, sizeof(descriptor));
+    return sendmsg(socket_fd, &message, 0) == (ssize_t)sizeof(tag) ? 0 : -1;
+}
+
+static int receive_descriptor(int socket_fd, int *descriptor,
+                              unsigned char expected_tag)
+{
+    unsigned char control[CMSG_SPACE(sizeof(int))];
+    unsigned char tag = 0u;
+    struct cmsghdr *header;
+    struct iovec iov;
+    struct msghdr message;
+    ssize_t count;
+
+    memset(control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    iov.iov_base = &tag;
+    iov.iov_len = sizeof(tag);
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control;
+    message.msg_controllen = sizeof(control);
+    count = recvmsg(socket_fd, &message, MSG_CMSG_CLOEXEC);
+    if (count != (ssize_t)sizeof(tag) || tag != expected_tag ||
+        (message.msg_flags & MSG_CTRUNC) != 0)
+        return -1;
+    header = CMSG_FIRSTHDR(&message);
+    if (!header || header->cmsg_level != SOL_SOCKET ||
+        header->cmsg_type != SCM_RIGHTS ||
+        header->cmsg_len != CMSG_LEN(sizeof(int)))
+        return -1;
+    memcpy(descriptor, CMSG_DATA(header), sizeof(*descriptor));
+    return *descriptor >= 0 ? 0 : -1;
 }
 
 static void test_socket_pair(void)
@@ -195,6 +252,145 @@ out:
         close(pair[1]);
 }
 
+static void test_parent_child_descriptor_passing(void)
+{
+    int pair[2] = {-1, -1};
+    int data_pipe[2] = {-1, -1};
+    int status = 0;
+    pid_t child;
+
+    if (expect(socketpair(AF_LOCAL, SOCK_STREAM, 0, pair) == 0,
+               "SCM_RIGHTS parent/child socket", errno) < 0)
+        return;
+    if (expect(pipe(data_pipe) == 0, "SCM_RIGHTS source pipe", errno) < 0)
+        goto out;
+
+    child = fork();
+    if (child == 0) {
+        unsigned char value = 0u;
+        int received = -1;
+        int descriptor_flags;
+
+        close(pair[0]);
+        close(data_pipe[0]);
+        close(data_pipe[1]);
+        if (receive_descriptor(pair[1], &received, 0x41u) < 0)
+            _exit(1);
+        descriptor_flags = fcntl(received, F_GETFD);
+        if (descriptor_flags < 0 ||
+            (descriptor_flags & FD_CLOEXEC) == 0 ||
+            read(received, &value, sizeof(value)) != (ssize_t)sizeof(value) ||
+            value != 0x7bu) {
+            close(received);
+            _exit(2);
+        }
+        close(received);
+        close(pair[1]);
+        _exit(0);
+    }
+    if (expect(child > 0, "fork SCM_RIGHTS receiver", child) < 0)
+        goto out;
+
+    close(pair[1]);
+    pair[1] = -1;
+    expect(send_descriptor(pair[0], data_pipe[0], 0x41u) == 0,
+           "send descriptor to child", errno);
+    close(data_pipe[0]);
+    data_pipe[0] = -1;
+    expect(write(data_pipe[1], "\x7b", 1) == 1,
+           "transferred descriptor remains usable", errno);
+    close(data_pipe[1]);
+    data_pipe[1] = -1;
+    waitpid(child, &status, 0);
+    expect(status_exited(status, 0),
+           "child receives descriptor with CLOEXEC", status);
+
+out:
+    if (data_pipe[0] >= 0)
+        close(data_pipe[0]);
+    if (data_pipe[1] >= 0)
+        close(data_pipe[1]);
+    if (pair[0] >= 0)
+        close(pair[0]);
+    if (pair[1] >= 0)
+        close(pair[1]);
+}
+
+static void test_shared_memory_descriptor_passing(void)
+{
+    char name[32];
+    int pair[2] = {-1, -1};
+    int shared_fd = -1;
+    int status = 0;
+    volatile int *mapping = MAP_FAILED;
+    pid_t child;
+
+    snprintf(name, sizeof(name), "socket-shm-%d", getpid());
+    shm_unlink(name);
+    if (expect(socketpair(AF_LOCAL, SOCK_STREAM, 0, pair) == 0,
+               "shared buffer transfer socket", errno) < 0)
+        return;
+    child = fork();
+    if (child == 0) {
+        volatile int *child_mapping;
+        int received = -1;
+
+        close(pair[0]);
+        if (receive_descriptor(pair[1], &received, 0x62u) < 0)
+            _exit(1);
+        child_mapping = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                             MAP_SHARED, received, 0);
+        close(received);
+        if (child_mapping == MAP_FAILED || child_mapping[0] != 0x1234)
+            _exit(2);
+        child_mapping[1] = 0x5678;
+        munmap((void *)child_mapping, 4096);
+        close(pair[1]);
+        _exit(0);
+    }
+    if (expect(child > 0, "fork shared buffer receiver", child) < 0)
+        goto out;
+    close(pair[1]);
+    pair[1] = -1;
+
+    shared_fd = shm_open(name, 4096, SHM_O_CREAT | SHM_O_EXCL);
+    if (expect(shared_fd >= 0, "create descriptor-backed shared buffer",
+               shared_fd) < 0)
+        goto wait_child;
+    mapping = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, shared_fd, 0);
+    if (expect(mapping != MAP_FAILED, "mmap shared buffer", errno) < 0)
+        goto wait_child;
+    mapping[0] = 0x1234;
+    mapping[1] = 0;
+    expect(shm_unlink(name) == 0, "unlink keeps open shared descriptor", errno);
+    expect(send_descriptor(pair[0], shared_fd, 0x62u) == 0,
+           "SCM_RIGHTS transfers shared buffer", errno);
+    close(shared_fd);
+    shared_fd = -1;
+
+wait_child:
+    close(pair[0]);
+    pair[0] = -1;
+    waitpid(child, &status, 0);
+    expect(status_exited(status, 0), "shared buffer receiver exits cleanly",
+           status);
+    if (mapping != MAP_FAILED)
+        expect(mapping[1] == 0x5678, "shared buffer changes are visible",
+               mapping[1]);
+
+out:
+    if (mapping != MAP_FAILED)
+        munmap((void *)mapping, 4096);
+    if (shared_fd >= 0)
+        close(shared_fd);
+    shm_unlink(name);
+    if (pair[0] >= 0)
+        close(pair[0]);
+    if (pair[1] >= 0)
+        close(pair[1]);
+}
+
 struct thread_exchange {
     int fd;
     int result;
@@ -264,6 +460,72 @@ static void test_thread_socket_pair(void)
            "socket peer thread joins cleanly", exchange.result);
 
 out:
+    close(pair[0]);
+    close(pair[1]);
+}
+
+struct descriptor_receiver {
+    int socket_fd;
+    int result;
+};
+
+static void *descriptor_receiver_main(void *opaque)
+{
+    struct descriptor_receiver *receiver = opaque;
+    unsigned char value = 0u;
+    int descriptor = -1;
+
+    if (receive_descriptor(receiver->socket_fd, &descriptor, 0x52u) < 0) {
+        receiver->result = 1;
+        return NULL;
+    }
+    if (read(descriptor, &value, sizeof(value)) != (ssize_t)sizeof(value) ||
+        value != 0x63u) {
+        receiver->result = 2;
+        close(descriptor);
+        return NULL;
+    }
+    close(descriptor);
+    receiver->result = 0;
+    return NULL;
+}
+
+static void test_thread_descriptor_passing(void)
+{
+    struct descriptor_receiver receiver;
+    pthread_t thread;
+    int pair[2] = {-1, -1};
+    int data_pipe[2] = {-1, -1};
+    int result;
+
+    if (expect(socketpair(AF_LOCAL, SOCK_STREAM, 0, pair) == 0,
+               "SCM_RIGHTS thread socket", errno) < 0)
+        return;
+    if (expect(pipe(data_pipe) == 0, "SCM_RIGHTS thread pipe", errno) < 0)
+        goto out;
+    receiver.socket_fd = pair[1];
+    receiver.result = -1;
+    result = pthread_create(&thread, NULL, descriptor_receiver_main,
+                            &receiver);
+    if (expect(result == 0, "descriptor receiver thread", result) < 0)
+        goto out;
+    expect(send_descriptor(pair[0], data_pipe[0], 0x52u) == 0,
+           "send descriptor between threads", errno);
+    close(data_pipe[0]);
+    data_pipe[0] = -1;
+    expect(write(data_pipe[1], "\x63", 1) == 1,
+           "thread descriptor data", errno);
+    close(data_pipe[1]);
+    data_pipe[1] = -1;
+    result = pthread_join(thread, NULL);
+    expect(result == 0 && receiver.result == 0,
+           "thread receives transferred descriptor", receiver.result);
+
+out:
+    if (data_pipe[0] >= 0)
+        close(data_pipe[0]);
+    if (data_pipe[1] >= 0)
+        close(data_pipe[1]);
     close(pair[0]);
     close(pair[1]);
 }
@@ -391,6 +653,33 @@ static void *stress_worker_main(void *opaque)
             worker->result = 5;
             goto iteration_failed;
         }
+        if ((iteration & 7u) == 0u) {
+            unsigned char value = (unsigned char)(iteration + worker->index);
+            unsigned char copied = 0u;
+            int data_pipe[2] = {-1, -1};
+            int transferred = -1;
+
+            if (pipe(data_pipe) < 0 ||
+                send_descriptor(pair[0], data_pipe[0], 0x73u) < 0 ||
+                receive_descriptor(pair[1], &transferred, 0x73u) < 0 ||
+                write(data_pipe[1], &value, sizeof(value)) !=
+                    (ssize_t)sizeof(value) ||
+                read(transferred, &copied, sizeof(copied)) !=
+                    (ssize_t)sizeof(copied) ||
+                copied != value) {
+                if (data_pipe[0] >= 0)
+                    close(data_pipe[0]);
+                if (data_pipe[1] >= 0)
+                    close(data_pipe[1]);
+                if (transferred >= 0)
+                    close(transferred);
+                worker->result = 6;
+                goto iteration_failed;
+            }
+            close(data_pipe[0]);
+            close(data_pipe[1]);
+            close(transferred);
+        }
         if ((iteration & 15u) == 0u) {
             struct sockaddr_un address;
             int named;
@@ -406,7 +695,7 @@ static void *stress_worker_main(void *opaque)
                      sizeof(address)) < 0) {
                 if (named >= 0)
                     close(named);
-                worker->result = 6;
+                worker->result = 7;
                 goto iteration_failed;
             }
             close(named);
@@ -570,7 +859,10 @@ int main(int argc, char **argv)
     test_socket_pair();
     test_duplicated_endpoint();
     test_parent_child_socket_pair();
+    test_parent_child_descriptor_passing();
+    test_shared_memory_descriptor_passing();
     test_thread_socket_pair();
+    test_thread_descriptor_passing();
     test_thread_backpressure();
     test_smp_pressure();
     test_named_socket();

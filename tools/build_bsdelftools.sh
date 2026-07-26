@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="${SRC_DIR:-$ROOT_DIR/userland/opt/bsdelftools/src}"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/bsdelftools}"
+WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/bsdelftools}"
 BUILD_DIR="$WORK_DIR/build"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_PREFIX="$BUNDLE_ROOT/opt/bsdelftools"
@@ -62,7 +62,7 @@ echo "ArmOS BSD ELF tools bundle built:"
 echo "  $BUNDLE_ROOT"
 echo
 echo "Stage with:"
-echo "  rsync -a $BUNDLE_ROOT/ $ROOT_DIR/userfs/"
+echo "  rsync -a $BUNDLE_ROOT/ $USERFS_ROOT/"
 for tool in ar ranlib nm strip size; do
-    echo "  ln -sfn ../../opt/bsdelftools/bin/$tool $ROOT_DIR/userfs/usr/bin/$tool"
+    echo "  ln -sfn ../../opt/bsdelftools/bin/$tool $USERFS_ROOT/usr/bin/$tool"
 done

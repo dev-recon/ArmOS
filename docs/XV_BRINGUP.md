@@ -196,10 +196,10 @@ pattern and is convenient for the Raspberry Pi 3 ILI9341 landscape mode.
 
 A local-only probe built outside the repository from `../xv-3.10a` has been
 used to validate the original xv BMP, JPEG, and TIFF loader paths against the
-ArmOS userland libraries.  The probe binary may be copied into `userfs/usr/bin`
-for a generated-disk smoke test, but the probe sources, xv sources, source
-patches, and source-derived compatibility headers must stay outside this
-repository.
+ArmOS userland libraries. The probe binary may be copied into
+`build/<arch>/<platform>/userfs/usr/bin` for a generated-disk smoke test, but
+the probe sources, xv sources, source patches, and source-derived compatibility
+headers must stay outside this repository.
 
 Runtime test:
 

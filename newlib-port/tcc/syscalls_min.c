@@ -146,13 +146,15 @@ extern long sys_futimens(int fd, const armos_timespec_t *times);
 extern long sys_getcwd(char *buf, unsigned long size);
 extern long sys_shm_open(const char *name, unsigned long size, int flags);
 extern long sys_shm_unlink(const char *name);
-extern long sys_shm_map(int id, void *addr, int flags);
+extern long sys_shm_map(int fd, void *addr, int flags);
 extern long sys_shm_unmap(void *addr, unsigned long size);
 extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int fd);
 extern long sys_munmap(void *addr, unsigned long length);
 extern long sys_mprotect(void *addr, unsigned long length, int prot);
 extern long sys_socket(int domain, int type, int protocol);
 extern long sys_socketpair(int domain, int type, int protocol, int sockets[2]);
+extern long sys_sendmsg(int sockfd, const struct msghdr *message, int flags);
+extern long sys_recvmsg(int sockfd, struct msghdr *message, int flags);
 extern long sys_bind(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_listen(int sockfd, int backlog);
 extern long sys_accept(int sockfd, void *addr, unsigned long *addrlen);
@@ -1003,6 +1005,28 @@ int socket(int domain, int type, int protocol)
 int socketpair(int domain, int type, int protocol, int sockets[2])
 {
     return ret_errno(sys_socketpair(domain, type, protocol, sockets));
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *message, int flags)
+{
+    long ret = sys_sendmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *message, int flags)
+{
+    long ret = sys_recvmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
@@ -2003,9 +2027,9 @@ int shm_unlink(const char *name)
     return ret_errno(sys_shm_unlink(name));
 }
 
-void *shm_map(int id, void *addr, int flags)
+void *shm_map(int fd, void *addr, int flags)
 {
-    long ret = sys_shm_map(id, addr, flags);
+    long ret = sys_shm_map(fd, addr, flags);
     if (ret < 0) {
         errno = (int)-ret;
         return NULL;

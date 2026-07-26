@@ -11,6 +11,10 @@ source "$ROOT_DIR/tools/armos_config.sh"
 ARCH="${ARCH:-}"
 TARGET_ARCH="${TARGET_ARCH:-arm64}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-raspi3}"
+if [ "${ARMOS_BUILD_LOCK_HELD:-0}" != "1" ]; then
+    export ARMOS_BUILD_LOCK_DIR="$ROOT_DIR/build/$TARGET_ARCH/$TARGET_PLATFORM/.build.lock"
+    exec "$ROOT_DIR/tools/with_build_lock.sh" "$0" "$@"
+fi
 
 # Fast iteration defaults: reuse the existing newlib/TCC bundles unless the
 # caller explicitly asks for them.
