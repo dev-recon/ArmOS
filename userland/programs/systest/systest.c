@@ -555,6 +555,7 @@ static void test_open_permission_enforcement(void)
 static void test_pipe_dup2(void)
 {
     int pipefd[2];
+    int cloexec_fd;
     char buf[32];
     int n;
     int saved_stdout;
@@ -573,6 +574,28 @@ static void test_pipe_dup2(void)
     expect(n == 7 && strcmp(buf, "pipe-ok") == 0, "pipe read", n);
     close(pipefd[0]);
     close(pipefd[1]);
+
+    if (expect(pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) == 0,
+               "pipe2 create", errno) == 0) {
+        expect((fcntl(pipefd[0], F_GETFD) & FD_CLOEXEC) != 0 &&
+               (fcntl(pipefd[1], F_GETFD) & FD_CLOEXEC) != 0,
+               "pipe2 close-on-exec", 0);
+        expect((fcntl(pipefd[0], F_GETFL) & O_NONBLOCK) != 0 &&
+               (fcntl(pipefd[1], F_GETFL) & O_NONBLOCK) != 0,
+               "pipe2 non-blocking", 0);
+        errno = 0;
+        expect(read(pipefd[0], buf, sizeof(buf)) < 0 && errno == EAGAIN,
+               "pipe2 empty non-blocking read", errno);
+        cloexec_fd = fcntl(pipefd[0], F_DUPFD_CLOEXEC, 8);
+        if (expect(cloexec_fd >= 8, "fcntl duplicate close-on-exec",
+                   cloexec_fd) == 0) {
+            expect((fcntl(cloexec_fd, F_GETFD) & FD_CLOEXEC) != 0,
+                   "fcntl duplicate flag", 0);
+            close(cloexec_fd);
+        }
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
 
     saved_stdout = dup(STDOUT_FILENO);
     fd = open(tmp_path("dup2.txt"), O_CREAT | O_WRONLY | O_TRUNC, 0644);

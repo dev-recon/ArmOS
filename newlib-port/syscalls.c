@@ -1475,6 +1475,36 @@ int pipe(int pipefd[2])
     return ret_errno(sys_pipe(pipefd));
 }
 
+int pipe2(int pipefd[2], int flags)
+{
+    int saved_errno;
+
+    if ((flags & ~(O_CLOEXEC | O_NONBLOCK)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (pipe(pipefd) < 0)
+        return -1;
+    for (int index = 0; index < 2; index++) {
+        if ((flags & O_CLOEXEC) != 0 &&
+            fcntl(pipefd[index], F_SETFD, FD_CLOEXEC) < 0)
+            goto fail;
+        if ((flags & O_NONBLOCK) != 0 &&
+            fcntl(pipefd[index], F_SETFL, O_NONBLOCK) < 0)
+            goto fail;
+    }
+    return 0;
+
+fail:
+    saved_errno = errno;
+    close(pipefd[0]);
+    close(pipefd[1]);
+    pipefd[0] = -1;
+    pipefd[1] = -1;
+    errno = saved_errno;
+    return -1;
+}
+
 int dup(int oldfd)
 {
     return ret_errno(sys_dup(oldfd));

@@ -92,6 +92,7 @@
 #define F_GETLK     7
 #define F_SETLK     8
 #define F_SETLKW    9
+#define F_DUPFD_CLOEXEC 14
 
 #define F_RDLCK     1
 #define F_WRLCK     2

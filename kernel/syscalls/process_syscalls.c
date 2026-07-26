@@ -431,6 +431,9 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
         if (bytes_read > 0)
             return bytes_read;
 
+        if ((file->flags & O_NONBLOCK) != 0)
+            return -EAGAIN;
+
         if (pipe_wait_interruptible() < 0)
             return -EINTR;
     }
@@ -473,6 +476,9 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
 
         if (bytes_written >= count)
             return bytes_written;
+
+        if ((file->flags & O_NONBLOCK) != 0)
+            return bytes_written > 0 ? (ssize_t)bytes_written : -EAGAIN;
 
         if (pipe_wait_interruptible() < 0)
             return bytes_written > 0 ? (ssize_t)bytes_written : -EINTR;
@@ -891,6 +897,7 @@ int sys_fcntl(int fd, int cmd, uintptr_t arg)
 
     switch (cmd) {
     case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
         if ((int)arg < 0 || arg >= vfs_fd_limit(task))
             return -EINVAL;
         for (newfd = (int)arg; newfd < (int)vfs_fd_limit(task); newfd++) {
@@ -898,7 +905,8 @@ int sys_fcntl(int fd, int cmd, uintptr_t arg)
                 task->process->files[newfd] = get_file(file);
                 if (!task->process->files[newfd])
                     return -EBADF;
-                task->process->fd_flags[newfd] = 0;
+                task->process->fd_flags[newfd] =
+                    cmd == F_DUPFD_CLOEXEC ? O_CLOEXEC : 0;
                 return newfd;
             }
         }
