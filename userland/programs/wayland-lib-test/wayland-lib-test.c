@@ -28,6 +28,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <wayland-cursor.h>
 #include <wayland-server.h>
 #include <xdg-shell-client-protocol.h>
 
@@ -529,6 +530,8 @@ static int test_registry(void)
     struct wl_shm *shm = NULL;
     struct wl_shm_pool *pool = NULL;
     struct wl_buffer *buffer = NULL;
+    struct wl_cursor_theme *cursor_theme = NULL;
+    struct wl_cursor *cursor = NULL;
     struct wl_seat *seat = NULL;
     struct wl_pointer *pointer = NULL;
     struct wl_keyboard *keyboard = NULL;
@@ -621,6 +624,15 @@ static int test_registry(void)
         wl_shm_add_listener(shm, &shm_listener, &state) < 0 ||
         wl_output_add_listener(output, &output_listener, &state) < 0 ||
         xdg_wm_base_add_listener(wm_base, &wm_base_listener, &state) < 0)
+        goto protocol_failed;
+    cursor_theme = wl_cursor_theme_load(NULL, 24, shm);
+    cursor = cursor_theme ?
+        wl_cursor_theme_get_cursor(cursor_theme, "left_ptr") : NULL;
+    if (!cursor || cursor->image_count != 1u ||
+        cursor->images[0]->width != 24u ||
+        cursor->images[0]->height != 24u ||
+        !wl_cursor_image_get_buffer(cursor->images[0]) ||
+        wl_cursor_frame(cursor, 0u) != 0)
         goto protocol_failed;
     pointer = wl_seat_get_pointer(seat);
     keyboard = wl_seat_get_keyboard(seat);
@@ -747,6 +759,7 @@ static int test_registry(void)
     wl_surface_destroy(surface);
     wl_buffer_destroy(buffer);
     wl_shm_pool_destroy(pool);
+    wl_cursor_theme_destroy(cursor_theme);
     munmap(pixels, 4096);
     close(shm_fd);
     wl_shm_destroy(shm);
@@ -797,6 +810,8 @@ protocol_failed:
         wl_buffer_destroy(buffer);
     if (pool)
         wl_shm_pool_destroy(pool);
+    if (cursor_theme)
+        wl_cursor_theme_destroy(cursor_theme);
     if (pixels != MAP_FAILED)
         munmap(pixels, 4096);
     if (shm_fd >= 0)

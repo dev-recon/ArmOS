@@ -121,9 +121,12 @@ ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
 ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
+WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
-WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY)
+WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
+WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
+                     $(WAYLAND_CURSOR_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 
@@ -188,10 +191,15 @@ $(WAYLAND_SERVER_LIBRARY): $(WAYLAND_SERVER_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
+$(WAYLAND_CURSOR_LIBRARY): $(WAYLAND_CURSOR_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
 $(WAYLAND_API_TEST_TARGET): newlib-port $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
-		$(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
+		$(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
+		$(WAYLAND_SERVER_LIBRARY) \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
@@ -298,6 +306,7 @@ install: $(TARGETS)
 	done
 	cp $(WAYLAND_CLIENT_LIBRARY) $(USERFS_USR_LIB)/libwayland-client.a
 	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
+	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
 
