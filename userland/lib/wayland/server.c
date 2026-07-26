@@ -14,7 +14,7 @@
  * - Own and release server-side transport resources.
  *
  * Notes:
- * - Resource dispatch and globals are added after this transport base.
+ * - Protocol-specific request decoding remains outside this core runtime.
  * - No platform or architecture-specific code belongs in this library.
  */
 
@@ -59,10 +59,43 @@ struct wl_event_loop {
     unsigned int dispatch_depth;
 };
 
+struct wl_resource {
+    struct wl_client *client;
+    struct wl_resource *next;
+    const struct wl_interface *interface;
+    const void *implementation;
+    void *data;
+    wl_resource_destroy_func_t destroy;
+    uint32_t id;
+    int version;
+    bool destroying;
+};
+
+struct wl_client {
+    struct wl_display *display;
+    struct wl_client *next;
+    struct wl_resource *resources;
+    int fd;
+    bool destroying;
+};
+
+struct wl_global {
+    struct wl_display *display;
+    struct wl_global *next;
+    const struct wl_interface *interface;
+    wl_global_bind_func_t bind;
+    void *data;
+    uint32_t name;
+    uint32_t version;
+};
+
 struct wl_display {
     int listen_fd;
     char socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     struct wl_event_loop event_loop;
+    struct wl_client *clients;
+    struct wl_global *globals;
+    uint32_t next_global_name;
     bool terminated;
 };
 
@@ -135,8 +168,10 @@ struct wl_display *wl_display_create(void)
 {
     struct wl_display *display = calloc(1, sizeof(*display));
 
-    if (display)
+    if (display) {
         display->listen_fd = -1;
+        display->next_global_name = 1u;
+    }
     return display;
 }
 
@@ -146,6 +181,10 @@ void wl_display_destroy(struct wl_display *display)
 
     if (!display)
         return;
+    while (display->clients)
+        wl_client_destroy(display->clients);
+    while (display->globals)
+        wl_global_destroy(display->globals);
     if (display->listen_fd >= 0)
         close(display->listen_fd);
     source = display->event_loop.sources;
@@ -454,4 +493,245 @@ void wl_display_terminate(struct wl_display *display)
 {
     if (display)
         display->terminated = true;
+}
+
+struct wl_client *wl_client_create(struct wl_display *display, int fd)
+{
+    struct wl_client *client;
+
+    if (!display || fd < 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    client = calloc(1, sizeof(*client));
+    if (!client)
+        return NULL;
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        free(client);
+        return NULL;
+    }
+    client->display = display;
+    client->fd = fd;
+    client->next = display->clients;
+    display->clients = client;
+    return client;
+}
+
+void wl_client_destroy(struct wl_client *client)
+{
+    struct wl_client **link;
+
+    if (!client || client->destroying)
+        return;
+    client->destroying = true;
+    while (client->resources)
+        wl_resource_destroy(client->resources);
+    if (client->display) {
+        link = &client->display->clients;
+        while (*link && *link != client)
+            link = &(*link)->next;
+        if (*link == client)
+            *link = client->next;
+    }
+    close(client->fd);
+    client->display = NULL;
+    free(client);
+}
+
+void wl_client_flush(struct wl_client *client)
+{
+    (void)client;
+}
+
+int wl_client_get_fd(struct wl_client *client)
+{
+    if (!client) {
+        errno = EINVAL;
+        return -1;
+    }
+    return client->fd;
+}
+
+struct wl_display *wl_client_get_display(struct wl_client *client)
+{
+    return client ? client->display : NULL;
+}
+
+struct wl_resource *wl_client_get_object(struct wl_client *client,
+                                         uint32_t id)
+{
+    struct wl_resource *resource;
+
+    if (!client)
+        return NULL;
+    for (resource = client->resources; resource; resource = resource->next) {
+        if (!resource->destroying && resource->id == id)
+            return resource;
+    }
+    return NULL;
+}
+
+struct wl_global *wl_global_create(
+    struct wl_display *display, const struct wl_interface *interface,
+    int version, void *data, wl_global_bind_func_t bind)
+{
+    struct wl_global *global;
+    uint32_t name;
+
+    if (!display || !interface || !interface->name || !bind ||
+        version < 1 || version > interface->version) {
+        errno = EINVAL;
+        return NULL;
+    }
+    name = display->next_global_name++;
+    if (name == 0u) {
+        errno = ENOSPC;
+        return NULL;
+    }
+    global = calloc(1, sizeof(*global));
+    if (!global)
+        return NULL;
+    global->display = display;
+    global->interface = interface;
+    global->bind = bind;
+    global->data = data;
+    global->name = name;
+    global->version = (uint32_t)version;
+    global->next = display->globals;
+    display->globals = global;
+    return global;
+}
+
+void wl_global_destroy(struct wl_global *global)
+{
+    struct wl_global **link;
+
+    if (!global)
+        return;
+    if (global->display) {
+        link = &global->display->globals;
+        while (*link && *link != global)
+            link = &(*link)->next;
+        if (*link == global)
+            *link = global->next;
+    }
+    global->display = NULL;
+    free(global);
+}
+
+const struct wl_interface *wl_global_get_interface(
+    const struct wl_global *global)
+{
+    return global ? global->interface : NULL;
+}
+
+uint32_t wl_global_get_name(const struct wl_global *global)
+{
+    return global ? global->name : 0u;
+}
+
+uint32_t wl_global_get_version(const struct wl_global *global)
+{
+    return global ? global->version : 0u;
+}
+
+void *wl_global_get_user_data(const struct wl_global *global)
+{
+    return global ? global->data : NULL;
+}
+
+struct wl_resource *wl_resource_create(
+    struct wl_client *client, const struct wl_interface *interface,
+    int version, uint32_t id)
+{
+    struct wl_resource *resource;
+
+    if (!client || client->destroying || !interface || !interface->name ||
+        version < 1 || version > interface->version || id == 0u ||
+        wl_client_get_object(client, id)) {
+        errno = EINVAL;
+        return NULL;
+    }
+    resource = calloc(1, sizeof(*resource));
+    if (!resource)
+        return NULL;
+    resource->client = client;
+    resource->interface = interface;
+    resource->version = version;
+    resource->id = id;
+    resource->next = client->resources;
+    client->resources = resource;
+    return resource;
+}
+
+void wl_resource_set_implementation(
+    struct wl_resource *resource, const void *implementation, void *data,
+    wl_resource_destroy_func_t destroy)
+{
+    if (!resource || resource->destroying)
+        return;
+    resource->implementation = implementation;
+    resource->data = data;
+    resource->destroy = destroy;
+}
+
+void wl_resource_destroy(struct wl_resource *resource)
+{
+    struct wl_resource **link;
+    wl_resource_destroy_func_t destroy;
+
+    if (!resource || resource->destroying)
+        return;
+    resource->destroying = true;
+    if (resource->client) {
+        link = &resource->client->resources;
+        while (*link && *link != resource)
+            link = &(*link)->next;
+        if (*link == resource)
+            *link = resource->next;
+    }
+    destroy = resource->destroy;
+    if (destroy)
+        destroy(resource);
+    resource->client = NULL;
+    free(resource);
+}
+
+uint32_t wl_resource_get_id(struct wl_resource *resource)
+{
+    return resource ? resource->id : 0u;
+}
+
+int wl_resource_get_version(struct wl_resource *resource)
+{
+    return resource ? resource->version : 0;
+}
+
+const char *wl_resource_get_class(struct wl_resource *resource)
+{
+    return resource && resource->interface ? resource->interface->name : NULL;
+}
+
+struct wl_client *wl_resource_get_client(struct wl_resource *resource)
+{
+    return resource ? resource->client : NULL;
+}
+
+void wl_resource_set_user_data(struct wl_resource *resource, void *data)
+{
+    if (resource && !resource->destroying)
+        resource->data = data;
+}
+
+void *wl_resource_get_user_data(struct wl_resource *resource)
+{
+    return resource ? resource->data : NULL;
+}
+
+int wl_resource_instance_of(struct wl_resource *resource,
+                            const struct wl_interface *interface,
+                            const void *implementation)
+{
+    return resource && resource->interface == interface &&
+        resource->implementation == implementation;
 }

@@ -13,7 +13,8 @@
  * - Establish the migration boundary for armos-wlcomp.
  *
  * Notes:
- * - Event loops and resources are added on top of this base.
+ * - Protocol-specific request dispatch remains owned by server implementations.
+ * - No architecture or platform-specific contract is exposed here.
  */
 
 #ifndef ARMOS_WAYLAND_SERVER_CORE_H
@@ -28,6 +29,9 @@ extern "C" {
 struct wl_display;
 struct wl_event_loop;
 struct wl_event_source;
+struct wl_client;
+struct wl_global;
+struct wl_resource;
 
 enum wl_event_loop_fd_mask {
     WL_EVENT_READABLE = 0x01,
@@ -39,6 +43,9 @@ enum wl_event_loop_fd_mask {
 typedef int (*wl_event_loop_fd_func_t)(int fd, uint32_t mask, void *data);
 typedef int (*wl_event_loop_timer_func_t)(void *data);
 typedef void (*wl_event_loop_idle_func_t)(void *data);
+typedef void (*wl_global_bind_func_t)(struct wl_client *client, void *data,
+                                     uint32_t version, uint32_t id);
+typedef void (*wl_resource_destroy_func_t)(struct wl_resource *resource);
 
 struct wl_display *wl_display_create(void);
 void wl_display_destroy(struct wl_display *display);
@@ -59,6 +66,41 @@ struct wl_event_source *wl_event_loop_add_idle(
     struct wl_event_loop *loop, wl_event_loop_idle_func_t func, void *data);
 int wl_event_source_remove(struct wl_event_source *source);
 int wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout);
+
+struct wl_client *wl_client_create(struct wl_display *display, int fd);
+void wl_client_destroy(struct wl_client *client);
+void wl_client_flush(struct wl_client *client);
+int wl_client_get_fd(struct wl_client *client);
+struct wl_display *wl_client_get_display(struct wl_client *client);
+struct wl_resource *wl_client_get_object(struct wl_client *client,
+                                         uint32_t id);
+
+struct wl_global *wl_global_create(
+    struct wl_display *display, const struct wl_interface *interface,
+    int version, void *data, wl_global_bind_func_t bind);
+void wl_global_destroy(struct wl_global *global);
+const struct wl_interface *wl_global_get_interface(
+    const struct wl_global *global);
+uint32_t wl_global_get_name(const struct wl_global *global);
+uint32_t wl_global_get_version(const struct wl_global *global);
+void *wl_global_get_user_data(const struct wl_global *global);
+
+struct wl_resource *wl_resource_create(
+    struct wl_client *client, const struct wl_interface *interface,
+    int version, uint32_t id);
+void wl_resource_set_implementation(
+    struct wl_resource *resource, const void *implementation, void *data,
+    wl_resource_destroy_func_t destroy);
+void wl_resource_destroy(struct wl_resource *resource);
+uint32_t wl_resource_get_id(struct wl_resource *resource);
+int wl_resource_get_version(struct wl_resource *resource);
+const char *wl_resource_get_class(struct wl_resource *resource);
+struct wl_client *wl_resource_get_client(struct wl_resource *resource);
+void wl_resource_set_user_data(struct wl_resource *resource, void *data);
+void *wl_resource_get_user_data(struct wl_resource *resource);
+int wl_resource_instance_of(struct wl_resource *resource,
+                            const struct wl_interface *interface,
+                            const void *implementation);
 
 #ifdef __cplusplus
 }

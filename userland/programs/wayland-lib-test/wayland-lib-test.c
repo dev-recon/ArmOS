@@ -907,7 +907,10 @@ struct server_loop_test_state {
     int accepted;
     int timer_events;
     int idle_events;
+    int resource_destroys;
 };
+
+static const int server_resource_implementation;
 
 static int server_pipe_event(int fd, uint32_t mask, void *data)
 {
@@ -950,6 +953,24 @@ static void server_idle_event(void *data)
     state->idle_events++;
 }
 
+static void server_global_bind(struct wl_client *client, void *data,
+                               uint32_t version, uint32_t id)
+{
+    (void)client;
+    (void)data;
+    (void)version;
+    (void)id;
+}
+
+static void server_resource_destroy(struct wl_resource *resource)
+{
+    struct server_loop_test_state *state =
+        wl_resource_get_user_data(resource);
+
+    if (state)
+        state->resource_destroys++;
+}
+
 static int test_transport(void)
 {
     struct wl_display *server;
@@ -958,6 +979,7 @@ static int test_transport(void)
     struct server_loop_test_state loop_state = { 0 };
     char path[64];
     int pipe_fds[2] = { -1, -1 };
+    int object_fds[2] = { -1, -1 };
     int status;
     pid_t child;
 
@@ -966,6 +988,55 @@ static int test_transport(void)
     if (!server || wl_display_add_socket(server, path) < 0) {
         perror("wayland-lib-test: server");
         return 1;
+    }
+    if (socketpair(AF_LOCAL, SOCK_STREAM, 0, object_fds) < 0)
+        goto transport_failed;
+    {
+        struct wl_client *server_client =
+            wl_client_create(server, object_fds[0]);
+        struct wl_resource *resource;
+        struct wl_global *global;
+
+        if (!server_client)
+            goto transport_failed;
+        object_fds[0] = -1;
+        if (wl_client_get_fd(server_client) < 0 ||
+            wl_client_get_display(server_client) != server)
+            goto transport_failed;
+        resource = wl_resource_create(server_client,
+                                      &wl_compositor_interface, 1, 7u);
+        if (!resource ||
+            wl_resource_create(server_client, &wl_compositor_interface,
+                               1, 7u) != NULL ||
+            wl_client_get_object(server_client, 7u) != resource)
+            goto transport_failed;
+        wl_resource_set_implementation(
+            resource, &server_resource_implementation, &loop_state,
+            server_resource_destroy);
+        if (wl_resource_get_id(resource) != 7u ||
+            wl_resource_get_version(resource) != 1 ||
+            strcmp(wl_resource_get_class(resource), "wl_compositor") != 0 ||
+            wl_resource_get_client(resource) != server_client ||
+            wl_resource_get_user_data(resource) != &loop_state ||
+            !wl_resource_instance_of(
+                resource, &wl_compositor_interface,
+                &server_resource_implementation))
+            goto transport_failed;
+        global = wl_global_create(server, &wl_compositor_interface, 1,
+                                  &loop_state, server_global_bind);
+        if (!global || wl_global_get_name(global) == 0u ||
+            wl_global_get_version(global) != 1u ||
+            wl_global_get_interface(global) != &wl_compositor_interface ||
+            wl_global_get_user_data(global) != &loop_state)
+            goto transport_failed;
+        wl_resource_destroy(resource);
+        if (loop_state.resource_destroys != 1 ||
+            wl_client_get_object(server_client, 7u) != NULL)
+            goto transport_failed;
+        wl_global_destroy(global);
+        wl_client_destroy(server_client);
+        close(object_fds[1]);
+        object_fds[1] = -1;
     }
     event_loop = wl_display_get_event_loop(server);
     if (!event_loop || pipe(pipe_fds) < 0)
@@ -1032,6 +1103,10 @@ transport_failed:
         close(pipe_fds[0]);
     if (pipe_fds[1] >= 0)
         close(pipe_fds[1]);
+    if (object_fds[0] >= 0)
+        close(object_fds[0]);
+    if (object_fds[1] >= 0)
+        close(object_fds[1]);
     wl_display_destroy(server);
     fprintf(stderr, "wayland-lib-test: server event loop failed\n");
     return 1;
