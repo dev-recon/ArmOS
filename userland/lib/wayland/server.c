@@ -39,6 +39,10 @@ enum wl_event_source_type {
     WL_EVENT_SOURCE_IDLE
 };
 
+#define WL_SERVER_RECEIVE_CAPACITY (64u * 1024u)
+#define WL_SERVER_PENDING_FDS      16u
+#define WL_SERVER_MAX_ARGUMENTS    32u
+
 struct wl_event_source {
     struct wl_event_loop *loop;
     struct wl_event_source *next;
@@ -65,6 +69,7 @@ struct wl_resource {
     struct wl_client *client;
     struct wl_resource *next;
     const struct wl_interface *interface;
+    wl_dispatcher_func_t dispatcher;
     const void *implementation;
     void *data;
     wl_resource_destroy_func_t destroy;
@@ -77,7 +82,14 @@ struct wl_client {
     struct wl_display *display;
     struct wl_client *next;
     struct wl_resource *resources;
+    struct wl_event_source *source;
+    uint8_t receive[WL_SERVER_RECEIVE_CAPACITY];
+    size_t receive_length;
+    int pending_fds[WL_SERVER_PENDING_FDS];
+    size_t pending_fd_count;
     int fd;
+    bool dispatching;
+    bool destroy_pending;
     bool destroying;
 };
 
@@ -147,6 +159,8 @@ static struct wl_event_source *wl_event_source_create(
     loop->sources = source;
     return source;
 }
+
+static int wl_client_event(int fd, uint32_t mask, void *data);
 
 static int wl_server_socket_path(const char *name, char *path, size_t size)
 {
@@ -514,6 +528,14 @@ struct wl_client *wl_client_create(struct wl_display *display, int fd)
     }
     client->display = display;
     client->fd = fd;
+    client->source = wl_event_loop_add_fd(
+        &display->event_loop, fd,
+        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+        wl_client_event, client);
+    if (!client->source) {
+        free(client);
+        return NULL;
+    }
     client->next = display->clients;
     display->clients = client;
     return client;
@@ -525,6 +547,10 @@ void wl_client_destroy(struct wl_client *client)
 
     if (!client || client->destroying)
         return;
+    if (client->dispatching) {
+        client->destroy_pending = true;
+        return;
+    }
     client->destroying = true;
     while (client->resources)
         wl_resource_destroy(client->resources);
@@ -535,6 +561,12 @@ void wl_client_destroy(struct wl_client *client)
         if (*link == client)
             *link = client->next;
     }
+    if (client->source) {
+        (void)wl_event_source_remove(client->source);
+        client->source = NULL;
+    }
+    while (client->pending_fd_count != 0u)
+        close(client->pending_fds[--client->pending_fd_count]);
     close(client->fd);
     client->display = NULL;
     free(client);
@@ -677,6 +709,19 @@ void wl_resource_set_implementation(
     resource->destroy = destroy;
 }
 
+void wl_resource_set_dispatcher(
+    struct wl_resource *resource, wl_dispatcher_func_t dispatcher,
+    const void *implementation, void *data,
+    wl_resource_destroy_func_t destroy)
+{
+    if (!resource || resource->destroying)
+        return;
+    resource->dispatcher = dispatcher;
+    resource->implementation = implementation;
+    resource->data = data;
+    resource->destroy = destroy;
+}
+
 void wl_resource_destroy(struct wl_resource *resource)
 {
     struct wl_resource **link;
@@ -750,6 +795,296 @@ static const char *wl_signature_next(const char *signature)
     if (*signature == '?')
         signature++;
     return signature;
+}
+
+static int wl_client_decode_request(struct wl_client *client,
+                                    struct wl_resource *resource,
+                                    uint32_t opcode,
+                                    const uint8_t *payload,
+                                    size_t payload_size,
+                                    size_t *fd_count_out)
+{
+    union wl_argument arguments[WL_SERVER_MAX_ARGUMENTS];
+    struct wl_array arrays[WL_SERVER_MAX_ARGUMENTS];
+    const struct wl_message *method;
+    const char *signature;
+    size_t argument_index = 0u;
+    size_t fd_count = 0u;
+    size_t offset = 0u;
+    int result;
+
+    if (!resource->interface || opcode >=
+        (uint32_t)resource->interface->method_count ||
+        !resource->interface->methods || !resource->dispatcher) {
+        errno = EPROTO;
+        return -1;
+    }
+    method = &resource->interface->methods[opcode];
+    signature = method->signature;
+    memset(arguments, 0, sizeof(arguments));
+    memset(arrays, 0, sizeof(arrays));
+    while (signature && *signature) {
+        uint32_t value;
+
+        if (argument_index >= WL_SERVER_MAX_ARGUMENTS) {
+            errno = E2BIG;
+            return -1;
+        }
+        signature = wl_signature_next(signature);
+        switch (*signature) {
+        case 'i':
+        case 'u':
+        case 'f':
+        case 'o':
+        case 'n':
+        case 's':
+        case 'a':
+            if (offset > payload_size || payload_size - offset < 4u) {
+                errno = EPROTO;
+                return -1;
+            }
+            memcpy(&value, payload + offset, sizeof(value));
+            offset += 4u;
+            break;
+        case 'h':
+            if (fd_count >= client->pending_fd_count) {
+                errno = EPROTO;
+                return -1;
+            }
+            arguments[argument_index].h = client->pending_fds[fd_count++];
+            argument_index++;
+            signature++;
+            continue;
+        case '\0':
+            continue;
+        default:
+            errno = EPROTO;
+            return -1;
+        }
+        switch (*signature) {
+        case 'i':
+            arguments[argument_index].i = (int32_t)value;
+            break;
+        case 'u':
+            arguments[argument_index].u = value;
+            break;
+        case 'f':
+            arguments[argument_index].f = (wl_fixed_t)value;
+            break;
+        case 'o': {
+            struct wl_resource *object =
+                value ? wl_client_get_object(client, value) : NULL;
+
+            if (value != 0u && !object) {
+                errno = EPROTO;
+                return -1;
+            }
+            arguments[argument_index].o = (struct wl_object *)object;
+            break;
+        }
+        case 'n':
+            if (value == 0u || wl_client_get_object(client, value)) {
+                errno = EPROTO;
+                return -1;
+            }
+            arguments[argument_index].n = value;
+            break;
+        case 's': {
+            size_t aligned = wl_wire_align(value);
+
+            if (value == 0u) {
+                arguments[argument_index].s = NULL;
+                break;
+            }
+            if (aligned < value || offset > payload_size ||
+                aligned > payload_size - offset ||
+                payload[offset + value - 1u] != '\0') {
+                errno = EPROTO;
+                return -1;
+            }
+            arguments[argument_index].s = (const char *)(payload + offset);
+            offset += aligned;
+            break;
+        }
+        case 'a': {
+            size_t aligned = wl_wire_align(value);
+
+            if (aligned < value || offset > payload_size ||
+                aligned > payload_size - offset) {
+                errno = EPROTO;
+                return -1;
+            }
+            arrays[argument_index].size = value;
+            arrays[argument_index].alloc = value;
+            arrays[argument_index].data = (void *)(payload + offset);
+            arguments[argument_index].a = &arrays[argument_index];
+            offset += aligned;
+            break;
+        }
+        default:
+            break;
+        }
+        argument_index++;
+        signature++;
+    }
+    if (offset != payload_size) {
+        errno = EPROTO;
+        return -1;
+    }
+    result = resource->dispatcher(resource->implementation, resource, opcode,
+                                  method, arguments);
+    if (fd_count != 0u) {
+        memmove(client->pending_fds, client->pending_fds + fd_count,
+                (client->pending_fd_count - fd_count) * sizeof(int));
+        client->pending_fd_count -= fd_count;
+    }
+    *fd_count_out = fd_count;
+    return result;
+}
+
+static int wl_client_dispatch_messages(struct wl_client *client)
+{
+    while (client->receive_length >= 8u) {
+        struct wl_resource *resource;
+        uint32_t object_id;
+        uint32_t header;
+        uint32_t opcode;
+        size_t message_size;
+        size_t consumed_fds = 0u;
+
+        memcpy(&object_id, client->receive, sizeof(object_id));
+        memcpy(&header, client->receive + 4u, sizeof(header));
+        opcode = header & 0xffffu;
+        message_size = header >> 16;
+        if (message_size < 8u || message_size > UINT16_MAX ||
+            (message_size & 3u) != 0u) {
+            errno = EPROTO;
+            return -1;
+        }
+        if (message_size > client->receive_length)
+            return 0;
+        resource = wl_client_get_object(client, object_id);
+        if (!resource) {
+            errno = EPROTO;
+            return -1;
+        }
+        if (wl_client_decode_request(
+                client, resource, opcode, client->receive + 8u,
+                message_size - 8u, &consumed_fds) < 0)
+            return -1;
+        (void)consumed_fds;
+        memmove(client->receive, client->receive + message_size,
+                client->receive_length - message_size);
+        client->receive_length -= message_size;
+        if (client->destroy_pending)
+            return 0;
+    }
+    return 0;
+}
+
+static size_t wl_control_fd_count(struct msghdr *message)
+{
+    size_t total = 0u;
+
+    for (struct cmsghdr *header = CMSG_FIRSTHDR(message);
+         header; header = CMSG_NXTHDR(message, header)) {
+        if (header->cmsg_level == SOL_SOCKET &&
+            header->cmsg_type == SCM_RIGHTS &&
+            header->cmsg_len >= CMSG_LEN(0u))
+            total += (header->cmsg_len - CMSG_LEN(0u)) / sizeof(int);
+    }
+    return total;
+}
+
+static void wl_control_close_fds(struct msghdr *message)
+{
+    for (struct cmsghdr *header = CMSG_FIRSTHDR(message);
+         header; header = CMSG_NXTHDR(message, header)) {
+        int *descriptors;
+        size_t count;
+
+        if (header->cmsg_level != SOL_SOCKET ||
+            header->cmsg_type != SCM_RIGHTS ||
+            header->cmsg_len < CMSG_LEN(0u))
+            continue;
+        descriptors = (int *)CMSG_DATA(header);
+        count = (header->cmsg_len - CMSG_LEN(0u)) / sizeof(int);
+        for (size_t index = 0u; index < count; index++)
+            close(descriptors[index]);
+    }
+}
+
+static int wl_client_receive(struct wl_client *client)
+{
+    uint8_t control[CMSG_SPACE(WL_SERVER_PENDING_FDS * sizeof(int))];
+    struct iovec vector;
+    struct msghdr message;
+    ssize_t count;
+
+    if (client->receive_length == sizeof(client->receive)) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    memset(&message, 0, sizeof(message));
+    memset(control, 0, sizeof(control));
+    vector.iov_base = client->receive + client->receive_length;
+    vector.iov_len = sizeof(client->receive) - client->receive_length;
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1u;
+    message.msg_control = control;
+    message.msg_controllen = sizeof(control);
+    count = recvmsg(client->fd, &message, MSG_CMSG_CLOEXEC);
+    if (count <= 0)
+        return -1;
+    if ((message.msg_flags & MSG_CTRUNC) != 0) {
+        wl_control_close_fds(&message);
+        errno = EMSGSIZE;
+        return -1;
+    }
+    if (wl_control_fd_count(&message) >
+        WL_SERVER_PENDING_FDS - client->pending_fd_count) {
+        wl_control_close_fds(&message);
+        errno = EMSGSIZE;
+        return -1;
+    }
+    for (struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+         header; header = CMSG_NXTHDR(&message, header)) {
+        size_t bytes;
+        size_t descriptors;
+
+        if (header->cmsg_level != SOL_SOCKET ||
+            header->cmsg_type != SCM_RIGHTS ||
+            header->cmsg_len < CMSG_LEN(0u))
+            continue;
+        bytes = header->cmsg_len - CMSG_LEN(0u);
+        descriptors = bytes / sizeof(int);
+        memcpy(client->pending_fds + client->pending_fd_count,
+               CMSG_DATA(header), descriptors * sizeof(int));
+        client->pending_fd_count += descriptors;
+    }
+    client->receive_length += (size_t)count;
+    return wl_client_dispatch_messages(client);
+}
+
+static int wl_client_event(int fd, uint32_t mask, void *data)
+{
+    struct wl_client *client = data;
+    int result = 0;
+
+    (void)fd;
+    if (!client || client->destroying)
+        return -1;
+    client->dispatching = true;
+    if ((mask & WL_EVENT_READABLE) != 0u)
+        result = wl_client_receive(client);
+    if ((mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u)
+        result = -1;
+    client->dispatching = false;
+    if (result < 0 || client->destroy_pending) {
+        wl_client_destroy(client);
+        return -1;
+    }
+    return 0;
 }
 
 static int wl_resource_event_size(const char *signature,

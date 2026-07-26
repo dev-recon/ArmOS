@@ -88,8 +88,12 @@ static const struct wl_message server_test_events[] = {
     {"new_object", "n", NULL}
 };
 
+static const struct wl_message server_test_methods[] = {
+    {"request", "ush", NULL}
+};
+
 static const struct wl_interface server_test_interface = {
-    "armos_server_test", 1, 0, NULL, 3, server_test_events
+    "armos_server_test", 1, 1, server_test_methods, 3, server_test_events
 };
 
 static void registry_global(void *data, struct wl_registry *registry,
@@ -918,9 +922,11 @@ struct server_loop_test_state {
     int timer_events;
     int idle_events;
     int resource_destroys;
+    int request_dispatches;
 };
 
 static const int server_resource_implementation;
+static const int server_dispatch_implementation;
 
 static int server_pipe_event(int fd, uint32_t mask, void *data)
 {
@@ -987,6 +993,77 @@ static uint32_t server_test_u32(const uint8_t *data)
 
     memcpy(&value, data, sizeof(value));
     return value;
+}
+
+static void server_test_store_u32(uint8_t *data, uint32_t value)
+{
+    memcpy(data, &value, sizeof(value));
+}
+
+static int server_request_dispatch(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments)
+{
+    struct wl_resource *resource = target;
+    struct server_loop_test_state *state =
+        wl_resource_get_user_data(resource);
+    char byte;
+
+    if (implementation != &server_dispatch_implementation ||
+        opcode != 0u || !message ||
+        strcmp(message->name, "request") != 0 ||
+        arguments[0].u != 77u ||
+        !arguments[1].s || strcmp(arguments[1].s, "request") != 0 ||
+        read(arguments[2].h, &byte, 1u) != 1 || byte != 'r') {
+        close(arguments[2].h);
+        return -1;
+    }
+    close(arguments[2].h);
+    state->request_dispatches++;
+    return 0;
+}
+
+static int server_test_send_request(int peer_fd, uint32_t object_id)
+{
+    uint8_t message[24] = { 0 };
+    unsigned char control[CMSG_SPACE(sizeof(int))];
+    struct iovec vector;
+    struct msghdr header;
+    struct cmsghdr *control_header;
+    int descriptor_pipe[2];
+    ssize_t count;
+
+    if (pipe(descriptor_pipe) < 0)
+        return -1;
+    if (write(descriptor_pipe[1], "r", 1u) != 1)
+        goto failed;
+    server_test_store_u32(message, object_id);
+    server_test_store_u32(message + 4u, (24u << 16) | 0u);
+    server_test_store_u32(message + 8u, 77u);
+    server_test_store_u32(message + 12u, 8u);
+    memcpy(message + 16u, "request", 8u);
+    memset(control, 0, sizeof(control));
+    memset(&header, 0, sizeof(header));
+    vector.iov_base = message;
+    vector.iov_len = sizeof(message);
+    header.msg_iov = &vector;
+    header.msg_iovlen = 1u;
+    header.msg_control = control;
+    header.msg_controllen = sizeof(control);
+    control_header = CMSG_FIRSTHDR(&header);
+    control_header->cmsg_level = SOL_SOCKET;
+    control_header->cmsg_type = SCM_RIGHTS;
+    control_header->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(control_header), &descriptor_pipe[0], sizeof(int));
+    count = sendmsg(peer_fd, &header, 0);
+    close(descriptor_pipe[0]);
+    close(descriptor_pipe[1]);
+    return count == (ssize_t)sizeof(message) ? 0 : -1;
+
+failed:
+    close(descriptor_pipe[0]);
+    close(descriptor_pipe[1]);
+    return -1;
 }
 
 static int server_test_resource_events(struct wl_resource *resource,
@@ -1122,6 +1199,16 @@ static int test_transport(void)
         if (!event_resource || !new_resource ||
             server_test_resource_events(event_resource, new_resource,
                                         object_fds[1]) < 0)
+            goto transport_failed;
+        wl_resource_set_dispatcher(
+            event_resource, server_request_dispatch,
+            &server_dispatch_implementation, &loop_state, NULL);
+        event_loop = wl_display_get_event_loop(server);
+        if (!event_loop ||
+            server_test_send_request(object_fds[1],
+                                     wl_resource_get_id(event_resource)) < 0 ||
+            wl_event_loop_dispatch(event_loop, 1000) != 1 ||
+            loop_state.request_dispatches != 1)
             goto transport_failed;
         wl_resource_destroy(resource);
         if (loop_state.resource_destroys != 1 ||

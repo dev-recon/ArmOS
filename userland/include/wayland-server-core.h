@@ -46,6 +46,9 @@ typedef void (*wl_event_loop_idle_func_t)(void *data);
 typedef void (*wl_global_bind_func_t)(struct wl_client *client, void *data,
                                      uint32_t version, uint32_t id);
 typedef void (*wl_resource_destroy_func_t)(struct wl_resource *resource);
+typedef int (*wl_dispatcher_func_t)(
+    const void *implementation, void *target, uint32_t opcode,
+    const struct wl_message *message, union wl_argument *arguments);
 
 struct wl_display *wl_display_create(void);
 void wl_display_destroy(struct wl_display *display);
@@ -90,6 +93,10 @@ struct wl_resource *wl_resource_create(
     int version, uint32_t id);
 void wl_resource_set_implementation(
     struct wl_resource *resource, const void *implementation, void *data,
+    wl_resource_destroy_func_t destroy);
+void wl_resource_set_dispatcher(
+    struct wl_resource *resource, wl_dispatcher_func_t dispatcher,
+    const void *implementation, void *data,
     wl_resource_destroy_func_t destroy);
 void wl_resource_post_event(struct wl_resource *resource, uint32_t opcode,
                             ...);
