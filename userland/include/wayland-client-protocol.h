@@ -34,6 +34,7 @@ struct wl_output;
 struct wl_seat;
 struct wl_pointer;
 struct wl_keyboard;
+struct wl_output;
 
 extern const struct wl_interface wl_display_interface;
 extern const struct wl_interface wl_registry_interface;
@@ -47,6 +48,7 @@ extern const struct wl_interface wl_buffer_interface;
 extern const struct wl_interface wl_seat_interface;
 extern const struct wl_interface wl_pointer_interface;
 extern const struct wl_interface wl_keyboard_interface;
+extern const struct wl_interface wl_output_interface;
 
 struct wl_registry_listener {
     void (*global)(void *data, struct wl_registry *registry, uint32_t name,
@@ -112,6 +114,18 @@ struct wl_keyboard_listener {
                         int32_t rate, int32_t delay);
 };
 
+struct wl_output_listener {
+    void (*geometry)(void *data, struct wl_output *output, int32_t x,
+                     int32_t y, int32_t physical_width,
+                     int32_t physical_height, int32_t subpixel,
+                     const char *make, const char *model,
+                     int32_t transform);
+    void (*mode)(void *data, struct wl_output *output, uint32_t flags,
+                 int32_t width, int32_t height, int32_t refresh);
+    void (*done)(void *data, struct wl_output *output);
+    void (*scale)(void *data, struct wl_output *output, int32_t factor);
+};
+
 enum wl_shm_format {
     WL_SHM_FORMAT_ARGB8888 = 0,
     WL_SHM_FORMAT_XRGB8888 = 1
@@ -141,6 +155,19 @@ enum wl_keyboard_key_state {
 enum wl_keyboard_keymap_format {
     WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP = 0,
     WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 = 1
+};
+
+enum wl_output_mode {
+    WL_OUTPUT_MODE_CURRENT = 1,
+    WL_OUTPUT_MODE_PREFERRED = 2
+};
+
+enum wl_output_subpixel {
+    WL_OUTPUT_SUBPIXEL_UNKNOWN = 0
+};
+
+enum wl_output_transform {
+    WL_OUTPUT_TRANSFORM_NORMAL = 0
 };
 
 struct wl_registry *wl_display_get_registry(struct wl_display *display);
@@ -225,5 +252,10 @@ int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
                              const struct wl_keyboard_listener *listener,
                              void *data);
 void wl_keyboard_destroy(struct wl_keyboard *keyboard);
+
+int wl_output_add_listener(struct wl_output *output,
+                           const struct wl_output_listener *listener,
+                           void *data);
+void wl_output_destroy(struct wl_output *output);
 
 #endif /* ARMOS_WAYLAND_CLIENT_PROTOCOL_H */

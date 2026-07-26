@@ -40,6 +40,7 @@ struct registry_state {
     uint32_t shm_name;
     uint32_t seat_name;
     uint32_t shell_name;
+    uint32_t output_name;
     unsigned int formats;
     unsigned int releases;
     uint32_t seat_capabilities;
@@ -47,6 +48,11 @@ struct registry_state {
     unsigned int toplevel_configures;
     unsigned int keymaps;
     unsigned int repeat_info;
+    unsigned int output_geometry;
+    unsigned int output_modes;
+    unsigned int output_done;
+    unsigned int output_scale;
+    unsigned int surface_enters;
 };
 
 static const struct wl_message generated_compositor_methods[] = {
@@ -92,6 +98,8 @@ static void registry_global(void *data, struct wl_registry *registry,
         state->shell++;
         state->shell_name = name;
     }
+    if (strcmp(interface, "wl_output") == 0)
+        state->output_name = name;
 }
 
 static void registry_global_remove(void *data, struct wl_registry *registry,
@@ -209,6 +217,73 @@ static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,
         state->repeat_info++;
 }
 
+static void output_geometry(void *data, struct wl_output *output,
+                            int32_t x, int32_t y, int32_t physical_width,
+                            int32_t physical_height, int32_t subpixel,
+                            const char *make, const char *model,
+                            int32_t transform)
+{
+    struct registry_state *state = data;
+
+    (void)output;
+    (void)x;
+    (void)y;
+    (void)physical_width;
+    (void)physical_height;
+    if (subpixel == WL_OUTPUT_SUBPIXEL_UNKNOWN &&
+        transform == WL_OUTPUT_TRANSFORM_NORMAL &&
+        strcmp(make, "ArmOS") == 0 && model[0] != '\0')
+        state->output_geometry++;
+}
+
+static void output_mode(void *data, struct wl_output *output,
+                        uint32_t flags, int32_t width, int32_t height,
+                        int32_t refresh)
+{
+    struct registry_state *state = data;
+
+    (void)output;
+    if ((flags & (WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED)) ==
+            (WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED) &&
+        width > 0 && height > 0 && refresh == 60000)
+        state->output_modes++;
+}
+
+static void output_done(void *data, struct wl_output *output)
+{
+    struct registry_state *state = data;
+
+    (void)output;
+    state->output_done++;
+}
+
+static void output_scale(void *data, struct wl_output *output, int32_t factor)
+{
+    struct registry_state *state = data;
+
+    (void)output;
+    if (factor == 1)
+        state->output_scale++;
+}
+
+static void surface_enter(void *data, struct wl_surface *surface,
+                          struct wl_output *output)
+{
+    struct registry_state *state = data;
+
+    (void)surface;
+    (void)output;
+    state->surface_enters++;
+}
+
+static void surface_leave(void *data, struct wl_surface *surface,
+                          struct wl_output *output)
+{
+    (void)data;
+    (void)surface;
+    (void)output;
+}
+
 static void xdg_ping(void *data, struct xdg_wm_base *xdg_wm_base,
                      uint32_t serial)
 {
@@ -269,6 +344,16 @@ static int test_registry(void)
         keyboard_modifiers,
         keyboard_repeat_info
     };
+    static const struct wl_output_listener output_listener = {
+        output_geometry,
+        output_mode,
+        output_done,
+        output_scale
+    };
+    static const struct wl_surface_listener surface_listener = {
+        surface_enter,
+        surface_leave
+    };
     static const struct xdg_wm_base_listener wm_base_listener = {
         xdg_ping
     };
@@ -290,6 +375,7 @@ static int test_registry(void)
     struct wl_seat *seat = NULL;
     struct wl_pointer *pointer = NULL;
     struct wl_keyboard *keyboard = NULL;
+    struct wl_output *output = NULL;
     struct xdg_wm_base *wm_base = NULL;
     struct xdg_surface *xdg_surface = NULL;
     struct xdg_toplevel *xdg_toplevel = NULL;
@@ -312,7 +398,7 @@ static int test_registry(void)
         wl_display_disconnect(display);
         return 1;
     }
-    valid = state.globals == 4u && state.compositor == 1u &&
+    valid = state.globals == 5u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u;
     if (!valid)
         goto protocol_failed;
@@ -324,9 +410,12 @@ static int test_registry(void)
                             4u);
     wm_base = wl_registry_bind(registry, state.shell_name,
                                &xdg_wm_base_interface, 1u);
-    if (!compositor || !shm || !seat || !wm_base ||
+    output = wl_registry_bind(registry, state.output_name,
+                              &wl_output_interface, 2u);
+    if (!compositor || !shm || !seat || !wm_base || !output ||
         wl_seat_add_listener(seat, &seat_listener, &state) < 0 ||
         wl_shm_add_listener(shm, &shm_listener, &state) < 0 ||
+        wl_output_add_listener(output, &output_listener, &state) < 0 ||
         xdg_wm_base_add_listener(wm_base, &wm_base_listener, &state) < 0)
         goto protocol_failed;
     pointer = wl_seat_get_pointer(seat);
@@ -337,6 +426,9 @@ static int test_registry(void)
     surface = (struct wl_surface *)wl_proxy_marshal_flags(
         (struct wl_proxy *)compositor, 0u, &wl_surface_interface, 1u, 0u,
         NULL);
+    if (!surface ||
+        wl_surface_add_listener(surface, &surface_listener, &state) < 0)
+        goto protocol_failed;
     xdg_surface = surface ?
         xdg_wm_base_get_xdg_surface(wm_base, surface) : NULL;
     if (!xdg_surface ||
@@ -377,6 +469,9 @@ static int test_registry(void)
         state.seat_capabilities !=
             (WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD) ||
         state.keymaps != 1u || state.repeat_info != 1u ||
+        state.output_geometry != 1u || state.output_modes != 1u ||
+        state.output_done != 1u || state.output_scale != 1u ||
+        state.surface_enters != 1u ||
         state.xdg_configures != 1u || state.toplevel_configures != 1u)
         goto protocol_failed;
     for (unsigned int iteration = 0; iteration < 600u; iteration++) {
@@ -396,6 +491,7 @@ static int test_registry(void)
     munmap(pixels, 4096);
     close(shm_fd);
     wl_shm_destroy(shm);
+    wl_output_destroy(output);
     wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -434,6 +530,8 @@ protocol_failed:
         close(shm_fd);
     if (shm)
         wl_shm_destroy(shm);
+    if (output)
+        wl_output_destroy(output);
     if (compositor)
         wl_compositor_destroy(compositor);
     wl_registry_destroy(registry);

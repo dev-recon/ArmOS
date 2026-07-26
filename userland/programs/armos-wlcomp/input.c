@@ -113,9 +113,32 @@ static void wl_focus_surface(struct wl_server *server,
 {
     struct wl_server_object *pointer;
     struct wl_server_object *keyboard;
+    struct wl_server_object *old_pointer;
+    struct wl_server_object *old_keyboard;
     uint32_t enter[4];
     uint32_t keyboard_enter[3];
+    uint32_t leave[2];
 
+    if (server->focus_client == client && server->focus_surface == surface)
+        return;
+    if (server->focus_client && server->focus_client->used &&
+        server->focus_surface && server->focus_surface->used) {
+        old_pointer = wl_find_input_object(server->focus_client,
+                                           WL_SERVER_OBJECT_POINTER);
+        old_keyboard = wl_find_input_object(server->focus_client,
+                                            WL_SERVER_OBJECT_KEYBOARD);
+        leave[0] = ++server->serial;
+        leave[1] = server->focus_surface->object_id;
+        if (old_pointer) {
+            (void)wl_client_send_words(server->focus_client,
+                                       old_pointer->id, 1u, leave, 2u);
+        }
+        if (old_keyboard) {
+            leave[0] = ++server->serial;
+            (void)wl_client_send_words(server->focus_client,
+                                       old_keyboard->id, 2u, leave, 2u);
+        }
+    }
     server->focus_client = client;
     server->focus_surface = surface;
     pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);

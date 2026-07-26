@@ -45,6 +45,7 @@
 #define WL_GLOBAL_SHM        2u
 #define WL_GLOBAL_SEAT       3u
 #define WL_GLOBAL_XDG_SHELL  4u
+#define WL_GLOBAL_OUTPUT     5u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -63,6 +64,7 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_SEAT,
     WL_SERVER_OBJECT_POINTER,
     WL_SERVER_OBJECT_KEYBOARD,
+    WL_SERVER_OBJECT_OUTPUT,
     WL_SERVER_OBJECT_XDG_WM_BASE,
     WL_SERVER_OBJECT_XDG_SURFACE,
     WL_SERVER_OBJECT_XDG_TOPLEVEL
@@ -204,5 +206,10 @@ int wl_surface_commit(struct wl_server *server,
 int wl_server_handle_input(struct wl_server *server);
 int wl_server_send_keymap(struct wl_server_client *client,
                           uint32_t keyboard_id);
+int wl_server_bind_output(struct wl_server *server,
+                          struct wl_server_client *client,
+                          uint32_t output_id, uint32_t version);
+int wl_server_surface_enter_output(struct wl_server_client *client,
+                                   uint32_t surface_id);
 
 #endif /* ARMOS_WLCOMP_H */

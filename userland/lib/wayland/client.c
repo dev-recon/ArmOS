@@ -73,6 +73,7 @@ struct wl_buffer { struct wl_proxy proxy; };
 struct wl_seat { struct wl_proxy proxy; };
 struct wl_pointer { struct wl_proxy proxy; };
 struct wl_keyboard { struct wl_proxy proxy; };
+struct wl_output { struct wl_proxy proxy; };
 struct xdg_wm_base { struct wl_proxy proxy; };
 struct xdg_surface { struct wl_proxy proxy; };
 struct xdg_toplevel { struct wl_proxy proxy; };
@@ -123,6 +124,10 @@ const struct wl_interface wl_pointer_interface = {
 
 const struct wl_interface wl_keyboard_interface = {
     "wl_keyboard", 4, 1, NULL, 6, NULL
+};
+
+const struct wl_interface wl_output_interface = {
+    "wl_output", 2, 0, NULL, 4, NULL
 };
 
 const struct wl_interface xdg_wm_base_interface = {
@@ -1204,6 +1209,20 @@ void wl_keyboard_destroy(struct wl_keyboard *keyboard)
     wl_proxy_destroy(&keyboard->proxy);
 }
 
+int wl_output_add_listener(struct wl_output *output,
+                           const struct wl_output_listener *listener,
+                           void *data)
+{
+    return wl_proxy_add_listener(&output->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void wl_output_destroy(struct wl_output *output)
+{
+    if (output)
+        wl_proxy_destroy(&output->proxy);
+}
+
 int xdg_wm_base_add_listener(
     struct xdg_wm_base *xdg_wm_base,
     const struct xdg_wm_base_listener *listener, void *data)
@@ -1584,6 +1603,84 @@ static int wl_dispatch_keyboard_event(struct wl_proxy *proxy,
     return -1;
 }
 
+static int wl_dispatch_output_event(struct wl_proxy *proxy, uint16_t opcode,
+                                    const uint8_t *payload, size_t size)
+{
+    const struct wl_output_listener *listener =
+        (const struct wl_output_listener *)proxy->listener;
+
+    if (opcode == 0u && size >= 28u) {
+        size_t cursor = 20u;
+        const char *make;
+        const char *model;
+        int32_t transform;
+
+        if (wl_decode_string(payload, size, &cursor, &make) < 0 ||
+            wl_decode_string(payload, size, &cursor, &model) < 0 ||
+            cursor + 4u != size)
+            return -1;
+        transform = (int32_t)wl_load_u32(payload + cursor);
+        if (listener && listener->geometry)
+            listener->geometry(proxy->listener_data,
+                               (struct wl_output *)proxy,
+                               (int32_t)wl_load_u32(payload),
+                               (int32_t)wl_load_u32(payload + 4u),
+                               (int32_t)wl_load_u32(payload + 8u),
+                               (int32_t)wl_load_u32(payload + 12u),
+                               (int32_t)wl_load_u32(payload + 16u),
+                               make, model, transform);
+        return 0;
+    }
+    if (opcode == 1u && size == 16u) {
+        if (listener && listener->mode)
+            listener->mode(proxy->listener_data,
+                           (struct wl_output *)proxy,
+                           wl_load_u32(payload),
+                           (int32_t)wl_load_u32(payload + 4u),
+                           (int32_t)wl_load_u32(payload + 8u),
+                           (int32_t)wl_load_u32(payload + 12u));
+        return 0;
+    }
+    if (opcode == 2u && size == 0u) {
+        if (listener && listener->done)
+            listener->done(proxy->listener_data,
+                           (struct wl_output *)proxy);
+        return 0;
+    }
+    if (opcode == 3u && size == 4u) {
+        if (listener && listener->scale)
+            listener->scale(proxy->listener_data,
+                            (struct wl_output *)proxy,
+                            (int32_t)wl_load_u32(payload));
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_surface_event(struct wl_proxy *proxy, uint16_t opcode,
+                                     const uint8_t *payload, size_t size)
+{
+    const struct wl_surface_listener *listener =
+        (const struct wl_surface_listener *)proxy->listener;
+    struct wl_proxy *output;
+    uint32_t output_id;
+
+    if ((opcode != 0u && opcode != 1u) || size != 4u)
+        return -1;
+    output_id = wl_load_u32(payload);
+    if (output_id >= WL_CLIENT_MAX_OBJECTS ||
+        !(output = proxy->display->objects[output_id]) ||
+        !wl_proxy_is(output, &wl_output_interface))
+        return -1;
+    if (opcode == 0u && listener && listener->enter)
+        listener->enter(proxy->listener_data, (struct wl_surface *)proxy,
+                        (struct wl_output *)output);
+    if (opcode == 1u && listener && listener->leave)
+        listener->leave(proxy->listener_data, (struct wl_surface *)proxy,
+                        (struct wl_output *)output);
+    return 0;
+}
+
 static int wl_dispatch_xdg_wm_base_event(struct wl_proxy *proxy,
                                          uint16_t opcode,
                                          const uint8_t *payload, size_t size)
@@ -1777,6 +1874,10 @@ int wl_display_dispatch(struct wl_display *display)
         result = wl_dispatch_pointer_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_keyboard_interface)) {
         result = wl_dispatch_keyboard_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_output_interface)) {
+        result = wl_dispatch_output_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_surface_interface)) {
+        result = wl_dispatch_surface_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &xdg_wm_base_interface)) {
         result = wl_dispatch_xdg_wm_base_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &xdg_surface_interface)) {

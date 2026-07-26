@@ -169,6 +169,9 @@ static int wl_dispatch_display(struct wl_server *server,
             wl_client_send_global(client, new_id, WL_GLOBAL_XDG_SHELL,
                                   "xdg_wm_base", 1u) < 0)
             return -1;
+        if (wl_client_send_global(client, new_id, WL_GLOBAL_OUTPUT,
+                                  "wl_output", 2u) < 0)
+            return -1;
         return 0;
     }
     return wl_protocol_fail(client, WL_DISPLAY_ID,
@@ -176,7 +179,8 @@ static int wl_dispatch_display(struct wl_server *server,
                             "unsupported wl_display request");
 }
 
-static int wl_dispatch_registry(struct wl_server_client *client,
+static int wl_dispatch_registry(struct wl_server *server,
+                                struct wl_server_client *client,
                                 struct wl_server_object *object,
                                 uint16_t opcode, struct wl_request *request)
 {
@@ -227,6 +231,9 @@ static int wl_dispatch_registry(struct wl_server_client *client,
         return wl_client_add_object(client, new_id,
                                     WL_SERVER_OBJECT_XDG_WM_BASE, 1u, NULL);
     }
+    if (name == WL_GLOBAL_OUTPUT && strcmp(interface_name, "wl_output") == 0)
+        return wl_server_bind_output(server, client, new_id,
+                                     requested_version);
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_OBJECT,
                             "unknown registry global");
@@ -674,10 +681,15 @@ static int wl_dispatch_surface(struct wl_server *server,
         return 0;
     }
     if (opcode == 6u && wl_request_complete(request)) {
+        bool was_mapped = surface->mapped;
+
         if (wl_surface_commit(server, client, surface) < 0)
             return wl_protocol_fail(client, object->id,
                                     WL_PROTOCOL_ERROR_IMPLEMENTATION,
                                     "surface commit failed");
+        if (!was_mapped && surface->mapped &&
+            wl_server_surface_enter_output(client, object->id) < 0)
+            return -1;
         return 0;
     }
     return wl_protocol_fail(client, object->id,
@@ -778,7 +790,8 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_DISPLAY:
         return wl_dispatch_display(server, client, opcode, &request);
     case WL_SERVER_OBJECT_REGISTRY:
-        return wl_dispatch_registry(client, object, opcode, &request);
+        return wl_dispatch_registry(server, client, object, opcode,
+                                    &request);
     case WL_SERVER_OBJECT_COMPOSITOR:
         return wl_dispatch_compositor(server, client, object, opcode,
                                       &request);
