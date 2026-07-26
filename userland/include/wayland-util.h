@@ -25,6 +25,8 @@
 
 typedef int32_t wl_fixed_t;
 
+struct wl_interface;
+
 struct wl_message {
     const char *name;
     const char *signature;

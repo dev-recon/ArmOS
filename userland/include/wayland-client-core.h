@@ -35,6 +35,9 @@ int wl_display_get_fd(struct wl_display *display);
 int wl_display_get_error(struct wl_display *display);
 int wl_display_flush(struct wl_display *display);
 
+int wl_proxy_add_listener(struct wl_proxy *proxy,
+                          void (**implementation)(void), void *data);
+void wl_proxy_destroy(struct wl_proxy *proxy);
 void wl_proxy_set_user_data(struct wl_proxy *proxy, void *user_data);
 void *wl_proxy_get_user_data(struct wl_proxy *proxy);
 uint32_t wl_proxy_get_id(struct wl_proxy *proxy);
