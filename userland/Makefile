@@ -123,16 +123,18 @@ WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
 XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
+THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
 XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
+THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
 WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
                      $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 
-TARGETS += $(WAYLAND_LIBRARIES) $(WAYLAND_API_TEST_TARGET)
+TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(WAYLAND_API_TEST_TARGET)
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
@@ -189,6 +191,10 @@ $(BUILD_DIR)/lib/xkbcommon/%.o: lib/xkbcommon/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/threads/%.o: lib/threads/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
@@ -202,6 +208,10 @@ $(WAYLAND_CURSOR_LIBRARY): $(WAYLAND_CURSOR_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(XKBCOMMON_LIBRARY): $(XKBCOMMON_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(THREADS_LIBRARY): $(THREADS_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -318,6 +328,7 @@ install: $(TARGETS)
 	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
 	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
+	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
 
