@@ -40,6 +40,7 @@ struct wl_data_offer;
 struct wl_seat;
 struct wl_pointer;
 struct wl_keyboard;
+struct wl_touch;
 struct wl_output;
 
 extern const struct wl_interface wl_display_interface;
@@ -56,6 +57,7 @@ extern const struct wl_interface wl_buffer_interface;
 extern const struct wl_interface wl_seat_interface;
 extern const struct wl_interface wl_pointer_interface;
 extern const struct wl_interface wl_keyboard_interface;
+extern const struct wl_interface wl_touch_interface;
 extern const struct wl_interface wl_output_interface;
 extern const struct wl_interface wl_data_device_manager_interface;
 extern const struct wl_interface wl_data_source_interface;
@@ -131,6 +133,18 @@ struct wl_keyboard_listener {
                       uint32_t group);
     void (*repeat_info)(void *data, struct wl_keyboard *keyboard,
                         int32_t rate, int32_t delay);
+};
+
+struct wl_touch_listener {
+    void (*down)(void *data, struct wl_touch *touch, uint32_t serial,
+                 uint32_t time, struct wl_surface *surface, int32_t id,
+                 wl_fixed_t x, wl_fixed_t y);
+    void (*up)(void *data, struct wl_touch *touch, uint32_t serial,
+               uint32_t time, int32_t id);
+    void (*motion)(void *data, struct wl_touch *touch, uint32_t time,
+                   int32_t id, wl_fixed_t x, wl_fixed_t y);
+    void (*frame)(void *data, struct wl_touch *touch);
+    void (*cancel)(void *data, struct wl_touch *touch);
 };
 
 struct wl_output_listener {
@@ -330,6 +344,7 @@ int wl_seat_add_listener(struct wl_seat *seat,
                          const struct wl_seat_listener *listener, void *data);
 struct wl_pointer *wl_seat_get_pointer(struct wl_seat *seat);
 struct wl_keyboard *wl_seat_get_keyboard(struct wl_seat *seat);
+struct wl_touch *wl_seat_get_touch(struct wl_seat *seat);
 void wl_seat_release(struct wl_seat *seat);
 void wl_seat_destroy(struct wl_seat *seat);
 
@@ -347,6 +362,12 @@ int wl_keyboard_add_listener(struct wl_keyboard *keyboard,
                              void *data);
 void wl_keyboard_destroy(struct wl_keyboard *keyboard);
 void wl_keyboard_release(struct wl_keyboard *keyboard);
+
+int wl_touch_add_listener(struct wl_touch *touch,
+                          const struct wl_touch_listener *listener,
+                          void *data);
+void wl_touch_destroy(struct wl_touch *touch);
+void wl_touch_release(struct wl_touch *touch);
 
 int wl_output_add_listener(struct wl_output *output,
                            const struct wl_output_listener *listener,

@@ -976,6 +976,10 @@ static int wl_dispatch_seat(struct wl_server_client *client,
         }
         return 0;
     }
+    if (opcode == 2u)
+        return wl_client_add_object(client, new_id,
+                                    WL_SERVER_OBJECT_TOUCH,
+                                    object->version, NULL);
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,
                             "requested seat capability is unavailable");
@@ -997,6 +1001,11 @@ static int wl_dispatch_input_object(struct wl_server_client *client,
         return 0;
     }
     if (object->type == WL_SERVER_OBJECT_KEYBOARD && opcode == 0u &&
+        object->version >= 3u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (object->type == WL_SERVER_OBJECT_TOUCH && opcode == 0u &&
         object->version >= 3u && wl_request_complete(request)) {
         wl_client_remove_object(client, object->id, true);
         return 0;
@@ -1373,6 +1382,7 @@ int wl_server_dispatch_message(struct wl_server *server,
         return wl_dispatch_seat(client, object, opcode, &request);
     case WL_SERVER_OBJECT_POINTER:
     case WL_SERVER_OBJECT_KEYBOARD:
+    case WL_SERVER_OBJECT_TOUCH:
         return wl_dispatch_input_object(client, object, opcode, &request);
     case WL_SERVER_OBJECT_DATA_DEVICE_MANAGER:
         return wl_dispatch_data_device_manager(server, client, object,

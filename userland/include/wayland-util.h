@@ -65,9 +65,25 @@ static inline double wl_fixed_to_double(wl_fixed_t value)
     return (double)value / 256.0;
 }
 
+static inline int wl_fixed_to_int(wl_fixed_t value)
+{
+    return value / 256;
+}
+
 static inline wl_fixed_t wl_fixed_from_int(int value)
 {
     return (wl_fixed_t)(value * 256);
 }
+
+static inline wl_fixed_t wl_fixed_from_double(double value)
+{
+    return (wl_fixed_t)(value * 256.0);
+}
+
+#define wl_array_for_each(position, array) \
+    for (position = (array)->data; \
+         (const char *)position < \
+             (const char *)(array)->data + (array)->size; \
+         position++)
 
 #endif /* ARMOS_WAYLAND_UTIL_H */

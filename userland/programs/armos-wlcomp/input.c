@@ -121,6 +121,13 @@ static struct wl_server_surface *wl_surface_at(
     return top;
 }
 
+static void wl_send_pointer_frame(struct wl_server_client *client,
+                                  struct wl_server_object *pointer)
+{
+    if (client && pointer && pointer->version >= 5u)
+        (void)wl_client_send_words(client, pointer->id, 5u, NULL, 0u);
+}
+
 static void wl_send_pointer_motion(struct wl_server *server,
                                    uint32_t timestamp)
 {
@@ -139,6 +146,7 @@ static void wl_send_pointer_motion(struct wl_server *server,
     words[2] = (uint32_t)((server->pointer_y - surface->y -
                            WL_WINDOW_TITLE_HEIGHT) * 256);
     (void)wl_client_send_words(client, pointer->id, 2u, words, 3u);
+    wl_send_pointer_frame(client, pointer);
 }
 
 static void wl_send_keyboard_modifiers(struct wl_server *server,
@@ -182,6 +190,7 @@ static void wl_focus_surface(struct wl_server *server,
         if (old_pointer) {
             (void)wl_client_send_words(server->focus_client,
                                        old_pointer->id, 1u, leave, 2u);
+            wl_send_pointer_frame(server->focus_client, old_pointer);
         }
         if (old_keyboard) {
             leave[0] = ++server->serial;
@@ -198,6 +207,7 @@ static void wl_focus_surface(struct wl_server *server,
     enter[2] = 0u;
     enter[3] = 0u;
     (void)wl_client_send_words(client, pointer->id, 0u, enter, 4u);
+    wl_send_pointer_frame(client, pointer);
     }
     keyboard = wl_find_input_object(client, WL_SERVER_OBJECT_KEYBOARD);
     if (keyboard) {
@@ -263,6 +273,7 @@ static void wl_handle_button(struct wl_server *server,
     else
         server->pointer_grab_serial = 0u;
     (void)wl_client_send_words(client, pointer->id, 3u, words, 4u);
+    wl_send_pointer_frame(client, pointer);
 }
 
 static void wl_handle_key(struct wl_server *server,

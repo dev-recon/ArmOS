@@ -106,6 +106,7 @@ struct wl_buffer { struct wl_proxy proxy; };
 struct wl_seat { struct wl_proxy proxy; };
 struct wl_pointer { struct wl_proxy proxy; };
 struct wl_keyboard { struct wl_proxy proxy; };
+struct wl_touch { struct wl_proxy proxy; };
 struct wl_output { struct wl_proxy proxy; };
 struct wl_data_device_manager { struct wl_proxy proxy; };
 struct wl_data_source { struct wl_proxy proxy; };
@@ -169,6 +170,10 @@ const struct wl_interface wl_pointer_interface = {
 
 const struct wl_interface wl_keyboard_interface = {
     "wl_keyboard", 5, 1, NULL, 6, NULL
+};
+
+const struct wl_interface wl_touch_interface = {
+    "wl_touch", 5, 1, NULL, 5, NULL
 };
 
 const struct wl_interface wl_output_interface = {
@@ -1559,6 +1564,16 @@ struct wl_keyboard *wl_seat_get_keyboard(struct wl_seat *seat)
         &wl_keyboard_interface);
 }
 
+struct wl_touch *wl_seat_get_touch(struct wl_seat *seat)
+{
+    if (!seat) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return (struct wl_touch *)wl_create_object(
+        &seat->proxy, 2u, sizeof(struct wl_touch), &wl_touch_interface);
+}
+
 void wl_seat_destroy(struct wl_seat *seat)
 {
     if (seat)
@@ -1635,6 +1650,29 @@ void wl_keyboard_destroy(struct wl_keyboard *keyboard)
 void wl_keyboard_release(struct wl_keyboard *keyboard)
 {
     wl_keyboard_destroy(keyboard);
+}
+
+int wl_touch_add_listener(struct wl_touch *touch,
+                          const struct wl_touch_listener *listener,
+                          void *data)
+{
+    return wl_proxy_add_listener(&touch->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void wl_touch_destroy(struct wl_touch *touch)
+{
+    if (!touch)
+        return;
+    if (touch->proxy.version >= 3u)
+        (void)wl_send_words(touch->proxy.display, touch->proxy.id, 0u,
+                            NULL, 0u);
+    wl_proxy_destroy(&touch->proxy);
+}
+
+void wl_touch_release(struct wl_touch *touch)
+{
+    wl_touch_destroy(touch);
 }
 
 int wl_output_add_listener(struct wl_output *output,
@@ -2121,6 +2159,35 @@ static int wl_dispatch_pointer_event(struct wl_proxy *proxy,
                            (wl_fixed_t)wl_load_u32(payload + 8u));
         return 0;
     }
+    if (opcode == 5u && size == 0u) {
+        if (listener && listener->frame)
+            listener->frame(proxy->listener_data,
+                            (struct wl_pointer *)proxy);
+        return 0;
+    }
+    if (opcode == 6u && size == 4u) {
+        if (listener && listener->axis_source)
+            listener->axis_source(proxy->listener_data,
+                                  (struct wl_pointer *)proxy,
+                                  wl_load_u32(payload));
+        return 0;
+    }
+    if (opcode == 7u && size == 8u) {
+        if (listener && listener->axis_stop)
+            listener->axis_stop(proxy->listener_data,
+                                (struct wl_pointer *)proxy,
+                                wl_load_u32(payload),
+                                wl_load_u32(payload + 4u));
+        return 0;
+    }
+    if (opcode == 8u && size == 8u) {
+        if (listener && listener->axis_discrete)
+            listener->axis_discrete(proxy->listener_data,
+                                    (struct wl_pointer *)proxy,
+                                    wl_load_u32(payload),
+                                    (int32_t)wl_load_u32(payload + 4u));
+        return 0;
+    }
     return -1;
 }
 
@@ -2203,6 +2270,60 @@ static int wl_dispatch_keyboard_event(struct wl_proxy *proxy,
                                   (struct wl_keyboard *)proxy,
                                   (int32_t)wl_load_u32(payload),
                                   (int32_t)wl_load_u32(payload + 4u));
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_touch_event(struct wl_proxy *proxy, uint16_t opcode,
+                                   const uint8_t *payload, size_t size)
+{
+    const struct wl_touch_listener *listener =
+        (const struct wl_touch_listener *)proxy->listener;
+
+    if (opcode == 0u && size == 24u) {
+        struct wl_surface *surface =
+            wl_event_surface(proxy->display, wl_load_u32(payload + 8u));
+
+        if (!surface)
+            return -1;
+        if (listener && listener->down)
+            listener->down(proxy->listener_data, (struct wl_touch *)proxy,
+                           wl_load_u32(payload),
+                           wl_load_u32(payload + 4u), surface,
+                           (int32_t)wl_load_u32(payload + 12u),
+                           (wl_fixed_t)wl_load_u32(payload + 16u),
+                           (wl_fixed_t)wl_load_u32(payload + 20u));
+        return 0;
+    }
+    if (opcode == 1u && size == 12u) {
+        if (listener && listener->up)
+            listener->up(proxy->listener_data, (struct wl_touch *)proxy,
+                         wl_load_u32(payload),
+                         wl_load_u32(payload + 4u),
+                         (int32_t)wl_load_u32(payload + 8u));
+        return 0;
+    }
+    if (opcode == 2u && size == 16u) {
+        if (listener && listener->motion)
+            listener->motion(
+                proxy->listener_data, (struct wl_touch *)proxy,
+                wl_load_u32(payload),
+                (int32_t)wl_load_u32(payload + 4u),
+                (wl_fixed_t)wl_load_u32(payload + 8u),
+                (wl_fixed_t)wl_load_u32(payload + 12u));
+        return 0;
+    }
+    if (opcode == 3u && size == 0u) {
+        if (listener && listener->frame)
+            listener->frame(proxy->listener_data,
+                            (struct wl_touch *)proxy);
+        return 0;
+    }
+    if (opcode == 4u && size == 0u) {
+        if (listener && listener->cancel)
+            listener->cancel(proxy->listener_data,
+                             (struct wl_touch *)proxy);
         return 0;
     }
     return -1;
@@ -2629,6 +2750,8 @@ static int wl_display_dispatch_event(struct wl_display *display,
         result = wl_dispatch_pointer_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_keyboard_interface)) {
         result = wl_dispatch_keyboard_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &wl_touch_interface)) {
+        result = wl_dispatch_touch_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_output_interface)) {
         result = wl_dispatch_output_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_surface_interface)) {

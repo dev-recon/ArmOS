@@ -532,6 +532,7 @@ static int test_registry(void)
     struct wl_seat *seat = NULL;
     struct wl_pointer *pointer = NULL;
     struct wl_keyboard *keyboard = NULL;
+    struct wl_touch *touch = NULL;
     struct wl_output *output = NULL;
     struct wl_data_device_manager *data_device_manager = NULL;
     struct wl_data_source *data_source = NULL;
@@ -623,11 +624,12 @@ static int test_registry(void)
         goto protocol_failed;
     pointer = wl_seat_get_pointer(seat);
     keyboard = wl_seat_get_keyboard(seat);
+    touch = wl_seat_get_touch(seat);
     data_source =
         wl_data_device_manager_create_data_source(data_device_manager);
     data_device =
         wl_data_device_manager_get_data_device(data_device_manager, seat);
-    if (!pointer || !keyboard || !data_source || !data_device ||
+    if (!pointer || !keyboard || !touch || !data_source || !data_device ||
         wl_data_source_add_listener(data_source, &clipboard_source_listener,
                                     &state) < 0 ||
         wl_data_device_add_listener(data_device, &clipboard_device_listener,
@@ -734,6 +736,7 @@ static int test_registry(void)
     wl_data_device_manager_destroy(data_device_manager);
     wl_keyboard_release(keyboard);
     wl_pointer_release(pointer);
+    wl_touch_release(touch);
     wl_seat_release(seat);
     xdg_toplevel_destroy(xdg_toplevel);
     xdg_surface_destroy(xdg_surface);
