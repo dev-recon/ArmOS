@@ -48,6 +48,9 @@ static uint32_t framebuffer_orientation = ARMOS_FB_ORIENTATION_PORTRAIT;
 static int framebuffer_tty_id = -1;
 static spinlock_t display_geometry_lock = SPINLOCK_INIT("fb_geometry");
 static spinlock_t display_console_lock = SPINLOCK_INIT("fb_console");
+static spinlock_t framebuffer_owner_lock = SPINLOCK_INIT("fb_owner");
+static file_t *framebuffer_owner;
+static volatile bool framebuffer_user_owned;
 
 /*
  * Dirty rectangle shared between producers and the flusher.
@@ -237,43 +240,45 @@ static void framebuffer_flush_dirty(void)
         return;
 
     spin_lock_irqsave(&display_console_lock, &console_flags);
-    if (cursor_drawn && !cursor_blink_on)
-        console_erase_cursor();
-
-    if (cursor_visible && framebuffer_base && display.font) {
-        if (cursor_drawn &&
-            (cursor_drawn_x != display.cursor_x ||
-             cursor_drawn_y != display.cursor_y))
+    if (!framebuffer_user_owned) {
+        if (cursor_drawn && !cursor_blink_on)
             console_erase_cursor();
-    } else if (cursor_drawn) {
-        console_erase_cursor();
-    }
 
-    if (cursor_visible && framebuffer_base && display.font &&
-        scrollback_offset == 0 &&
-        cursor_blink_on &&
-        display.cursor_x < display.text_cols &&
-        display.cursor_y < display.text_rows &&
-        display.cursor_x < CONSOLE_MAX_COLS &&
-        display.cursor_y < CONSOLE_MAX_ROWS &&
-        !cursor_drawn) {
-        uint32_t x = display.cursor_x * display.font->width;
-        uint32_t y = display.cursor_y * display.font->height;
-        uint32_t bar_width = display.font->width / 5;
-
-        if (bar_width < CURSOR_BAR_MIN_WIDTH)
-            bar_width = CURSOR_BAR_MIN_WIDTH;
-        if (bar_width > display.font->width)
-            bar_width = display.font->width;
-
-        for (uint32_t yy = 0; yy < display.font->height; yy++) {
-            for (uint32_t xx = 0; xx < bar_width; xx++)
-                put_pixel(x + xx, y + yy, default_fg_color);
+        if (cursor_visible && framebuffer_base && display.font) {
+            if (cursor_drawn &&
+                (cursor_drawn_x != display.cursor_x ||
+                 cursor_drawn_y != display.cursor_y))
+                console_erase_cursor();
+        } else if (cursor_drawn) {
+            console_erase_cursor();
         }
-        framebuffer_mark_dirty(x, y, bar_width, display.font->height);
-        cursor_drawn = true;
-        cursor_drawn_x = display.cursor_x;
-        cursor_drawn_y = display.cursor_y;
+
+        if (cursor_visible && framebuffer_base && display.font &&
+            scrollback_offset == 0 &&
+            cursor_blink_on &&
+            display.cursor_x < display.text_cols &&
+            display.cursor_y < display.text_rows &&
+            display.cursor_x < CONSOLE_MAX_COLS &&
+            display.cursor_y < CONSOLE_MAX_ROWS &&
+            !cursor_drawn) {
+            uint32_t x = display.cursor_x * display.font->width;
+            uint32_t y = display.cursor_y * display.font->height;
+            uint32_t bar_width = display.font->width / 5;
+
+            if (bar_width < CURSOR_BAR_MIN_WIDTH)
+                bar_width = CURSOR_BAR_MIN_WIDTH;
+            if (bar_width > display.font->width)
+                bar_width = display.font->width;
+
+            for (uint32_t yy = 0; yy < display.font->height; yy++) {
+                for (uint32_t xx = 0; xx < bar_width; xx++)
+                    put_pixel(x + xx, y + yy, default_fg_color);
+            }
+            framebuffer_mark_dirty(x, y, bar_width, display.font->height);
+            cursor_drawn = true;
+            cursor_drawn_x = display.cursor_x;
+            cursor_drawn_y = display.cursor_y;
+        }
     }
     spin_unlock_irqrestore(&display_console_lock, console_flags);
 
@@ -1199,8 +1204,9 @@ void clear_screen(void)
     uint32_t pixels = display.width * display.height;
     uint32_t i;
     
-    for (i = 0; i < pixels; i++) {
-        fb32[i] = display.bg_color;
+    if (!framebuffer_user_owned) {
+        for (i = 0; i < pixels; i++)
+            fb32[i] = display.bg_color;
     }
     
     display.cursor_x = 0;
@@ -1212,7 +1218,9 @@ void clear_screen(void)
 
 void put_pixel(uint32_t x, uint32_t y, uint32_t color)
 {
-    if (x >= display.width || y >= display.height) return;
+    if (framebuffer_user_owned ||
+        x >= display.width || y >= display.height)
+        return;
     
     uint32_t* fb32 = (uint32_t*)display.framebuffer;
     fb32[y * display.width + x] = color;
@@ -1356,7 +1364,8 @@ void scroll_screen(void)
     uint32_t font_h = display.font ? display.font->height : 16;
     bool backend_scrolled = false;
 
-    if (display_backend && display_backend->scroll_up) {
+    if (!framebuffer_user_owned &&
+        display_backend && display_backend->scroll_up) {
         display_backend_mode_t mode;
 
         memset(&mode, 0, sizeof(mode));
@@ -1373,7 +1382,7 @@ void scroll_screen(void)
         }
     }
 
-    if (!backend_scrolled) {
+    if (!backend_scrolled && !framebuffer_user_owned) {
         uint32_t retained_rows = display.height - font_h;
         uint32_t retained_bytes = retained_rows * display.pitch;
         uint32_t *last_line;
@@ -1849,6 +1858,13 @@ static ssize_t fb0_write(file_t* file, const void* buffer, size_t count)
     if (!framebuffer_base)
         return -ENODEV;
 
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner && framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return -EBUSY;
+    }
+    spin_unlock(&framebuffer_owner_lock);
+
     spin_lock(&display_geometry_lock);
     fb_size = framebuffer_size_bytes();
     offset = file->offset;
@@ -1914,11 +1930,60 @@ static off_t fb0_lseek(file_t* file, off_t offset, int whence)
     return next;
 }
 
+int framebuffer_acquire(file_t *file)
+{
+    if (!file || framebuffer_index(file) != 0)
+        return -ENODEV;
+
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner && framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return -EBUSY;
+    }
+    framebuffer_owner = file;
+    framebuffer_user_owned = true;
+    spin_unlock(&framebuffer_owner_lock);
+    return 0;
+}
+
+int framebuffer_release(file_t *file)
+{
+    unsigned long flags;
+
+    if (!file || framebuffer_index(file) != 0)
+        return -ENODEV;
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return -EPERM;
+    }
+    framebuffer_owner = NULL;
+    framebuffer_user_owned = false;
+    spin_unlock(&framebuffer_owner_lock);
+
+    spin_lock_irqsave(&display_console_lock, &flags);
+    console_render_scrollback();
+    spin_unlock_irqrestore(&display_console_lock, flags);
+    display_flush_all();
+    return 0;
+}
+
+static int fb0_close(file_t *file)
+{
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return 0;
+    }
+    spin_unlock(&framebuffer_owner_lock);
+    return framebuffer_release(file);
+}
+
 static file_operations_t fb0_file_ops = {
     .read = fb0_read,
     .write = fb0_write,
     .open = NULL,
-    .close = NULL,
+    .close = fb0_close,
     .lseek = fb0_lseek,
     .readdir = NULL,
     .truncate = NULL,

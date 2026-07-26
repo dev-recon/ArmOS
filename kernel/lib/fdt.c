@@ -286,6 +286,8 @@ bool fdt_decode_gic_interrupt(const uint32_t *intr, uint32_t len,
 
 typedef struct {
     uint32_t virtio_id;
+    uint32_t wanted_index;
+    uint32_t match_index;
     paddr_t phys;
     uint32_t irq;
     bool edge;
@@ -316,6 +318,8 @@ static bool fdt_virtio_mmio_cb(void *dtb_ptr, void *node_ptr,
         return false;
     if (mmio_read32(base, VIRTIO_MMIO_DEVICE_ID) != ctx->virtio_id)
         return false;
+    if (ctx->match_index++ != ctx->wanted_index)
+        return false;
 
     (void)arch_platform_virtio_irq_from_phys(phys, &fallback_irq);
 
@@ -334,8 +338,18 @@ static bool fdt_virtio_mmio_cb(void *dtb_ptr, void *node_ptr,
 bool fdt_find_virtio_mmio_device(uint32_t virtio_id, paddr_t *out_phys,
                                  uint32_t *out_irq, bool *out_edge)
 {
+    return fdt_find_virtio_mmio_device_at(virtio_id, 0u, out_phys, out_irq,
+                                          out_edge);
+}
+
+bool fdt_find_virtio_mmio_device_at(uint32_t virtio_id, uint32_t index,
+                                    paddr_t *out_phys, uint32_t *out_irq,
+                                    bool *out_edge)
+{
     fdt_virtio_ctx_t ctx = {
         .virtio_id = virtio_id,
+        .wanted_index = index,
+        .match_index = 0u,
         .phys = 0,
         .irq = 0,
         .edge = true,

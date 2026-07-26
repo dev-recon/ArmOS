@@ -289,8 +289,9 @@ void irq_c_handler(void)
         return;
     }
 
-    if (int_id == virtio_input_get_irq()) {
-        virtio_input_irq_handler();
+    if (int_id == virtio_input_get_irq() ||
+        virtio_input_handles_irq(int_id)) {
+        virtio_input_irq_handler(int_id);
         gicc[0x010/4] = irq_id;  /* GICC_EOIR */
         return;
     }

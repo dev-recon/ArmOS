@@ -152,6 +152,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/process/signal.o \
 	kernel/core/coredump.o \
 	kernel/core/device_service.o \
+	kernel/core/windowserver.o \
 	kernel/net/device.o \
 	kernel/net/stack.o \
 	kernel/net/socket.o \
@@ -170,6 +171,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/uart.o \
 	kernel/drivers/tty.o \
 	kernel/drivers/null.o \
+	kernel/drivers/input.o \
 	kernel/drivers/power.o \
 	kernel/drivers/usb/core.o \
 	kernel/timer/timer.o \

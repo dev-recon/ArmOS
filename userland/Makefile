@@ -78,6 +78,9 @@ PROGRAMS := $(patsubst programs/%/,%,$(PROGRAM_DIRS))
 # ARM64 userfs path set.
 PROGRAMS := $(filter-out hello64,$(PROGRAMS))
 
+# armos-wlcomp is a privileged system service installed in /sbin.
+PROGRAMS := $(filter-out armos-wlcomp,$(PROGRAMS))
+
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
 
@@ -95,10 +98,12 @@ endif
 PROGRAMS := $(filter-out fbview,$(PROGRAMS))
 
 PROGRAM_TARGETS := $(PROGRAMS:%=$(OUT_USR_BIN)/%)
+ARMOS_WLCOMP_TARGET := $(OUT_SBIN)/armos-wlcomp
 EXTERNAL_TARGETS := $(foreach name,$(EXTERNALS),$(OUT_OPT)/$(name)/bin/$(name))
 
 SYSTEM_TARGETS := $(OUT_SBIN)/init $(OUT_SBIN)/mash $(SYSTEM_TOOL_TARGETS)
-TARGETS := $(SYSTEM_TARGETS) $(COREUTIL_TARGETS) $(PROGRAM_TARGETS) $(EXTERNAL_TARGETS)
+TARGETS := $(SYSTEM_TARGETS) $(ARMOS_WLCOMP_TARGET) $(COREUTIL_TARGETS) \
+           $(PROGRAM_TARGETS) $(EXTERNAL_TARGETS)
 
 MASH_SRCS := $(wildcard system/mash/src/*.c)
 MASH_OBJECTS := $(patsubst system/mash/src/%.c,$(BUILD_DIR)/system/mash/%.o,$(MASH_SRCS))
@@ -106,8 +111,10 @@ INIT_SRCS := $(wildcard system/init/*.c)
 INIT_OBJECTS := $(patsubst system/init/%.c,$(BUILD_DIR)/system/init/%.o,$(INIT_SRCS))
 HELLO64_SRCS := $(wildcard programs/hello64/*.c)
 HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64/%.o,$(HELLO64_SRCS))
+ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
+ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
 
-.PHONY: all clean install check-newlib newlib-port list init mash hello64
+.PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
 all: check-newlib $(TARGETS)
@@ -130,6 +137,7 @@ list:
 init: $(OUT_SBIN)/init
 mash: $(OUT_SBIN)/mash
 hello64: $(OUT_USR_BIN)/hello64
+armos-wlcomp: $(ARMOS_WLCOMP_TARGET)
 $(SYSTEM_TOOLS): %: $(OUT_SBIN)/%
 $(COREUTILS): %: $(OUT_BIN)/%
 $(PROGRAMS): %: $(OUT_USR_BIN)/%
@@ -176,6 +184,10 @@ $(OUT_USR_BIN)/hello64: newlib-port $(HELLO64_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(HELLO64_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
+$(ARMOS_WLCOMP_TARGET): newlib-port $(ARMOS_WLCOMP_OBJECTS)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMOS_WLCOMP_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
 define EXTERNAL_RULE
 $(1)_EXTERNAL_SRCS := $$(wildcard opt/$(1)/src/*.c)
 $(1)_EXTERNAL_OBJECTS := $$(patsubst opt/%.c,$$(BUILD_DIR)/opt/%.o,$$($(1)_EXTERNAL_SRCS))
@@ -217,6 +229,11 @@ install: $(TARGETS)
 		rm -f $(USERFS_BIN)/$$name $(USERFS_USR_BIN)/$$name; \
 		$(STRIP) --strip-all $(USERFS_SBIN)/$$name; \
 	done
+	rm -f $(USERFS_SBIN)/windowserverd
+	rm -f $(USERFS_SBIN)/armos-wlcomp
+	cp $(ARMOS_WLCOMP_TARGET) $(USERFS_SBIN)/armos-wlcomp
+	rm -f $(USERFS_BIN)/armos-wlcomp $(USERFS_USR_BIN)/armos-wlcomp
+	$(STRIP) --strip-all $(USERFS_SBIN)/armos-wlcomp
 	@for name in $(SYSTEM_TOOLS); do \
 		rm -f $(USERFS_SBIN)/$$name; \
 		cp $(OUT_SBIN)/$$name $(USERFS_SBIN)/$$name; \

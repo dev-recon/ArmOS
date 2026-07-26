@@ -34,6 +34,7 @@
 #include <kernel/virtio_net.h>
 #include <kernel/net/control.h>
 #include <kernel/spinlock.h>
+#include <kernel/input.h>
 
 #define SYSCALL_IO_BOUNCE_SIZE     (64u * 1024u)
 #define SYSCALL_IO_BOUNCE_MIN_SIZE (4u * 1024u)
@@ -1105,6 +1106,35 @@ static int sys_open_resolved(task_t *task, char *full_path,
         return fd;
     }
 
+    if (is_input_device_path(full_path)) {
+        file_t *input_file;
+
+        if (flags & O_DIRECTORY) {
+            kfree(full_path);
+            return -ENOTDIR;
+        }
+        if (current_uid() != 0) {
+            kfree(full_path);
+            return -EACCES;
+        }
+        fd = allocate_fd(task);
+        if (fd < 0) {
+            kfree(full_path);
+            return fd;
+        }
+        input_file = create_input_device_file("input0",
+                                               flags & ~O_CLOEXEC);
+        if (!input_file) {
+            free_fd(task, fd);
+            kfree(full_path);
+            return -ENOMEM;
+        }
+        task->process->files[fd] = input_file;
+        task->process->fd_flags[fd] = flags & O_CLOEXEC;
+        kfree(full_path);
+        return fd;
+    }
+
     if (is_net_echo_device_path(full_path)) {
         if (flags & O_DIRECTORY) {
             kfree(full_path);
@@ -1336,6 +1366,12 @@ static int stat_resolved_path(char *full_path, struct stat *kstat,
 
     if (is_framebuffer_device_path(full_path)) {
         fill_framebuffer_device_stat(full_path, kstat);
+        kfree(full_path);
+        return 0;
+    }
+
+    if (is_input_device_path(full_path)) {
+        fill_input_device_stat(kstat);
         kfree(full_path);
         return 0;
     }

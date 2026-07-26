@@ -28,6 +28,7 @@
 #include <kernel/arch_platform.h>
 #include <kernel/address_space.h>
 #include <kernel/display.h>
+#include <kernel/input.h>
 #include <kernel/kprintf.h>
 #include <kernel/raspberrypi_mailbox.h>
 #include <kernel/string.h>
@@ -1334,6 +1335,50 @@ static char translate_azerty(uint8_t usage, bool shift, bool altgr)
     }
 }
 
+static uint16_t hid_usage_to_key(uint8_t usage)
+{
+    static const uint16_t letters[26] = {
+        30u, 48u, 46u, 32u, 18u, 33u, 34u, 35u, 23u, 36u, 37u, 38u,
+        50u, 49u, 24u, 25u, 16u, 19u, 31u, 20u, 22u, 47u, 17u, 45u,
+        21u, 44u
+    };
+
+    if (usage >= 0x04u && usage <= 0x1du)
+        return letters[usage - 0x04u];
+    if (usage >= 0x1eu && usage <= 0x26u)
+        return (uint16_t)(usage - 0x1eu + 2u);
+    if (usage == 0x27u)
+        return 11u;
+    switch (usage) {
+    case 0x28u: return 28u;
+    case 0x29u: return 1u;
+    case 0x2au: return 14u;
+    case 0x2bu: return 15u;
+    case 0x2cu: return 57u;
+    case 0x2du: return 12u;
+    case 0x2eu: return 13u;
+    case 0x2fu: return 26u;
+    case 0x30u: return 27u;
+    case 0x31u: return 43u;
+    case 0x33u: return 39u;
+    case 0x34u: return 40u;
+    case 0x36u: return 51u;
+    case 0x37u: return 52u;
+    case 0x38u: return 53u;
+    case 0x4fu: return 106u;
+    case 0x50u: return 105u;
+    case 0x51u: return 108u;
+    case 0x52u: return 103u;
+    case 0x64u: return 41u;
+    default: return 0u;
+    }
+}
+
+static void emit_input_text(char character)
+{
+    armos_input_emit(ARMOS_INPUT_EVENT_TEXT, 0u, (uint8_t)character);
+}
+
 static bool emit_keyboard_usage(uint8_t usage, uint8_t modifiers)
 {
     bool shift = (modifiers & 0x22u) != 0u;
@@ -1343,18 +1388,22 @@ static bool emit_keyboard_usage(uint8_t usage, uint8_t modifiers)
 
     if (usage == 0x28u) {
         tty_input_char_to_id(usb_tty_id, '\n');
+        emit_input_text('\n');
         return false;
     }
     if (usage == 0x29u) {
         tty_input_char_to_id(usb_tty_id, 0x1b);
+        emit_input_text(0x1b);
         return false;
     }
     if (usage == 0x2au) {
         tty_input_char_to_id(usb_tty_id, 0x7f);
+        emit_input_text(0x7f);
         return true;
     }
     if (usage == 0x2bu) {
         tty_input_char_to_id(usb_tty_id, '\t');
+        emit_input_text('\t');
         return true;
     }
     if (usage == 0x4fu) { emit_string("\033[C"); return true; }
@@ -1372,6 +1421,7 @@ static bool emit_keyboard_usage(uint8_t usage, uint8_t modifiers)
     if (!character)
         return false;
     tty_input_char_to_id(usb_tty_id, character);
+    emit_input_text(character);
     return true;
 }
 
@@ -1379,12 +1429,27 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
 {
     uint64_t now = get_timer_count();
     bool selected_repeat = false;
+    static const uint16_t modifier_keys[8] = {
+        29u, 42u, 56u, 125u, 97u, 54u, 100u, 126u
+    };
+
+    for (uint32_t bit = 0; bit < 8u; bit++) {
+        uint8_t mask = (uint8_t)(1u << bit);
+
+        if ((hid->report[0] & mask) != (hid->previous[0] & mask))
+            armos_input_emit(ARMOS_INPUT_EVENT_KEY, modifier_keys[bit],
+                             (hid->report[0] & mask) ? 1 : 0);
+    }
 
     for (uint32_t i = 2; i < 8u; i++) {
         uint8_t usage = hid->report[i];
+        uint16_t key;
 
         if (!usage || key_already_pressed(hid->previous, usage))
             continue;
+        key = hid_usage_to_key(usage);
+        if (key)
+            armos_input_emit(ARMOS_INPUT_EVENT_KEY, key, 1);
         if (emit_keyboard_usage(usage, hid->report[0])) {
             hid->repeat_usage = usage;
             hid->repeat_next_tick = now +
@@ -1392,6 +1457,17 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
             selected_repeat = true;
         }
     }
+    for (uint32_t i = 2; i < 8u; i++) {
+        uint8_t usage = hid->previous[i];
+        uint16_t key;
+
+        if (!usage || key_already_pressed(hid->report, usage))
+            continue;
+        key = hid_usage_to_key(usage);
+        if (key)
+            armos_input_emit(ARMOS_INPUT_EVENT_KEY, key, 0);
+    }
+    armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
 
     if (!selected_repeat && hid->repeat_usage != 0u &&
         !key_already_pressed(hid->report, hid->repeat_usage)) {
@@ -1417,17 +1493,44 @@ static void process_keyboard_repeat(usb_hid_endpoint_t *hid, uint64_t now)
         hid->repeat_next_tick = 0u;
         return;
     }
+    armos_input_emit(ARMOS_INPUT_EVENT_KEY,
+                     hid_usage_to_key(hid->repeat_usage), 2);
     hid->repeat_next_tick = now +
         timer_ticks_from_ms(USB_KEY_REPEAT_RATE_MS);
 }
 
 static void process_mouse(usb_hid_endpoint_t *hid)
 {
+    uint8_t buttons = hid->report[0];
+    uint8_t previous_buttons = hid->previous[0];
+    int8_t delta_x = (int8_t)hid->report[1];
+    int8_t delta_y = (int8_t)hid->report[2];
     int8_t wheel = (int8_t)hid->report[3];
+
+    if ((buttons & 1u) != (previous_buttons & 1u))
+        armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_LEFT,
+                         (buttons & 1u) != 0u);
+    if ((buttons & 2u) != (previous_buttons & 2u))
+        armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_RIGHT,
+                         (buttons & 2u) != 0u);
+    if ((buttons & 4u) != (previous_buttons & 4u))
+        armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_MIDDLE,
+                         (buttons & 4u) != 0u);
+    if (delta_x)
+        armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_X,
+                         delta_x);
+    if (delta_y)
+        armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_Y,
+                         delta_y);
+    if (wheel)
+        armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_WHEEL,
+                         wheel);
+    armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
     if (wheel > 0)
         display_scrollback_up((uint32_t)wheel * 3u);
     else if (wheel < 0)
         display_scrollback_down((uint32_t)(-wheel) * 3u);
+    memcpy(hid->previous, hid->report, sizeof(hid->previous));
 }
 
 static uint32_t dwc2_poll(void *argument)

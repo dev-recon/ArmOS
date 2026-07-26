@@ -1,0 +1,197 @@
+/*
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: userland/programs/armos-wlcomp/armos_wlcomp.h
+ * Layer: Userland / graphical services
+ *
+ * Responsibilities:
+ * - Define the bounded state used by the ArmOS Wayland compositor.
+ * - Keep Wayland wire objects independent from kernel and platform details.
+ * - Share protocol, rendering and event-loop contracts across server modules.
+ *
+ * Notes:
+ * - Names beginning with wl_ are public Wayland protocol names.
+ * - The implementation intentionally starts with core protocol version 1.
+ */
+
+#ifndef ARMOS_WLCOMP_H
+#define ARMOS_WLCOMP_H
+
+#include <poll.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <sys/fb.h>
+#include <sys/input.h>
+
+#define ARMOS_WLCOMP_SOCKET_PATH "/tmp/wayland-0"
+
+#define WL_SERVER_MAX_CLIENTS       8u
+#define WL_SERVER_MAX_OBJECTS       256u
+#define WL_SERVER_MAX_POOLS         16u
+#define WL_SERVER_MAX_BUFFERS       64u
+#define WL_SERVER_MAX_SURFACES      32u
+#define WL_SERVER_MAX_CALLBACKS     16u
+#define WL_SERVER_MAX_RECEIVE       (64u * 1024u)
+#define WL_SERVER_MAX_PENDING_FDS   16u
+
+#define WL_DISPLAY_ID 1u
+
+#define WL_GLOBAL_COMPOSITOR 1u
+#define WL_GLOBAL_SHM        2u
+#define WL_GLOBAL_SEAT       3u
+
+#define WL_SHM_FORMAT_ARGB8888 0u
+#define WL_SHM_FORMAT_XRGB8888 1u
+
+enum wl_server_object_type {
+    WL_SERVER_OBJECT_NONE = 0,
+    WL_SERVER_OBJECT_DISPLAY,
+    WL_SERVER_OBJECT_REGISTRY,
+    WL_SERVER_OBJECT_CALLBACK,
+    WL_SERVER_OBJECT_COMPOSITOR,
+    WL_SERVER_OBJECT_REGION,
+    WL_SERVER_OBJECT_SHM,
+    WL_SERVER_OBJECT_SHM_POOL,
+    WL_SERVER_OBJECT_BUFFER,
+    WL_SERVER_OBJECT_SURFACE,
+    WL_SERVER_OBJECT_SEAT,
+    WL_SERVER_OBJECT_POINTER,
+    WL_SERVER_OBJECT_KEYBOARD
+};
+
+struct wl_server_pool;
+struct wl_server_buffer;
+struct wl_server_surface;
+
+struct wl_server_object {
+    uint32_t id;
+    uint32_t version;
+    enum wl_server_object_type type;
+    void *resource;
+};
+
+struct wl_server_pool {
+    bool used;
+    bool object_alive;
+    uint32_t object_id;
+    int fd;
+    uint8_t *mapping;
+    size_t size;
+};
+
+struct wl_server_buffer {
+    bool used;
+    bool object_alive;
+    uint32_t object_id;
+    struct wl_server_pool *pool;
+    uint32_t offset;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t format;
+};
+
+struct wl_server_callback {
+    bool used;
+    uint32_t object_id;
+};
+
+struct wl_server_surface {
+    bool used;
+    uint32_t object_id;
+    struct wl_server_buffer *pending_buffer;
+    bool pending_attach;
+    bool mapped;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t *pixels;
+    size_t pixels_size;
+    struct wl_server_callback callbacks[WL_SERVER_MAX_CALLBACKS];
+};
+
+struct wl_server_client {
+    bool used;
+    int fd;
+    uint8_t receive[WL_SERVER_MAX_RECEIVE];
+    size_t receive_length;
+    int pending_fds[WL_SERVER_MAX_PENDING_FDS];
+    size_t pending_fd_count;
+    struct wl_server_object objects[WL_SERVER_MAX_OBJECTS];
+    struct wl_server_pool pools[WL_SERVER_MAX_POOLS];
+    struct wl_server_buffer buffers[WL_SERVER_MAX_BUFFERS];
+    struct wl_server_surface surfaces[WL_SERVER_MAX_SURFACES];
+};
+
+struct wl_server_renderer {
+    bool headless;
+    int framebuffer_fd;
+    struct armos_fb_info framebuffer;
+    uint32_t *canvas;
+    size_t canvas_size;
+};
+
+struct wl_server {
+    int listen_fd;
+    int input_fd;
+    uint32_t serial;
+    uint32_t next_surface_position;
+    int32_t pointer_x;
+    int32_t pointer_y;
+    bool pointer_left;
+    int32_t drag_offset_x;
+    int32_t drag_offset_y;
+    struct wl_server_client *focus_client;
+    struct wl_server_surface *focus_surface;
+    struct wl_server_client *drag_client;
+    struct wl_server_surface *drag_surface;
+    struct wl_server_renderer renderer;
+    struct wl_server_client clients[WL_SERVER_MAX_CLIENTS];
+};
+
+uint32_t wl_wire_align(uint32_t size);
+uint32_t wl_wire_u32(const uint8_t *data);
+void wl_wire_store_u32(uint8_t *data, uint32_t value);
+
+int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
+                         uint16_t opcode, const uint32_t *words,
+                         size_t word_count);
+int wl_client_send_global(struct wl_server_client *client,
+                          uint32_t registry_id, uint32_t name,
+                          const char *interface_name, uint32_t version);
+int wl_client_send_error(struct wl_server_client *client, uint32_t object_id,
+                         uint32_t code, const char *message);
+int wl_client_send_delete_id(struct wl_server_client *client,
+                             uint32_t object_id);
+
+struct wl_server_object *wl_client_find_object(
+    struct wl_server_client *client, uint32_t object_id);
+int wl_client_add_object(struct wl_server_client *client, uint32_t object_id,
+                         enum wl_server_object_type type, uint32_t version,
+                         void *resource);
+void wl_client_remove_object(struct wl_server_client *client,
+                             uint32_t object_id, bool notify);
+int wl_client_take_fd(struct wl_server_client *client);
+
+int wl_server_dispatch_message(struct wl_server *server,
+                               struct wl_server_client *client,
+                               const uint8_t *message, size_t size);
+int wl_server_receive_client(struct wl_server *server,
+                             struct wl_server_client *client);
+void wl_server_disconnect_client(struct wl_server_client *client);
+
+int wl_renderer_init(struct wl_server_renderer *renderer, bool headless);
+void wl_renderer_destroy(struct wl_server_renderer *renderer);
+int wl_renderer_compose(struct wl_server *server);
+int wl_surface_commit(struct wl_server *server,
+                      struct wl_server_client *client,
+                      struct wl_server_surface *surface);
+int wl_server_handle_input(struct wl_server *server);
+
+#endif /* ARMOS_WLCOMP_H */

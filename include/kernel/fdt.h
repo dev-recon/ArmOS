@@ -77,6 +77,9 @@ bool fdt_decode_gic_interrupt(const uint32_t *intr, uint32_t len,
                               bool *out_edge);
 bool fdt_find_virtio_mmio_device(uint32_t virtio_id, paddr_t *out_phys,
                                  uint32_t *out_irq, bool *out_edge);
+bool fdt_find_virtio_mmio_device_at(uint32_t virtio_id, uint32_t index,
+                                    paddr_t *out_phys, uint32_t *out_irq,
+                                    bool *out_edge);
 
 /* Dependency-free early-boot memory topology reader. */
 bool fdt_read_memory_layout(void *dtb_ptr, fdt_memory_layout_t *layout);

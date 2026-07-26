@@ -42,6 +42,7 @@
 #include <kernel/virtio_net.h>
 #include <kernel/mount.h>
 #include <kernel/virtio_block.h>
+#include <kernel/input.h>
 
 #define PIPE_BUF_SIZE 4096
 
@@ -841,6 +842,9 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_ARMOS_SOCKET)
         return armos_socket_read_ready(file);
 
+    if (file->type == FILE_TYPE_INPUT)
+        return armos_input_read_ready();
+
     return file->f_op && file->f_op->read;
 }
 
@@ -1000,6 +1004,16 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
         if (copy_from_user(&fbmode, (void*)arg, sizeof(fbmode)) < 0)
             return -EFAULT;
         return framebuffer_set_mode(file, &fbmode);
+
+    case ARMOS_FBIOACQUIRE:
+        if (file->type != FILE_TYPE_FRAMEBUFFER)
+            return -ENOTTY;
+        return framebuffer_acquire(file);
+
+    case ARMOS_FBIORELEASE:
+        if (file->type != FILE_TYPE_FRAMEBUFFER)
+            return -ENOTTY;
+        return framebuffer_release(file);
 
     case TIOCGWINSZ:
         if (!file_is_tty(file))
@@ -2013,6 +2027,7 @@ int sys_access(const char* pathname, int mode)
     if (is_null_device_path(full_path) ||
         is_tty_device_path(full_path) ||
         is_framebuffer_device_path(full_path) ||
+        is_input_device_path(full_path) ||
         is_net_echo_device_path(full_path)) {
         kfree(full_path);
         return (mode & MAY_EXEC) ? -EACCES : 0;
