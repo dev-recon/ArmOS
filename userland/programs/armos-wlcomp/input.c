@@ -24,6 +24,9 @@
 #include <unistd.h>
 
 #define WL_WINDOW_TITLE_HEIGHT 28
+#define WL_WINDOW_CLOSE_X      14
+#define WL_WINDOW_CLOSE_Y      14
+#define WL_WINDOW_BUTTON_HIT   9
 
 #define WL_XKB_MOD_SHIFT   (1u << 0)
 #define WL_XKB_MOD_LOCK    (1u << 1)
@@ -40,6 +43,48 @@ static struct wl_server_object *wl_find_input_object(
             return &client->objects[index];
     }
     return NULL;
+}
+
+static struct wl_server_object *wl_find_surface_object(
+    struct wl_server_client *client, enum wl_server_object_type type,
+    struct wl_server_surface *surface)
+{
+    if (!client || !client->used || !surface)
+        return NULL;
+    for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
+        struct wl_server_object *object = &client->objects[index];
+
+        if (object->type == type && object->resource == surface)
+            return object;
+    }
+    return NULL;
+}
+
+static int wl_surface_close_button_at(const struct wl_server_surface *surface,
+                                      int32_t x, int32_t y)
+{
+    int32_t local_x;
+    int32_t local_y;
+
+    if (!surface)
+        return 0;
+    local_x = x - surface->x;
+    local_y = y - surface->y;
+    return local_x >= WL_WINDOW_CLOSE_X - WL_WINDOW_BUTTON_HIT &&
+           local_x <= WL_WINDOW_CLOSE_X + WL_WINDOW_BUTTON_HIT &&
+           local_y >= WL_WINDOW_CLOSE_Y - WL_WINDOW_BUTTON_HIT &&
+           local_y <= WL_WINDOW_CLOSE_Y + WL_WINDOW_BUTTON_HIT;
+}
+
+static int wl_send_toplevel_close(struct wl_server_client *client,
+                                  struct wl_server_surface *surface)
+{
+    struct wl_server_object *toplevel = wl_find_surface_object(
+        client, WL_SERVER_OBJECT_XDG_TOPLEVEL, surface);
+
+    if (!toplevel)
+        return 0;
+    return wl_client_send_words(client, toplevel->id, 1u, NULL, 0u);
 }
 
 static struct wl_server_surface *wl_surface_at(
@@ -181,12 +226,18 @@ static void wl_handle_button(struct wl_server *server,
         surface = wl_surface_at(server, server->pointer_x, server->pointer_y,
                                 &client);
         if (surface) {
+            bool close_button;
+
             if (surface->z_order != server->next_surface_z) {
                 surface->z_order = ++server->next_surface_z;
                 server->scene_damage_pending = true;
             }
             wl_focus_surface(server, client, surface);
-            if (server->pointer_y <
+            close_button = wl_surface_close_button_at(
+                surface, server->pointer_x, server->pointer_y);
+            if (close_button) {
+                (void)wl_send_toplevel_close(client, surface);
+            } else if (server->pointer_y <
                 surface->y + WL_WINDOW_TITLE_HEIGHT) {
                 server->drag_client = client;
                 server->drag_surface = surface;

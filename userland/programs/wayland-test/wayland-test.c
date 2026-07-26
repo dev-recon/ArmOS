@@ -458,6 +458,9 @@ static int test_surface_roundtrip(int fd, bool interactive)
             result = -1;
             break;
         }
+        if (event.object_id == 15u && event.opcode == 1u &&
+            event.payload_size == 0u)
+            break;
         if (event.object_id == 12u && event.opcode == 3u &&
             event.payload_size == 16u) {
             uint32_t key = test_load_u32(event.payload + 8u);
