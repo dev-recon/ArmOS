@@ -847,7 +847,30 @@ static int encode_utf8(uint32_t codepoint, char *buffer, size_t size)
 uint32_t xkb_state_key_get_utf32(struct xkb_state *state,
                                  xkb_keycode_t key)
 {
-    return xkb_keysym_to_utf32(xkb_state_key_get_one_sym(state, key));
+    uint32_t codepoint;
+    xkb_mod_mask_t effective;
+
+    if (!state)
+        return 0u;
+    codepoint = xkb_keysym_to_utf32(
+        xkb_state_key_get_one_sym(state, key));
+    effective = state->depressed | state->latched | state->locked;
+    if ((effective & MOD_CONTROL) == 0u)
+        return codepoint;
+
+    /*
+     * XKB applies the conventional ASCII Control transformation to text
+     * generated from alphabetic and punctuation keys. Applications such as
+     * terminal emulators consume this UTF-8 result to produce ETX for Ctrl+C,
+     * rather than deriving control bytes from hardware key codes.
+     */
+    if (codepoint >= 'a' && codepoint <= 'z')
+        return codepoint - 'a' + 1u;
+    if (codepoint >= '@' && codepoint <= '_')
+        return codepoint & 0x1fu;
+    if (codepoint == '?')
+        return 0x7fu;
+    return codepoint;
 }
 
 int xkb_state_key_get_utf8(struct xkb_state *state, xkb_keycode_t key,

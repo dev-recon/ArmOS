@@ -9,7 +9,7 @@
  * Layer: Userland / graphical services
  *
  * Responsibilities:
- * - Expose compositor output geometry through wl_output version 2.
+ * - Expose compositor output geometry through wl_output version 4.
  * - Derive the current mode from the architecture-neutral framebuffer ABI.
  * - Notify surfaces when they become visible on the compositor output.
  *
@@ -28,6 +28,8 @@
 #define WL_OUTPUT_MODE_PREFERRED 2u
 #define WL_OUTPUT_SCALE          1u
 #define WL_OUTPUT_REFRESH_MHZ    60000u
+#define WL_OUTPUT_NAME           "ARMOS-1"
+#define WL_OUTPUT_DESCRIPTION    "ArmOS logical framebuffer"
 #define WL_WIRE_HEADER_SIZE      8u
 #define WL_OUTPUT_EVENT_MAX      256u
 
@@ -98,8 +100,8 @@ int wl_server_bind_output(struct wl_server *server,
 
     if (!server || !client || version == 0u)
         return -1;
-    if (version > 2u)
-        version = 2u;
+    if (version > 4u)
+        version = 4u;
     if (wl_client_add_object(client, output_id, WL_SERVER_OBJECT_OUTPUT,
                              version, NULL) < 0 ||
         wl_output_send_geometry(client, output_id) < 0)
@@ -110,10 +112,18 @@ int wl_server_bind_output(struct wl_server *server,
     mode[3] = WL_OUTPUT_REFRESH_MHZ;
     if (wl_client_send_words(client, output_id, 1u, mode, 4u) < 0)
         return -1;
-    if (version >= 2u &&
-        (wl_client_send_words(client, output_id, 3u, &scale, 1u) < 0 ||
-         wl_client_send_words(client, output_id, 2u, NULL, 0u) < 0))
-        return -1;
+    if (version >= 2u) {
+        if (wl_client_send_words(client, output_id, 3u, &scale, 1u) < 0)
+            return -1;
+        if (version >= 4u &&
+            (wl_client_send_string(client, output_id, 4u,
+                                   WL_OUTPUT_NAME) < 0 ||
+             wl_client_send_string(client, output_id, 5u,
+                                   WL_OUTPUT_DESCRIPTION) < 0))
+            return -1;
+        if (wl_client_send_words(client, output_id, 2u, NULL, 0u) < 0)
+            return -1;
+    }
     return 0;
 }
 

@@ -157,6 +157,9 @@ struct wl_output_listener {
                  int32_t width, int32_t height, int32_t refresh);
     void (*done)(void *data, struct wl_output *output);
     void (*scale)(void *data, struct wl_output *output, int32_t factor);
+    void (*name)(void *data, struct wl_output *output, const char *name);
+    void (*description)(void *data, struct wl_output *output,
+                        const char *description);
 };
 
 struct wl_data_source_listener {

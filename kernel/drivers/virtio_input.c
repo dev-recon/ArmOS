@@ -234,7 +234,8 @@ static bool input_probe_from_dtb(uint32_t index, paddr_t *out_phys,
 
 static void input_emit_char(virtio_input_state_t *state, char c)
 {
-    tty_input_char_to_id(state->tty_id, c);
+    if (armos_input_tty_routing_enabled())
+        tty_input_char_to_id(state->tty_id, c);
     armos_input_emit(ARMOS_INPUT_EVENT_TEXT, 0u, (uint8_t)c);
     state->emitted_chars++;
 }

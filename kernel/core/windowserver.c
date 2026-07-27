@@ -39,6 +39,7 @@ static void armos_compositor_main(void *argument)
         "PATH=/sbin:/bin:/usr/bin",
         "HOME=/root",
         "USER=root",
+        "LANG=C.UTF-8",
         "WAYLAND_DISPLAY=wayland-0",
         NULL
     };

@@ -1,0 +1,63 @@
+--- a/config.c
++++ b/config.c
+@@ -2948,8 +2948,8 @@
+             .button_width = 26,
+         },
+ 
+-        .render_worker_count = sysconf(_SC_NPROCESSORS_ONLN),
++        .render_worker_count = 0,
+         .server_socket_path = get_server_socket_path(),
+         .presentation_timings = false,
+         .selection_target = SELECTION_TARGET_PRIMARY,
+         .hold_at_exit = false,
+@@ -2964,7 +2964,7 @@
+             .delayed_render_lower_ns = 500000,         /* 0.5ms */
+             .delayed_render_upper_ns = 16666666 / 2,   /* half a frame period (60Hz) */
+-            .max_shm_pool_size = 512 * 1024 * 1024,
++            .max_shm_pool_size = 16 * 1024 * 1024,
+             .render_timer_osd = false,
+             .render_timer_log = false,
+             .damage_whole_window = false,
+             .box_drawing_base_thickness = 0.04,
+--- a/terminal.c
++++ b/terminal.c
+@@ -969,26 +969,10 @@
+         {count_italic,      names_italic,      attrs[2], &fonts[2]},
+         {count_bold_italic, names_bold_italic, attrs[3], &fonts[3]},
+     };
+-
+-    thrd_t tids[4] = {0};
+-    for (size_t i = 0; i < 4; i++) {
+-        int ret = thrd_create(&tids[i], &font_loader_thread, &data[i]);
+-        if (ret != thrd_success) {
+-            LOG_ERR("failed to create font loader thread: %s (%d)",
+-                    thrd_err_as_string(ret), ret);
+-            break;
+-        }
+-    }
+ 
+     bool success = true;
+-    for (size_t i = 0; i < 4; i++) {
+-        if (tids[i] != 0) {
+-            int ret;
+-            thrd_join(tids[i], &ret);
+-            success = success && ret;
+-        } else
+-            success = false;
+-    }
++    for (size_t i = 0; i < 4; i++)
++        success = font_loader_thread(&data[i]) && success;
+ 
+     for (size_t i = 0; i < 4; i++) {
+         for (size_t j = 0; j < counts[i]; j++)
+--- a/wayland.c
++++ b/wayland.c
+@@ -1572,6 +1572,8 @@
+     }
+ 
+     const char *xcursor_theme = getenv("XCURSOR_THEME");
++    if (xcursor_theme == NULL)
++        xcursor_theme = "default";
+     int xcursor_size = 24;
+ 
+     {

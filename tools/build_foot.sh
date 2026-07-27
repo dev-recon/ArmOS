@@ -115,6 +115,8 @@ mkdir -p "$SOURCE_ROOT" "$PROTOCOL_DIR" "$OBJECT_DIR" \
 tar -xzf "$FOOT_ARCHIVE_PATH" -C "$SOURCE_ROOT"
 tar -xzf "$WAYLAND_ARCHIVE_PATH" -C "$SOURCE_ROOT"
 tar -xzf "$PROTOCOLS_ARCHIVE_PATH" -C "$SOURCE_ROOT"
+patch -s -d "$FOOT_SOURCE" -p1 \
+    < "$ROOT_DIR/userland/opt/foot/foot-arm-os.patch"
 
 for required_source in main.c wayland.c render.c terminal.c LICENSE; do
     if [ ! -f "$FOOT_SOURCE/$required_source" ]; then
@@ -227,6 +229,7 @@ done
     "$NEWLIB_LIBC" \
     "$LIBGCC"
 
+cp "$BUNDLE_BIN/foot" "$BUILD_DIR/foot.debug"
 "$STRIP" --strip-all "$BUNDLE_BIN/foot" || true
 cp "$FOOT_SOURCE/foot.ini" "$BUNDLE_PREFIX/share/foot.ini"
 cp "$FOOT_SOURCE/LICENSE" "$BUNDLE_PREFIX/LICENSE"

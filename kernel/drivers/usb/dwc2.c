@@ -1277,8 +1277,10 @@ static bool key_already_pressed(const uint8_t *previous, uint8_t usage)
 
 static void emit_string(const char *text)
 {
-    while (*text)
-        tty_input_char_to_id(usb_tty_id, *text++);
+    if (armos_input_tty_routing_enabled()) {
+        while (*text)
+            tty_input_char_to_id(usb_tty_id, *text++);
+    }
 }
 
 static char translate_azerty(uint8_t usage, bool shift, bool altgr)
@@ -1387,22 +1389,26 @@ static bool emit_keyboard_usage(uint8_t usage, uint8_t modifiers)
     char character;
 
     if (usage == 0x28u) {
-        tty_input_char_to_id(usb_tty_id, '\n');
+        if (armos_input_tty_routing_enabled())
+            tty_input_char_to_id(usb_tty_id, '\n');
         emit_input_text('\n');
         return false;
     }
     if (usage == 0x29u) {
-        tty_input_char_to_id(usb_tty_id, 0x1b);
+        if (armos_input_tty_routing_enabled())
+            tty_input_char_to_id(usb_tty_id, 0x1b);
         emit_input_text(0x1b);
         return false;
     }
     if (usage == 0x2au) {
-        tty_input_char_to_id(usb_tty_id, 0x7f);
+        if (armos_input_tty_routing_enabled())
+            tty_input_char_to_id(usb_tty_id, 0x7f);
         emit_input_text(0x7f);
         return true;
     }
     if (usage == 0x2bu) {
-        tty_input_char_to_id(usb_tty_id, '\t');
+        if (armos_input_tty_routing_enabled())
+            tty_input_char_to_id(usb_tty_id, '\t');
         emit_input_text('\t');
         return true;
     }
@@ -1420,7 +1426,8 @@ static bool emit_keyboard_usage(uint8_t usage, uint8_t modifiers)
     }
     if (!character)
         return false;
-    tty_input_char_to_id(usb_tty_id, character);
+    if (armos_input_tty_routing_enabled())
+        tty_input_char_to_id(usb_tty_id, character);
     emit_input_text(character);
     return true;
 }

@@ -33,6 +33,7 @@ static armos_input_event_t input_queue[ARMOS_INPUT_QUEUE_LENGTH];
 static uint32_t input_head;
 static uint32_t input_tail;
 static spinlock_t input_lock = SPINLOCK_INIT("input_queue");
+static file_t *input_owner;
 
 void armos_input_emit(uint16_t type, uint16_t code, int32_t value)
 {
@@ -50,6 +51,16 @@ void armos_input_emit(uint16_t type, uint16_t code, int32_t value)
     event->value = value;
     input_head = next;
     spin_unlock(&input_lock);
+}
+
+bool armos_input_tty_routing_enabled(void)
+{
+    bool enabled;
+
+    spin_lock(&input_lock);
+    enabled = input_owner == NULL;
+    spin_unlock(&input_lock);
+    return enabled;
 }
 
 bool armos_input_read_ready(void)
@@ -70,6 +81,12 @@ static ssize_t input_read(file_t *file, void *buffer, size_t count)
 
     if (!file || !buffer || capacity == 0u)
         return -EINVAL;
+    spin_lock(&input_lock);
+    if (input_owner != file) {
+        spin_unlock(&input_lock);
+        return -EACCES;
+    }
+    spin_unlock(&input_lock);
     while (!armos_input_read_ready()) {
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
@@ -88,7 +105,12 @@ static ssize_t input_read(file_t *file, void *buffer, size_t count)
 
 static int input_close(file_t *file)
 {
-    (void)file;
+    spin_lock(&input_lock);
+    if (input_owner == file) {
+        input_owner = NULL;
+        input_tail = input_head;
+    }
+    spin_unlock(&input_lock);
     return 0;
 }
 
@@ -127,12 +149,14 @@ void fill_input_device_stat(struct stat *st)
     st->st_ctime = now;
 }
 
-file_t *create_input_device_file(const char *name, int flags)
+file_t *create_input_device_file(const char *name, int flags, int *error)
 {
     file_t *file = create_file();
     inode_t *inode;
     struct stat st;
 
+    if (error)
+        *error = -ENOMEM;
     if (!file)
         return NULL;
     inode = create_inode();
@@ -155,5 +179,19 @@ file_t *create_input_device_file(const char *name, int flags)
         strncpy(file->name, name, sizeof(file->name) - 1u);
         file->name[sizeof(file->name) - 1u] = '\0';
     }
+    spin_lock(&input_lock);
+    if (input_owner) {
+        spin_unlock(&input_lock);
+        kfree(inode);
+        kfree(file);
+        if (error)
+            *error = -EBUSY;
+        return NULL;
+    }
+    input_owner = file;
+    input_tail = input_head;
+    spin_unlock(&input_lock);
+    if (error)
+        *error = 0;
     return file;
 }

@@ -85,6 +85,9 @@ static int wl_protocol_fail(struct wl_server_client *client,
                             uint32_t object_id, uint32_t code,
                             const char *message)
 {
+    fprintf(stderr,
+            "armos-wlcomp: protocol error object=%u code=%u: %s\n",
+            object_id, code, message ? message : "unknown error");
     (void)wl_client_send_error(client, object_id, code, message);
     return -1;
 }
@@ -92,6 +95,22 @@ static int wl_protocol_fail(struct wl_server_client *client,
 static int wl_request_complete(const struct wl_request *request)
 {
     return request && request->cursor == request->size;
+}
+
+static bool wl_surface_has_role_object(
+    const struct wl_server_client *client,
+    const struct wl_server_surface *surface,
+    enum wl_server_object_type type)
+{
+    if (!client || !surface)
+        return false;
+    for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
+        const struct wl_server_object *object = &client->objects[index];
+
+        if (object->type == type && object->resource == surface)
+            return true;
+    }
+    return false;
 }
 
 static struct wl_server_pool *wl_allocate_pool(
@@ -135,6 +154,7 @@ static struct wl_server_surface *wl_allocate_surface(
 
             memset(surface, 0, sizeof(*surface));
             surface->used = true;
+            surface->server_decorated = true;
             surface->z_order = ++server->next_surface_z;
             surface->x = (int32_t)(24u + (position * 36u) %
                                    (width > 300u ? width - 300u : 1u));
@@ -187,7 +207,14 @@ static int wl_dispatch_display(struct wl_server *server,
                                   "xdg_wm_base", 1u) < 0)
             return -1;
         if (wl_client_send_global(client, new_id, WL_GLOBAL_OUTPUT,
-                                  "wl_output", 2u) < 0)
+                                  "wl_output", 4u) < 0)
+            return -1;
+        if (wl_client_send_global(client, new_id, WL_GLOBAL_XDG_OUTPUT,
+                                  "zxdg_output_manager_v1", 3u) < 0)
+            return -1;
+        if (wl_client_send_global(
+                client, new_id, WL_GLOBAL_XDG_DECORATION,
+                "zxdg_decoration_manager_v1", 1u) < 0)
             return -1;
         if (wl_client_send_global(client, new_id, WL_GLOBAL_DATA_DEVICE,
                                   "wl_data_device_manager", 3u) < 0)
@@ -261,6 +288,21 @@ static int wl_dispatch_registry(struct wl_server *server,
     if (name == WL_GLOBAL_OUTPUT && strcmp(interface_name, "wl_output") == 0)
         return wl_server_bind_output(server, client, new_id,
                                      requested_version);
+    if (name == WL_GLOBAL_XDG_OUTPUT &&
+        strcmp(interface_name, "zxdg_output_manager_v1") == 0) {
+        uint32_t version = requested_version < 3u ?
+            requested_version : 3u;
+
+        return wl_client_add_object(
+            client, new_id, WL_SERVER_OBJECT_XDG_OUTPUT_MANAGER,
+            version, NULL);
+    }
+    if (name == WL_GLOBAL_XDG_DECORATION &&
+        strcmp(interface_name, "zxdg_decoration_manager_v1") == 0) {
+        return wl_client_add_object(
+            client, new_id, WL_SERVER_OBJECT_XDG_DECORATION_MANAGER,
+            1u, NULL);
+    }
     if (name == WL_GLOBAL_DATA_DEVICE &&
         strcmp(interface_name, "wl_data_device_manager") == 0) {
         uint32_t version = requested_version < 3u ?
@@ -339,15 +381,34 @@ static int wl_dispatch_xdg_surface(struct wl_server *server,
         uint32_t new_id;
         uint32_t configure[3] = {0u, 0u, 0u};
         uint32_t serial;
+        bool assigned_role;
 
         if (wl_request_u32(request, &new_id) < 0 ||
-            !wl_request_complete(request) ||
-            wl_client_add_object(client, new_id,
-                                 WL_SERVER_OBJECT_XDG_TOPLEVEL, 1u,
-                                 surface) < 0)
+            !wl_request_complete(request))
             return wl_protocol_fail(client, object->id,
                                     WL_PROTOCOL_ERROR_INVALID_OBJECT,
                                     "invalid xdg_toplevel object");
+        if ((surface->role != WL_SERVER_SURFACE_ROLE_NONE &&
+             surface->role != WL_SERVER_SURFACE_ROLE_TOPLEVEL) ||
+            wl_surface_has_role_object(
+                client, surface, WL_SERVER_OBJECT_XDG_TOPLEVEL))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "wl_surface already has a role");
+        assigned_role =
+            surface->role == WL_SERVER_SURFACE_ROLE_NONE;
+        surface->role = WL_SERVER_SURFACE_ROLE_TOPLEVEL;
+        surface->server_decorated = true;
+        if (wl_client_add_object(client, new_id,
+                                 WL_SERVER_OBJECT_XDG_TOPLEVEL, 1u,
+                                 surface) < 0) {
+            if (assigned_role)
+                surface->role = WL_SERVER_SURFACE_ROLE_NONE;
+            surface->server_decorated = false;
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "invalid xdg_toplevel object");
+        }
         if (wl_client_send_words(client, new_id, 0u, configure, 3u) < 0)
             return -1;
         serial = ++server->serial;
@@ -440,6 +501,86 @@ static int wl_dispatch_xdg_toplevel(struct wl_server *server,
                             "unsupported xdg_toplevel request");
 }
 
+static int wl_dispatch_xdg_decoration_manager(
+    struct wl_server_client *client, struct wl_server_object *object,
+    uint16_t opcode, struct wl_request *request)
+{
+    uint32_t new_id;
+    uint32_t toplevel_id;
+    struct wl_server_object *toplevel;
+
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode != 1u ||
+        wl_request_u32(request, &new_id) < 0 ||
+        wl_request_u32(request, &toplevel_id) < 0 ||
+        !wl_request_complete(request))
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "malformed xdg-decoration request");
+    toplevel = wl_client_find_object(client, toplevel_id);
+    if (!toplevel || toplevel->type != WL_SERVER_OBJECT_XDG_TOPLEVEL ||
+        !toplevel->resource)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "decoration requires an xdg_toplevel");
+    for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
+        if (client->objects[index].type ==
+                WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION &&
+            client->objects[index].resource == toplevel->resource)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "toplevel already has a decoration");
+    }
+    return wl_client_add_object(
+        client, new_id, WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION,
+        1u, toplevel->resource);
+}
+
+static int wl_dispatch_xdg_toplevel_decoration(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    struct wl_server_surface *surface = object->resource;
+    uint32_t mode = 2u;
+
+    if (opcode == 0u && wl_request_complete(request)) {
+        if (surface && surface->used) {
+            surface->server_decorated = true;
+            if (surface->mapped &&
+                wl_server_schedule_render(server, true) < 0)
+                return -1;
+        }
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (!surface || !surface->used)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "decoration lost its surface");
+    if (opcode == 1u) {
+        if (wl_request_u32(request, &mode) < 0 ||
+            !wl_request_complete(request) ||
+            (mode != 1u && mode != 2u))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "invalid decoration mode");
+    } else if (opcode == 2u && wl_request_complete(request)) {
+        mode = 2u;
+    } else {
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "unsupported decoration request");
+    }
+    surface->server_decorated = mode == 2u;
+    if (wl_client_send_words(client, object->id, 0u, &mode, 1u) < 0)
+        return -1;
+    return surface->mapped ? wl_server_schedule_render(server, true) : 0;
+}
+
 static int wl_dispatch_compositor(struct wl_server *server,
                                   struct wl_server_client *client,
                                   struct wl_server_object *object,
@@ -497,6 +638,7 @@ static int wl_dispatch_subcompositor(
     struct wl_server_surface *parent;
     struct wl_server_surface *ancestor;
     size_t depth;
+    bool assigned_role;
 
     if (opcode == 0u && wl_request_complete(request)) {
         wl_client_remove_object(client, object->id, true);
@@ -520,10 +662,15 @@ static int wl_dispatch_subcompositor(
                                 "subsurface needs two wl_surfaces");
     surface = surface_object->resource;
     parent = parent_object->resource;
-    if (!surface || !parent || surface->is_subsurface)
+    if (!surface || !parent ||
+        (surface->role != WL_SERVER_SURFACE_ROLE_NONE &&
+         surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) ||
+        wl_surface_has_role_object(
+            client, surface, WL_SERVER_OBJECT_SUBSURFACE) ||
+        parent->role == WL_SERVER_SURFACE_ROLE_CURSOR)
         return wl_protocol_fail(client, object->id,
                                 WL_PROTOCOL_ERROR_INVALID_OBJECT,
-                                "wl_surface already has a role");
+                                "invalid wl_subsurface roles");
     ancestor = parent;
     for (depth = 0u; ancestor && depth < WL_SERVER_MAX_SURFACES; depth++) {
         if (ancestor == surface)
@@ -536,14 +683,18 @@ static int wl_dispatch_subcompositor(
         return wl_protocol_fail(client, object->id,
                                 WL_PROTOCOL_ERROR_IMPLEMENTATION,
                                 "subsurface hierarchy is too deep");
-    surface->is_subsurface = true;
+    assigned_role =
+        surface->role == WL_SERVER_SURFACE_ROLE_NONE;
+    surface->role = WL_SERVER_SURFACE_ROLE_SUBSURFACE;
     surface->subsurface_synchronized = true;
     surface->parent = parent;
     surface->subsurface_x = 0;
     surface->subsurface_y = 0;
     if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_SUBSURFACE,
                              1u, surface) < 0) {
-        surface->is_subsurface = false;
+        if (assigned_role)
+            surface->role = WL_SERVER_SURFACE_ROLE_NONE;
+        surface->subsurface_synchronized = false;
         surface->parent = NULL;
         return wl_protocol_fail(client, object->id,
                                 WL_PROTOCOL_ERROR_INVALID_OBJECT,
@@ -559,19 +710,27 @@ static int wl_dispatch_subsurface(
 {
     struct wl_server_surface *surface = object->resource;
 
-    if (!surface || !surface->used || !surface->is_subsurface ||
+    /*
+     * The wl_subsurface object outlives either wl_surface.  In particular,
+     * clients are allowed to destroy the parent first and release the role
+     * object afterwards.  Accept destroy without dereferencing the former
+     * surface hierarchy.
+     */
+    if (opcode == 0u && wl_request_complete(request)) {
+        if (surface && surface->used) {
+            surface->subsurface_synchronized = false;
+            surface->parent = NULL;
+            surface->mapped = false;
+        }
+        wl_client_remove_object(client, object->id, true);
+        return wl_renderer_compose(server);
+    }
+    if (!surface || !surface->used ||
+        surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE ||
         !surface->parent || !surface->parent->used)
         return wl_protocol_fail(client, object->id,
                                 WL_PROTOCOL_ERROR_INVALID_OBJECT,
                                 "wl_subsurface lost its surface");
-    if (opcode == 0u && wl_request_complete(request)) {
-        surface->is_subsurface = false;
-        surface->subsurface_synchronized = false;
-        surface->parent = NULL;
-        surface->mapped = false;
-        wl_client_remove_object(client, object->id, true);
-        return wl_renderer_compose(server);
-    }
     if (opcode == 1u && request->size == 8u) {
         uint32_t x;
         uint32_t y;
@@ -829,20 +988,38 @@ static int wl_dispatch_surface(struct wl_server *server,
     if (!surface)
         return -1;
     if (opcode == 0u && wl_request_complete(request)) {
+        if (server->focus_client == client &&
+            server->focus_surface == surface) {
+            server->focus_client = NULL;
+            server->focus_surface = NULL;
+        }
+        if (server->pointer_client == client &&
+            server->pointer_surface == surface) {
+            server->pointer_client = NULL;
+            server->pointer_surface = NULL;
+        }
+        if (server->drag_client == client &&
+            server->drag_surface == surface) {
+            server->drag_client = NULL;
+            server->drag_surface = NULL;
+        }
         for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
             struct wl_server_surface *child = &client->surfaces[index];
 
             if (child->used && child->parent == surface) {
                 child->parent = NULL;
-                child->is_subsurface = false;
+                child->subsurface_synchronized = false;
+                child->mapped = false;
             }
         }
         for (size_t index = 0u; index < WL_SERVER_MAX_OBJECTS; index++) {
             struct wl_server_object *role = &client->objects[index];
 
-            if (role->type == WL_SERVER_OBJECT_SUBSURFACE &&
+            if ((role->type == WL_SERVER_OBJECT_SUBSURFACE ||
+                 role->type ==
+                    WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION) &&
                 role->resource == surface)
-                wl_client_remove_object(client, role->id, false);
+                role->resource = NULL;
         }
         free(surface->pixels);
         memset(surface, 0, sizeof(*surface));
@@ -998,7 +1175,38 @@ static int wl_dispatch_input_object(struct wl_server_client *client,
 {
     if (object->type == WL_SERVER_OBJECT_POINTER && opcode == 0u &&
         request->size == 16u) {
-        request->cursor = request->size;
+        uint32_t serial;
+        uint32_t surface_id;
+        uint32_t hotspot_x;
+        uint32_t hotspot_y;
+
+        if (wl_request_u32(request, &serial) < 0 ||
+            wl_request_u32(request, &surface_id) < 0 ||
+            wl_request_u32(request, &hotspot_x) < 0 ||
+            wl_request_u32(request, &hotspot_y) < 0 ||
+            !wl_request_complete(request))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "malformed pointer cursor request");
+        if (surface_id != 0u) {
+            struct wl_server_object *surface_object =
+                wl_client_find_object(client, surface_id);
+            struct wl_server_surface *surface;
+
+            if (!surface_object ||
+                surface_object->type != WL_SERVER_OBJECT_SURFACE ||
+                !(surface = surface_object->resource) ||
+                (surface->role != WL_SERVER_SURFACE_ROLE_NONE &&
+                 surface->role != WL_SERVER_SURFACE_ROLE_CURSOR))
+                return wl_protocol_fail(client, object->id,
+                                        WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                        "invalid pointer cursor surface");
+            surface->role = WL_SERVER_SURFACE_ROLE_CURSOR;
+            surface->server_decorated = false;
+        }
+        (void)serial;
+        (void)hotspot_x;
+        (void)hotspot_y;
         return 0;
     }
     if (object->type == WL_SERVER_OBJECT_POINTER && opcode == 1u &&
@@ -1336,6 +1544,84 @@ static int wl_dispatch_data_device(
                             "unsupported wl_data_device request");
 }
 
+static int wl_dispatch_xdg_output_manager(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    uint32_t new_id;
+    uint32_t output_id;
+    uint32_t logical_position[2] = {0u, 0u};
+    uint32_t logical_size[2];
+    struct wl_server_object *output;
+
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    if (opcode != 1u ||
+        wl_request_u32(request, &new_id) < 0 ||
+        wl_request_u32(request, &output_id) < 0 ||
+        !wl_request_complete(request))
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "malformed xdg-output manager request");
+
+    output = wl_client_find_object(client, output_id);
+    if (!output || output->type != WL_SERVER_OBJECT_OUTPUT)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "xdg-output requires a wl_output");
+    if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_XDG_OUTPUT,
+                             object->version, output) < 0)
+        return -1;
+
+    logical_size[0] = server->renderer.framebuffer.width;
+    logical_size[1] = server->renderer.framebuffer.height;
+    if (wl_client_send_words(client, new_id, 0u,
+                             logical_position, 2u) < 0 ||
+        wl_client_send_words(client, new_id, 1u,
+                             logical_size, 2u) < 0)
+        return -1;
+    if (object->version >= 2u &&
+        (wl_client_send_string(client, new_id, 3u, "ARMOS-1") < 0 ||
+         wl_client_send_string(client, new_id, 4u,
+                               "ArmOS logical framebuffer") < 0))
+        return -1;
+    if (object->version < 3u)
+        return wl_client_send_words(client, new_id, 2u, NULL, 0u);
+    return wl_client_send_words(client, output_id, 2u, NULL, 0u);
+}
+
+static int wl_dispatch_xdg_output(struct wl_server_client *client,
+                                  struct wl_server_object *object,
+                                  uint16_t opcode,
+                                  struct wl_request *request)
+{
+    if (opcode == 0u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported xdg-output request");
+}
+
+static int wl_dispatch_output(struct wl_server_client *client,
+                              struct wl_server_object *object,
+                              uint16_t opcode,
+                              struct wl_request *request)
+{
+    if (opcode == 0u && object->version >= 3u &&
+        wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported wl_output request");
+}
+
 int wl_server_dispatch_message(struct wl_server *server,
                                struct wl_server_client *client,
                                const uint8_t *message, size_t size)
@@ -1390,6 +1676,13 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_KEYBOARD:
     case WL_SERVER_OBJECT_TOUCH:
         return wl_dispatch_input_object(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_OUTPUT:
+        return wl_dispatch_output(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_XDG_OUTPUT_MANAGER:
+        return wl_dispatch_xdg_output_manager(server, client, object,
+                                              opcode, &request);
+    case WL_SERVER_OBJECT_XDG_OUTPUT:
+        return wl_dispatch_xdg_output(client, object, opcode, &request);
     case WL_SERVER_OBJECT_DATA_DEVICE_MANAGER:
         return wl_dispatch_data_device_manager(server, client, object,
                                                opcode, &request);
@@ -1410,6 +1703,12 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_XDG_TOPLEVEL:
         return wl_dispatch_xdg_toplevel(server, client, object, opcode,
                                         &request);
+    case WL_SERVER_OBJECT_XDG_DECORATION_MANAGER:
+        return wl_dispatch_xdg_decoration_manager(client, object, opcode,
+                                                  &request);
+    case WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION:
+        return wl_dispatch_xdg_toplevel_decoration(
+            server, client, object, opcode, &request);
     default:
         return wl_protocol_fail(client, object_id,
                                 WL_PROTOCOL_ERROR_INVALID_METHOD,

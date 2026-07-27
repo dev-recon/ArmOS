@@ -3336,6 +3336,15 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
         return shm_map_fd(fd, addr, length, vma_flags | VMA_SHARED);
     }
 
+    if (!is_anon) {
+        file_t *file = vfs_get_file_from_fd(task, fd);
+        bool is_shm = file && file->type == FILE_TYPE_SHM;
+
+        close_file(file);
+        if (is_shm)
+            return shm_map_fd(fd, addr, length, vma_flags);
+    }
+
     lazy_anon = is_anon && !(prot & ARMOS_PROT_EXEC);
     if (lazy_anon)
         vma_flags |= VMA_LAZY;

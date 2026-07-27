@@ -80,6 +80,7 @@ struct wl_display {
     int pending_fds[WL_CLIENT_MAX_PENDING_FDS];
     size_t pending_fd_count;
     struct wl_proxy *objects[WL_CLIENT_MAX_OBJECTS];
+    uint32_t zombie_ids[WL_CLIENT_MAX_OBJECTS];
     struct wl_event_queue default_queue;
     struct wl_event_queue *queues;
     struct wl_event_queue *prepared_queue;
@@ -116,6 +117,120 @@ struct xdg_wm_base { struct wl_proxy proxy; };
 struct xdg_surface { struct wl_proxy proxy; };
 struct xdg_toplevel { struct wl_proxy proxy; };
 
+static const struct wl_message wl_compositor_methods[] = {
+    {"create_surface", "n", NULL},
+    {"create_region", "n", NULL},
+};
+static const struct wl_message wl_subcompositor_methods[] = {
+    {"destroy", "", NULL},
+    {"get_subsurface", "noo", NULL},
+};
+static const struct wl_message wl_subsurface_methods[] = {
+    {"destroy", "", NULL},
+    {"set_position", "ii", NULL},
+    {"place_above", "o", NULL},
+    {"place_below", "o", NULL},
+    {"set_sync", "", NULL},
+    {"set_desync", "", NULL},
+};
+static const struct wl_message wl_surface_methods[] = {
+    {"destroy", "", NULL},
+    {"attach", "?oii", NULL},
+    {"damage", "iiii", NULL},
+    {"frame", "n", NULL},
+    {"set_opaque_region", "?o", NULL},
+    {"set_input_region", "?o", NULL},
+    {"commit", "", NULL},
+    {"set_buffer_transform", "2i", NULL},
+    {"set_buffer_scale", "3i", NULL},
+    {"damage_buffer", "4iiii", NULL},
+};
+static const struct wl_message wl_region_methods[] = {
+    {"destroy", "", NULL},
+    {"add", "iiii", NULL},
+    {"subtract", "iiii", NULL},
+};
+static const struct wl_message wl_shm_methods[] = {
+    {"create_pool", "nhi", NULL},
+};
+static const struct wl_message wl_shm_pool_methods[] = {
+    {"create_buffer", "niiiiu", NULL},
+    {"destroy", "", NULL},
+    {"resize", "i", NULL},
+};
+static const struct wl_message wl_buffer_methods[] = {
+    {"destroy", "", NULL},
+};
+static const struct wl_message wl_seat_methods[] = {
+    {"get_pointer", "n", NULL},
+    {"get_keyboard", "n", NULL},
+    {"get_touch", "n", NULL},
+    {"release", "5", NULL},
+};
+static const struct wl_message wl_pointer_methods[] = {
+    {"set_cursor", "u?oii", NULL},
+    {"release", "3", NULL},
+};
+static const struct wl_message wl_keyboard_methods[] = {
+    {"release", "3", NULL},
+};
+static const struct wl_message wl_touch_methods[] = {
+    {"release", "3", NULL},
+};
+static const struct wl_message wl_output_methods[] = {
+    {"release", "3", NULL},
+};
+static const struct wl_message wl_data_device_manager_methods[] = {
+    {"create_data_source", "n", NULL},
+    {"get_data_device", "no", NULL},
+};
+static const struct wl_message wl_data_source_methods[] = {
+    {"offer", "s", NULL},
+    {"destroy", "", NULL},
+    {"set_actions", "3u", NULL},
+};
+static const struct wl_message wl_data_device_methods[] = {
+    {"start_drag", "?oo?ou", NULL},
+    {"set_selection", "?ou", NULL},
+    {"release", "2", NULL},
+};
+static const struct wl_message wl_data_offer_methods[] = {
+    {"accept", "u?s", NULL},
+    {"receive", "sh", NULL},
+    {"destroy", "", NULL},
+    {"finish", "3", NULL},
+    {"set_actions", "3uu", NULL},
+};
+static const struct wl_message xdg_wm_base_methods[] = {
+    {"destroy", "", NULL},
+    {"create_positioner", "n", NULL},
+    {"get_xdg_surface", "no", NULL},
+    {"pong", "u", NULL},
+};
+static const struct wl_message xdg_surface_methods[] = {
+    {"destroy", "", NULL},
+    {"get_toplevel", "n", NULL},
+    {"get_popup", "n?oo", NULL},
+    {"set_window_geometry", "iiii", NULL},
+    {"ack_configure", "u", NULL},
+};
+static const struct wl_message xdg_toplevel_methods[] = {
+    {"destroy", "", NULL},
+    {"set_parent", "?o", NULL},
+    {"set_title", "s", NULL},
+    {"set_app_id", "s", NULL},
+    {"show_window_menu", "ouii", NULL},
+    {"move", "ou", NULL},
+    {"resize", "ouu", NULL},
+    {"set_max_size", "ii", NULL},
+    {"set_min_size", "ii", NULL},
+    {"set_maximized", "", NULL},
+    {"unset_maximized", "", NULL},
+    {"set_fullscreen", "?o", NULL},
+    {"unset_fullscreen", "", NULL},
+    {"set_minimized", "", NULL},
+};
+
 const struct wl_interface wl_display_interface = {
     "wl_display", 1, 2, NULL, 2, NULL
 };
@@ -129,83 +244,83 @@ const struct wl_interface wl_callback_interface = {
 };
 
 const struct wl_interface wl_compositor_interface = {
-    "wl_compositor", 4, 2, NULL, 0, NULL
+    "wl_compositor", 4, 2, wl_compositor_methods, 0, NULL
 };
 
 const struct wl_interface wl_subcompositor_interface = {
-    "wl_subcompositor", 1, 2, NULL, 0, NULL
+    "wl_subcompositor", 1, 2, wl_subcompositor_methods, 0, NULL
 };
 
 const struct wl_interface wl_subsurface_interface = {
-    "wl_subsurface", 1, 6, NULL, 0, NULL
+    "wl_subsurface", 1, 6, wl_subsurface_methods, 0, NULL
 };
 
 const struct wl_interface wl_surface_interface = {
-    "wl_surface", 4, 10, NULL, 2, NULL
+    "wl_surface", 4, 10, wl_surface_methods, 2, NULL
 };
 
 const struct wl_interface wl_region_interface = {
-    "wl_region", 1, 3, NULL, 0, NULL
+    "wl_region", 1, 3, wl_region_methods, 0, NULL
 };
 
 const struct wl_interface wl_shm_interface = {
-    "wl_shm", 1, 1, NULL, 1, NULL
+    "wl_shm", 1, 1, wl_shm_methods, 1, NULL
 };
 
 const struct wl_interface wl_shm_pool_interface = {
-    "wl_shm_pool", 1, 3, NULL, 0, NULL
+    "wl_shm_pool", 1, 3, wl_shm_pool_methods, 0, NULL
 };
 
 const struct wl_interface wl_buffer_interface = {
-    "wl_buffer", 1, 1, NULL, 1, NULL
+    "wl_buffer", 1, 1, wl_buffer_methods, 1, NULL
 };
 
 const struct wl_interface wl_seat_interface = {
-    "wl_seat", 5, 4, NULL, 2, NULL
+    "wl_seat", 5, 4, wl_seat_methods, 2, NULL
 };
 
 const struct wl_interface wl_pointer_interface = {
-    "wl_pointer", 5, 2, NULL, 9, NULL
+    "wl_pointer", 5, 2, wl_pointer_methods, 9, NULL
 };
 
 const struct wl_interface wl_keyboard_interface = {
-    "wl_keyboard", 5, 1, NULL, 6, NULL
+    "wl_keyboard", 5, 1, wl_keyboard_methods, 6, NULL
 };
 
 const struct wl_interface wl_touch_interface = {
-    "wl_touch", 5, 1, NULL, 5, NULL
+    "wl_touch", 5, 1, wl_touch_methods, 5, NULL
 };
 
 const struct wl_interface wl_output_interface = {
-    "wl_output", 2, 0, NULL, 4, NULL
+    "wl_output", 4, 1, wl_output_methods, 6, NULL
 };
 
 const struct wl_interface wl_data_device_manager_interface = {
-    "wl_data_device_manager", 3, 2, NULL, 0, NULL
+    "wl_data_device_manager", 3, 2, wl_data_device_manager_methods, 0, NULL
 };
 
 const struct wl_interface wl_data_source_interface = {
-    "wl_data_source", 3, 3, NULL, 6, NULL
+    "wl_data_source", 3, 3, wl_data_source_methods, 6, NULL
 };
 
 const struct wl_interface wl_data_device_interface = {
-    "wl_data_device", 3, 3, NULL, 6, NULL
+    "wl_data_device", 3, 3, wl_data_device_methods, 6, NULL
 };
 
 const struct wl_interface wl_data_offer_interface = {
-    "wl_data_offer", 3, 5, NULL, 3, NULL
+    "wl_data_offer", 3, 5, wl_data_offer_methods, 3, NULL
 };
 
 const struct wl_interface xdg_wm_base_interface = {
-    "xdg_wm_base", 1, 4, NULL, 1, NULL
+    "xdg_wm_base", 1, 4, xdg_wm_base_methods, 1, NULL
 };
 
 const struct wl_interface xdg_surface_interface = {
-    "xdg_surface", 1, 5, NULL, 1, NULL
+    "xdg_surface", 1, 5, xdg_surface_methods, 1, NULL
 };
 
 const struct wl_interface xdg_toplevel_interface = {
-    "xdg_toplevel", 1, 14, NULL, 2, NULL
+    "xdg_toplevel", 1, 14, xdg_toplevel_methods, 2, NULL
 };
 
 static uint32_t wl_load_u32(const uint8_t *data)
@@ -245,6 +360,42 @@ static struct wl_proxy *wl_proxy_find(struct wl_display *display,
             return proxy;
     }
     return NULL;
+}
+
+static bool wl_display_has_zombie(const struct wl_display *display,
+                                  uint32_t id)
+{
+    if (!display || id == 0u)
+        return false;
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        if (display->zombie_ids[index] == id)
+            return true;
+    }
+    return false;
+}
+
+static void wl_display_add_zombie(struct wl_display *display, uint32_t id)
+{
+    if (!display || id == 0u || wl_display_has_zombie(display, id))
+        return;
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        if (display->zombie_ids[index] == 0u) {
+            display->zombie_ids[index] = id;
+            return;
+        }
+    }
+}
+
+static void wl_display_remove_zombie(struct wl_display *display, uint32_t id)
+{
+    if (!display || id == 0u)
+        return;
+    for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
+        if (display->zombie_ids[index] == id) {
+            display->zombie_ids[index] = 0u;
+            return;
+        }
+    }
 }
 
 static int wl_proxy_store(struct wl_display *display, struct wl_proxy *proxy)
@@ -812,6 +963,7 @@ int wl_proxy_add_listener(struct wl_proxy *proxy,
     }
     proxy->listener = implementation;
     proxy->listener_data = data;
+    proxy->user_data = data;
     return 0;
 }
 
@@ -997,6 +1149,7 @@ void wl_proxy_destroy(struct wl_proxy *proxy)
     if (display) {
         struct wl_event_queue *queue;
 
+        wl_display_add_zombie(display, proxy->id);
         for (queue = display->queues; queue; queue = queue->next)
             wl_event_queue_remove_object(queue, proxy->id);
         for (size_t index = 0u; index < WL_CLIENT_MAX_OBJECTS; index++) {
@@ -1011,8 +1164,10 @@ void wl_proxy_destroy(struct wl_proxy *proxy)
 
 void wl_proxy_set_user_data(struct wl_proxy *proxy, void *user_data)
 {
-    if (proxy)
+    if (proxy) {
         proxy->user_data = user_data;
+        proxy->listener_data = user_data;
+    }
 }
 
 void *wl_proxy_get_user_data(struct wl_proxy *proxy)
@@ -2380,7 +2535,87 @@ static int wl_dispatch_output_event(struct wl_proxy *proxy, uint16_t opcode,
                             (int32_t)wl_load_u32(payload));
         return 0;
     }
+    if ((opcode == 4u || opcode == 5u) && size >= 4u) {
+        size_t cursor = 0u;
+        const char *text;
+
+        if (wl_decode_string(payload, size, &cursor, &text) < 0 ||
+            cursor != size)
+            return -1;
+        if (listener) {
+            if (opcode == 4u && listener->name)
+                listener->name(proxy->listener_data,
+                               (struct wl_output *)proxy, text);
+            if (opcode == 5u && listener->description)
+                listener->description(proxy->listener_data,
+                                      (struct wl_output *)proxy, text);
+        }
+        return 0;
+    }
     return -1;
+}
+
+static int wl_dispatch_zxdg_output_event(struct wl_proxy *proxy,
+                                         uint16_t opcode,
+                                         const uint8_t *payload,
+                                         size_t size)
+{
+    void (**listener)(void) = proxy->listener;
+
+    if (opcode <= 1u && size == 8u) {
+        if (listener && listener[opcode]) {
+            void (*callback)(void *, void *, int32_t, int32_t) =
+                (void (*)(void *, void *, int32_t, int32_t))
+                listener[opcode];
+
+            callback(proxy->listener_data, proxy,
+                     (int32_t)wl_load_u32(payload),
+                     (int32_t)wl_load_u32(payload + 4u));
+        }
+        return 0;
+    }
+    if (opcode == 2u && size == 0u) {
+        if (listener && listener[opcode]) {
+            void (*callback)(void *, void *) =
+                (void (*)(void *, void *))listener[opcode];
+
+            callback(proxy->listener_data, proxy);
+        }
+        return 0;
+    }
+    if ((opcode == 3u || opcode == 4u) && size >= 4u) {
+        size_t cursor = 0u;
+        const char *text;
+
+        if (wl_decode_string(payload, size, &cursor, &text) < 0 ||
+            cursor != size)
+            return -1;
+        if (listener && listener[opcode]) {
+            void (*callback)(void *, void *, const char *) =
+                (void (*)(void *, void *, const char *))listener[opcode];
+
+            callback(proxy->listener_data, proxy, text);
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_zxdg_toplevel_decoration_event(
+    struct wl_proxy *proxy, uint16_t opcode,
+    const uint8_t *payload, size_t size)
+{
+    void (**listener)(void) = proxy->listener;
+
+    if (opcode != 0u || size != 4u)
+        return -1;
+    if (listener && listener[0]) {
+        void (*configure)(void *, void *, uint32_t) =
+            (void (*)(void *, void *, uint32_t))listener[0];
+
+        configure(proxy->listener_data, proxy, wl_load_u32(payload));
+    }
+    return 0;
 }
 
 static int wl_dispatch_surface_event(struct wl_proxy *proxy, uint16_t opcode,
@@ -2685,16 +2920,22 @@ static int wl_dispatch_display_event(struct wl_display *display,
                                      uint16_t opcode,
                                      const uint8_t *payload, size_t size)
 {
-    if (opcode == 1u && size == 4u)
+    if (opcode == 1u && size == 4u) {
+        wl_display_remove_zombie(display, wl_load_u32(payload));
         return 0;
+    }
     if (opcode == 0u && size >= 12u) {
         const char *message;
         size_t cursor = 8u;
+        uint32_t object_id = wl_load_u32(payload);
+        uint32_t code = wl_load_u32(payload + 4u);
 
         if (wl_decode_string(payload, size, &cursor, &message) < 0 ||
             cursor != size)
             return -1;
-        (void)message;
+        fprintf(stderr,
+                "wayland-client: server error object=%u code=%u: %s\n",
+                object_id, code, message);
         display->error = EPROTO;
         errno = EPROTO;
         return -1;
@@ -2711,8 +2952,11 @@ static int wl_display_dispatch_event(struct wl_display *display,
     uint16_t opcode = event->opcode;
     int result = -1;
 
-    if (!(proxy = wl_proxy_find(display, event->object_id)))
+    if (!(proxy = wl_proxy_find(display, event->object_id))) {
+        if (wl_display_has_zombie(display, event->object_id))
+            return 0;
         goto protocol_error;
+    }
     display->dispatch_event = event;
     if (wl_proxy_is(proxy, &wl_registry_interface))
         result = wl_dispatch_registry_event(proxy, opcode, payload, size);
@@ -2754,6 +2998,15 @@ static int wl_display_dispatch_event(struct wl_display *display,
         result = wl_dispatch_touch_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_output_interface)) {
         result = wl_dispatch_output_event(proxy, opcode, payload, size);
+    } else if (proxy->interface &&
+               strcmp(proxy->interface->name, "zxdg_output_v1") == 0) {
+        result = wl_dispatch_zxdg_output_event(proxy, opcode,
+                                               payload, size);
+    } else if (proxy->interface &&
+               strcmp(proxy->interface->name,
+                      "zxdg_toplevel_decoration_v1") == 0) {
+        result = wl_dispatch_zxdg_toplevel_decoration_event(
+            proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_surface_interface)) {
         result = wl_dispatch_surface_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_data_source_interface)) {
@@ -2776,6 +3029,11 @@ static int wl_display_dispatch_event(struct wl_display *display,
     return 0;
 
 protocol_error:
+    fprintf(stderr,
+            "wayland-client: invalid event object=%u opcode=%u interface=%s size=%u\n",
+            event->object_id, opcode,
+            proxy && proxy->interface ? proxy->interface->name : "(unknown)",
+            size);
     display->dispatch_event = NULL;
     display->error = EPROTO;
     errno = EPROTO;
@@ -2819,8 +3077,13 @@ static int wl_display_queue_event(struct wl_display *display)
             goto transport_error;
         }
     }
-    if (!(proxy = wl_proxy_find(display, event->object_id)))
+    if (!(proxy = wl_proxy_find(display, event->object_id))) {
+        if (wl_display_has_zombie(display, event->object_id)) {
+            wl_pending_event_destroy(event);
+            return 0;
+        }
         goto event_protocol_error;
+    }
     queue = proxy == &display->proxy && display->prepared_queue ?
         display->prepared_queue : proxy->queue;
     if (!queue)
@@ -2850,6 +3113,9 @@ allocation_error:
     errno = ENOMEM;
     return -1;
 event_protocol_error:
+    fprintf(stderr,
+            "wayland-client: event for unknown object=%u opcode=%u size=%u\n",
+            event->object_id, event->opcode, event->size);
     while (display->pending_fd_count > initial_fd_count)
         close(display->pending_fds[--display->pending_fd_count]);
     wl_pending_event_destroy(event);

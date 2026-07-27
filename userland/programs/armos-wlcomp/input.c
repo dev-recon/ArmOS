@@ -87,12 +87,74 @@ static int wl_send_toplevel_close(struct wl_server_client *client,
     return wl_client_send_words(client, toplevel->id, 1u, NULL, 0u);
 }
 
+static struct wl_server_surface *wl_surface_root(
+    struct wl_server_surface *surface)
+{
+    size_t depth = 0u;
+
+    while (surface &&
+           surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+           surface->parent &&
+           depth++ < WL_SERVER_MAX_SURFACES)
+        surface = surface->parent;
+    return depth <= WL_SERVER_MAX_SURFACES ? surface : NULL;
+}
+
+static void wl_raise_surface_group(struct wl_server *server,
+                                   struct wl_server_client *client,
+                                   struct wl_server_surface *root)
+{
+    if (!server || !client || !root)
+        return;
+    root->z_order = ++server->next_surface_z;
+    for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
+        struct wl_server_surface *surface = &client->surfaces[index];
+
+        if (surface->used && surface != root &&
+            wl_surface_root(surface) == root)
+            surface->z_order = ++server->next_surface_z;
+    }
+    server->scene_damage_pending = true;
+}
+
+static int wl_surface_origin(const struct wl_server_surface *surface,
+                             int32_t *x, int32_t *y)
+{
+    const struct wl_server_surface *ancestor = surface;
+    size_t depth = 0u;
+
+    if (!surface || !x || !y)
+        return -1;
+    if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+        *x = surface->x;
+        *y = surface->y +
+            (surface->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0);
+        return 0;
+    }
+    *x = surface->subsurface_x;
+    *y = surface->subsurface_y;
+    while (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+           ancestor->parent &&
+           depth++ < WL_SERVER_MAX_SURFACES) {
+        ancestor = ancestor->parent;
+        if (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+            *x += ancestor->subsurface_x;
+            *y += ancestor->subsurface_y;
+        } else {
+            *x += ancestor->x;
+            *y += ancestor->y +
+                (ancestor->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0);
+        }
+    }
+    return depth <= WL_SERVER_MAX_SURFACES ? 0 : -1;
+}
+
 static struct wl_server_surface *wl_surface_at(
     struct wl_server *server, int32_t x, int32_t y,
-    struct wl_server_client **owner)
+    size_t *owner_index)
 {
     struct wl_server_surface *top = NULL;
-    struct wl_server_client *top_owner = NULL;
+    size_t top_owner_index = WL_SERVER_MAX_CLIENTS;
 
     for (size_t ci = 0u; ci < WL_SERVER_MAX_CLIENTS; ci++) {
         struct wl_server_client *client = &server->clients[ci];
@@ -101,23 +163,31 @@ static struct wl_server_surface *wl_surface_at(
             continue;
         for (size_t si = 0u; si < WL_SERVER_MAX_SURFACES; si++) {
             struct wl_server_surface *surface = &client->surfaces[si];
-            int32_t bottom;
+            int32_t surface_x;
+            int32_t surface_y;
 
-            if (!surface->used || !surface->mapped)
+            if (!surface->used || !surface->mapped ||
+                surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
+                wl_surface_origin(surface, &surface_x, &surface_y) < 0)
                 continue;
-            bottom = surface->y + WL_WINDOW_TITLE_HEIGHT +
-                     (int32_t)surface->height;
-            if (x >= surface->x &&
-                x < surface->x + (int32_t)surface->width &&
-                y >= surface->y && y < bottom) {
+            if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+                surface->server_decorated)
+                surface_y -= WL_WINDOW_TITLE_HEIGHT;
+            if (x >= surface_x &&
+                x < surface_x + (int32_t)surface->width &&
+                y >= surface_y &&
+                y < surface_y + (int32_t)surface->height +
+                    ((surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+                      surface->server_decorated) ?
+                     WL_WINDOW_TITLE_HEIGHT : 0)) {
                 if (!top || surface->z_order > top->z_order) {
                     top = surface;
-                    top_owner = client;
+                    top_owner_index = ci;
                 }
             }
         }
     }
-    *owner = top_owner;
+    *owner_index = top_owner_index;
     return top;
 }
 
@@ -131,20 +201,65 @@ static void wl_send_pointer_frame(struct wl_server_client *client,
 static void wl_send_pointer_motion(struct wl_server *server,
                                    uint32_t timestamp)
 {
-    struct wl_server_client *client;
+    struct wl_server_client *client = NULL;
     struct wl_server_surface *surface;
     struct wl_server_object *pointer;
-    uint32_t words[3];
+    struct wl_server_object *old_pointer;
+    size_t owner_index;
+    int32_t surface_x;
+    int32_t surface_y;
+    uint32_t words[4];
 
     surface = wl_surface_at(server, server->pointer_x, server->pointer_y,
-                            &client);
-    pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);
-    if (!surface || !pointer)
+                            &owner_index);
+    if (!surface || owner_index >= WL_SERVER_MAX_CLIENTS) {
+        if (server->pointer_client && server->pointer_surface) {
+            old_pointer = wl_find_input_object(
+                server->pointer_client, WL_SERVER_OBJECT_POINTER);
+            if (old_pointer) {
+                words[0] = ++server->serial;
+                words[1] = server->pointer_surface->object_id;
+                (void)wl_client_send_words(server->pointer_client,
+                                           old_pointer->id, 1u, words, 2u);
+                wl_send_pointer_frame(server->pointer_client, old_pointer);
+            }
+        }
+        server->pointer_client = NULL;
+        server->pointer_surface = NULL;
         return;
+    }
+    client = &server->clients[owner_index];
+    if (!client->used)
+        return;
+    pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);
+    if (!pointer ||
+        wl_surface_origin(surface, &surface_x, &surface_y) < 0)
+        return;
+    if (server->pointer_client != client ||
+        server->pointer_surface != surface) {
+        if (server->pointer_client && server->pointer_surface) {
+            old_pointer = wl_find_input_object(
+                server->pointer_client, WL_SERVER_OBJECT_POINTER);
+            if (old_pointer) {
+                words[0] = ++server->serial;
+                words[1] = server->pointer_surface->object_id;
+                (void)wl_client_send_words(server->pointer_client,
+                                           old_pointer->id, 1u, words, 2u);
+                wl_send_pointer_frame(server->pointer_client, old_pointer);
+            }
+        }
+        server->pointer_client = client;
+        server->pointer_surface = surface;
+        words[0] = ++server->serial;
+        words[1] = surface->object_id;
+        words[2] = (uint32_t)((server->pointer_x - surface_x) * 256);
+        words[3] = (uint32_t)((server->pointer_y - surface_y) * 256);
+        (void)wl_client_send_words(client, pointer->id, 0u, words, 4u);
+        wl_send_pointer_frame(client, pointer);
+    }
     words[0] = timestamp;
-    words[1] = (uint32_t)((server->pointer_x - surface->x) * 256);
-    words[2] = (uint32_t)((server->pointer_y - surface->y -
-                           WL_WINDOW_TITLE_HEIGHT) * 256);
+    words[1] = (uint32_t)((server->pointer_x - surface_x) * 256);
+    words[2] = (uint32_t)((server->pointer_y - surface_y) * 256);
     (void)wl_client_send_words(client, pointer->id, 2u, words, 3u);
     wl_send_pointer_frame(client, pointer);
 }
@@ -169,11 +284,8 @@ static void wl_focus_surface(struct wl_server *server,
                              struct wl_server_client *client,
                              struct wl_server_surface *surface)
 {
-    struct wl_server_object *pointer;
     struct wl_server_object *keyboard;
-    struct wl_server_object *old_pointer;
     struct wl_server_object *old_keyboard;
-    uint32_t enter[4];
     uint32_t keyboard_enter[3];
     uint32_t leave[2];
 
@@ -186,17 +298,9 @@ static void wl_focus_surface(struct wl_server *server,
     server->scene_damage_pending = true;
     if (server->focus_client && server->focus_client->used &&
         server->focus_surface && server->focus_surface->used) {
-        old_pointer = wl_find_input_object(server->focus_client,
-                                           WL_SERVER_OBJECT_POINTER);
         old_keyboard = wl_find_input_object(server->focus_client,
                                             WL_SERVER_OBJECT_KEYBOARD);
-        leave[0] = ++server->serial;
         leave[1] = server->focus_surface->object_id;
-        if (old_pointer) {
-            (void)wl_client_send_words(server->focus_client,
-                                       old_pointer->id, 1u, leave, 2u);
-            wl_send_pointer_frame(server->focus_client, old_pointer);
-        }
         if (old_keyboard) {
             leave[0] = ++server->serial;
             (void)wl_client_send_words(server->focus_client,
@@ -205,15 +309,6 @@ static void wl_focus_surface(struct wl_server *server,
     }
     server->focus_client = client;
     server->focus_surface = surface;
-    pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);
-    if (pointer) {
-        enter[0] = ++server->serial;
-    enter[1] = surface->object_id;
-    enter[2] = 0u;
-    enter[3] = 0u;
-    (void)wl_client_send_words(client, pointer->id, 0u, enter, 4u);
-    wl_send_pointer_frame(client, pointer);
-    }
     keyboard = wl_find_input_object(client, WL_SERVER_OBJECT_KEYBOARD);
     if (keyboard) {
         keyboard_enter[0] = ++server->serial;
@@ -230,7 +325,9 @@ static void wl_handle_button(struct wl_server *server,
 {
     struct wl_server_client *client = NULL;
     struct wl_server_surface *surface = NULL;
+    struct wl_server_surface *root = NULL;
     struct wl_server_object *pointer;
+    size_t owner_index;
     uint32_t words[4];
     bool pressed = event->value != 0;
 
@@ -238,33 +335,46 @@ static void wl_handle_button(struct wl_server *server,
         return;
     server->pointer_left = pressed;
     if (pressed) {
+        /*
+         * Synchronize the protocol pointer focus before delivering a button.
+         * A host click used only to capture the QEMU pointer may otherwise
+         * have no Wayland target at all.
+         */
+        wl_send_pointer_motion(server, event->timestamp_ms);
         surface = wl_surface_at(server, server->pointer_x, server->pointer_y,
-                                &client);
-        if (surface) {
+                                &owner_index);
+        if (surface && owner_index < WL_SERVER_MAX_CLIENTS) {
             bool close_button;
 
-            if (surface->z_order != server->next_surface_z) {
-                surface->z_order = ++server->next_surface_z;
-                server->scene_damage_pending = true;
-            }
-            wl_focus_surface(server, client, surface);
+            client = &server->clients[owner_index];
+            if (!client->used)
+                return;
+            root = wl_surface_root(surface);
+            if (!root)
+                return;
+            wl_raise_surface_group(server, client, root);
+            wl_focus_surface(server, client, root);
             close_button = wl_surface_close_button_at(
-                surface, server->pointer_x, server->pointer_y);
-            if (close_button) {
-                (void)wl_send_toplevel_close(client, surface);
-            } else if (server->pointer_y <
-                surface->y + WL_WINDOW_TITLE_HEIGHT) {
+                root, server->pointer_x, server->pointer_y);
+            if (surface == root && root->server_decorated &&
+                close_button) {
+                (void)wl_send_toplevel_close(client, root);
+            } else if (surface == root && root->server_decorated &&
+                       server->pointer_y <
+                       root->y + WL_WINDOW_TITLE_HEIGHT) {
                 server->drag_client = client;
-                server->drag_surface = surface;
-                server->drag_offset_x = server->pointer_x - surface->x;
-                server->drag_offset_y = server->pointer_y - surface->y;
+                server->drag_surface = root;
+                server->drag_offset_x = server->pointer_x - root->x;
+                server->drag_offset_y = server->pointer_y - root->y;
             }
         }
     } else {
-        client = server->focus_client;
-        surface = server->focus_surface;
         server->drag_client = NULL;
         server->drag_surface = NULL;
+        if (server->pointer_grab_serial == 0u)
+            return;
+        client = server->pointer_client;
+        surface = server->pointer_surface;
     }
     pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);
     if (!surface || !pointer)

@@ -227,8 +227,14 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
                                   0u, 0u, 0u);
             if (xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_A &&
                 xkb_state_key_get_consumed_mods2(
-                    xkb_state, 24u, XKB_CONSUMED_MODE_XKB) == 1u)
-                state->xkb_maps++;
+                    xkb_state, 24u, XKB_CONSUMED_MODE_XKB) == 1u) {
+                xkb_state_update_mask(xkb_state, 1u << 2, 0u, 0u,
+                                      0u, 0u, 0u);
+                if (xkb_state_key_get_utf8(
+                        xkb_state, 54u, utf8, sizeof(utf8)) == 1 &&
+                    (unsigned char)utf8[0] == 0x03u)
+                    state->xkb_maps++;
+            }
         }
         xkb_state_unref(xkb_state);
         xkb_keymap_unref(keymap);

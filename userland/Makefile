@@ -123,6 +123,7 @@ HELLO64_SRCS := $(wildcard programs/hello64/*.c)
 HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64/%.o,$(HELLO64_SRCS))
 ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
 ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
+$(ARMOS_WLCOMP_OBJECTS): programs/armos-wlcomp/armos_wlcomp.h
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o

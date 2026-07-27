@@ -380,30 +380,36 @@ static void wl_renderer_title(struct wl_server_renderer *renderer,
 
 static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
                                      const struct wl_server_surface *surface,
-                                     bool active)
+    bool active)
 {
+    uint32_t title_height =
+        surface->role == WL_SERVER_SURFACE_ROLE_TOPLEVEL &&
+        surface->server_decorated ?
+        WL_WINDOW_TITLE_HEIGHT : 0u;
     uint32_t frame_width = surface->width;
-    uint32_t frame_height = surface->height + WL_WINDOW_TITLE_HEIGHT;
-    int32_t content_y = surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT;
+    uint32_t frame_height = surface->height + title_height;
+    int32_t content_y = surface->y + (int32_t)title_height;
     int32_t content_x = surface->x;
     bool content_only_damage = false;
 
-    if (surface->is_subsurface) {
+    if (surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
         const struct wl_server_surface *ancestor = surface;
         size_t depth = 0u;
 
         content_x = surface->subsurface_x;
         content_y = surface->subsurface_y;
-        while (ancestor->is_subsurface && ancestor->parent &&
+        while (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+               ancestor->parent &&
                depth++ < WL_SERVER_MAX_SURFACES) {
             ancestor = ancestor->parent;
-            if (ancestor->is_subsurface) {
+            if (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
                 content_x += ancestor->subsurface_x;
                 content_y += ancestor->subsurface_y;
             } else {
                 content_x += ancestor->x;
                 content_y += ancestor->y +
-                    (int32_t)WL_WINDOW_TITLE_HEIGHT;
+                    (ancestor->server_decorated ?
+                     (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
             }
         }
         if (depth > WL_SERVER_MAX_SURFACES)
@@ -418,7 +424,7 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
         renderer->clip_y1 <= content_y + (int32_t)surface->height)
         content_only_damage = true;
 
-    if (!content_only_damage) {
+    if (!content_only_damage && title_height != 0u) {
         /* Soft multi-pass shadow, generated rather than sourced from an asset. */
         for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
             uint32_t alpha = 8u + (8u - spread) * 3u;
@@ -438,7 +444,7 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
         wl_renderer_rounded_rect(
             renderer, surface->x + 1, surface->y + 1,
             frame_width > 2u ? frame_width - 2u : frame_width,
-            WL_WINDOW_TITLE_HEIGHT,
+            title_height,
             WL_WINDOW_RADIUS > 1u ? WL_WINDOW_RADIUS - 1u : 0u,
             active ? WL_WINDOW_TITLE_ACTIVE : WL_WINDOW_TITLE_INACTIVE);
         wl_renderer_circle(renderer, surface->x + 14, surface->y + 14,
@@ -584,10 +590,15 @@ static bool wl_renderer_clip_has_opaque_cover(
                 &client->surfaces[index];
             int32_t content_y;
 
-            if (!surface->used || !surface->mapped || !surface->pixels ||
-                surface->is_subsurface || !surface->opaque)
+            if (!surface->used || !surface->mapped ||
+                surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
+                !surface->pixels ||
+                surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE ||
+                !surface->opaque)
                 continue;
-            content_y = surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT;
+            content_y = surface->y +
+                (surface->server_decorated ?
+                 (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
             if (renderer->clip_x0 >= surface->x &&
                 renderer->clip_y0 >= content_y &&
                 renderer->clip_x1 <=
@@ -616,7 +627,9 @@ static void wl_renderer_draw_surfaces(struct wl_server *server)
         for (size_t index = 0; index < WL_SERVER_MAX_SURFACES; index++) {
             struct wl_server_surface *surface = &client->surfaces[index];
 
-            if (!surface->used || !surface->mapped || !surface->pixels)
+            if (!surface->used || !surface->mapped ||
+                surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
+                !surface->pixels)
                 continue;
             size_t position = count;
 
@@ -638,9 +651,11 @@ static void wl_renderer_draw_surfaces(struct wl_server *server)
         for (size_t index = count; index > 0u; index--) {
             struct wl_server_surface *surface = ordered[index - 1u];
             int32_t content_y =
-                surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT;
+                surface->y + (surface->server_decorated ?
+                              (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
 
-            if (!surface->is_subsurface && surface->opaque &&
+            if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+                surface->opaque &&
                 server->renderer.clip_x0 >= surface->x &&
                 server->renderer.clip_y0 >= content_y &&
                 server->renderer.clip_x1 <=
@@ -912,7 +927,8 @@ void wl_renderer_damage_surface_at(
         return;
     wl_renderer_damage_rect(
         server, x - 8, y - 4, surface->width + 16u,
-        surface->height + WL_WINDOW_TITLE_HEIGHT + 16u);
+        surface->height +
+        (surface->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0u) + 16u);
 }
 
 static int wl_renderer_clip_rect(struct wl_server_renderer *renderer,
@@ -1141,7 +1157,8 @@ int wl_surface_commit(struct wl_server *server,
         if (surface->mapped && same_extent) {
             wl_renderer_damage_rect(
                 server, surface->x,
-                surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT,
+                surface->y + (surface->server_decorated ?
+                              (int32_t)WL_WINDOW_TITLE_HEIGHT : 0),
                 surface->width, surface->height);
             if (wl_server_schedule_render(server, false) < 0)
                 return -1;

@@ -47,9 +47,10 @@ typedef struct armos_input_event {
 } armos_input_event_t;
 
 void armos_input_emit(uint16_t type, uint16_t code, int32_t value);
+bool armos_input_tty_routing_enabled(void);
 bool armos_input_read_ready(void);
 bool is_input_device_path(const char *path);
 void fill_input_device_stat(struct stat *st);
-file_t *create_input_device_file(const char *name, int flags);
+file_t *create_input_device_file(const char *name, int flags, int *error);
 
 #endif /* KERNEL_INPUT_H */

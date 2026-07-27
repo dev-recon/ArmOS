@@ -55,6 +55,8 @@
 #define WL_GLOBAL_OUTPUT     5u
 #define WL_GLOBAL_DATA_DEVICE 6u
 #define WL_GLOBAL_SUBCOMPOSITOR 7u
+#define WL_GLOBAL_XDG_OUTPUT  8u
+#define WL_GLOBAL_XDG_DECORATION 9u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -77,13 +79,17 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_KEYBOARD,
     WL_SERVER_OBJECT_TOUCH,
     WL_SERVER_OBJECT_OUTPUT,
+    WL_SERVER_OBJECT_XDG_OUTPUT_MANAGER,
+    WL_SERVER_OBJECT_XDG_OUTPUT,
     WL_SERVER_OBJECT_DATA_DEVICE_MANAGER,
     WL_SERVER_OBJECT_DATA_SOURCE,
     WL_SERVER_OBJECT_DATA_DEVICE,
     WL_SERVER_OBJECT_DATA_OFFER,
     WL_SERVER_OBJECT_XDG_WM_BASE,
     WL_SERVER_OBJECT_XDG_SURFACE,
-    WL_SERVER_OBJECT_XDG_TOPLEVEL
+    WL_SERVER_OBJECT_XDG_TOPLEVEL,
+    WL_SERVER_OBJECT_XDG_DECORATION_MANAGER,
+    WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION
 };
 
 struct wl_server_pool;
@@ -138,11 +144,18 @@ struct wl_server_callback {
     uint32_t object_id;
 };
 
+enum wl_server_surface_role {
+    WL_SERVER_SURFACE_ROLE_NONE = 0,
+    WL_SERVER_SURFACE_ROLE_TOPLEVEL,
+    WL_SERVER_SURFACE_ROLE_SUBSURFACE,
+    WL_SERVER_SURFACE_ROLE_CURSOR
+};
+
 struct wl_server_surface {
     bool used;
     uint32_t object_id;
     uint64_t z_order;
-    bool is_subsurface;
+    enum wl_server_surface_role role;
     bool subsurface_synchronized;
     int32_t subsurface_x;
     int32_t subsurface_y;
@@ -151,6 +164,7 @@ struct wl_server_surface {
     bool pending_attach;
     bool mapped;
     bool opaque;
+    bool server_decorated;
     int32_t x;
     int32_t y;
     uint32_t width;
@@ -230,6 +244,8 @@ struct wl_server {
     struct wl_renderer_rect damage[WL_SERVER_MAX_DAMAGE_RECTS];
     struct wl_server_client *focus_client;
     struct wl_server_surface *focus_surface;
+    struct wl_server_client *pointer_client;
+    struct wl_server_surface *pointer_surface;
     struct wl_server_client *drag_client;
     struct wl_server_surface *drag_surface;
     struct wl_server_client *selection_client;

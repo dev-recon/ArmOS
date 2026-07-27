@@ -185,6 +185,8 @@ void init_process_main(void* arg)
         "PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin",
         "HOME=/home/user",
         "USER=user",
+        "LANG=C.UTF-8",
+        "SHELL=/sbin/mash",
         "PS1=mash$> ",
         NULL
     };

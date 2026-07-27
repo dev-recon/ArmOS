@@ -435,6 +435,10 @@ void wl_server_disconnect_client(struct wl_server *server,
             server->focus_client = NULL;
             server->focus_surface = NULL;
         }
+        if (server->pointer_client == client) {
+            server->pointer_client = NULL;
+            server->pointer_surface = NULL;
+        }
         if (server->drag_client == client) {
             server->drag_client = NULL;
             server->drag_surface = NULL;

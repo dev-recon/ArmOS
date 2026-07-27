@@ -1123,6 +1123,7 @@ static int sys_open_resolved(task_t *task, char *full_path,
 
     if (is_input_device_path(full_path)) {
         file_t *input_file;
+        int input_error;
 
         if (flags & O_DIRECTORY) {
             kfree(full_path);
@@ -1137,12 +1138,12 @@ static int sys_open_resolved(task_t *task, char *full_path,
             kfree(full_path);
             return fd;
         }
-        input_file = create_input_device_file("input0",
-                                               flags & ~O_CLOEXEC);
+        input_file = create_input_device_file(
+            "input0", flags & ~O_CLOEXEC, &input_error);
         if (!input_file) {
             free_fd(task, fd);
             kfree(full_path);
-            return -ENOMEM;
+            return input_error;
         }
         task->process->files[fd] = input_file;
         task->process->fd_flags[fd] = flags & O_CLOEXEC;

@@ -21,6 +21,7 @@
  */
 
 #include <kernel/shm.h>
+#include <kernel/address_space.h>
 #include <kernel/file.h>
 #include <kernel/memory.h>
 #include <kernel/task.h>
@@ -404,14 +405,15 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
     vma_t *vma;
     size_t mapping_size;
     uint32_t mapping_pages;
+    bool shared;
     void *result = NULL;
 
     if (!task || !task->process || !task->process->vm)
         return (void *)-EINVAL;
-    if (!(vma_flags & VMA_SHARED) ||
-        !(vma_flags & (VMA_READ | VMA_WRITE)) ||
+    if (!(vma_flags & (VMA_READ | VMA_WRITE)) ||
         (vma_flags & ~(VMA_READ | VMA_WRITE | VMA_SHARED)))
         return (void *)-EINVAL;
+    shared = (vma_flags & VMA_SHARED) != 0u;
     vm = task->process->vm;
 
     file = vfs_get_file_from_fd(task, fd);
@@ -458,25 +460,43 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
         result = (void *)-ENOMEM;
         goto out;
     }
-    vma->shm_id = obj->id;
+    if (shared)
+        vma->shm_id = obj->id;
 
     for (uint32_t i = 0; i < mapping_pages; i++) {
-        if (page_ref_inc((void *)obj->phys[i]) < 0) {
+        paddr_t phys = obj->phys[i];
+
+        if (!shared) {
+            phys = (paddr_t)allocate_page();
+            if (phys)
+                memcpy((void *)phys_to_virt(phys),
+                       (const void *)phys_to_virt(obj->phys[i]), PAGE_SIZE);
+        } else if (page_ref_inc((void *)phys) < 0) {
+            phys = 0;
+        }
+        if (!phys) {
             for (uint32_t j = 0; j < i; j++) {
+                paddr_t mapped = shared ? obj->phys[j] :
+                    get_physical_address(vm->pgdir,
+                                         vaddr + j * PAGE_SIZE);
+
                 unmap_user_page(vm->pgdir, vaddr + j * PAGE_SIZE, vm->asid);
-                free_page((void *)obj->phys[j]);
+                free_page((void *)mapped);
             }
             remove_vma(vm, vaddr, vaddr + mapping_size);
             result = (void *)-ENOMEM;
             goto out;
         }
 
-        if (map_user_page(vm->pgdir, vaddr + i * PAGE_SIZE, obj->phys[i],
+        if (map_user_page(vm->pgdir, vaddr + i * PAGE_SIZE, phys,
                           vma_flags, vm->asid) < 0) {
-            free_page((void *)obj->phys[i]);
+            free_page((void *)phys);
             for (uint32_t j = 0; j < i; j++) {
+                paddr_t mapped = get_physical_address(
+                    vm->pgdir, vaddr + j * PAGE_SIZE);
+
                 unmap_user_page(vm->pgdir, vaddr + j * PAGE_SIZE, vm->asid);
-                free_page((void *)obj->phys[j]);
+                free_page((void *)mapped);
             }
             remove_vma(vm, vaddr, vaddr + mapping_size);
             result = (void *)-ENOMEM;
@@ -484,7 +504,8 @@ void *shm_map_fd(int fd, void *addr, size_t requested_size,
         }
     }
 
-    obj->mappings++;
+    if (shared)
+        obj->mappings++;
     result = (void *)vaddr;
 
 out:

@@ -65,6 +65,7 @@ fi
 BUILD_CONTRACT="ArmOS Newlib reproducible paths v1
 target=$TARGET
 cflags=$TARGET_CFLAGS
+multibyte=yes
 retargetable_locking=yes"
 
 mkdir -p "$BUILD_ROOT/src" "$INSTALL_ROOT"
@@ -143,6 +144,7 @@ echo "=== Configuring newlib for $TARGET ==="
         --prefix="$INSTALL_ROOT" \
         --disable-multilib \
         --disable-newlib-supplied-syscalls \
+        --enable-newlib-mb \
         --enable-newlib-multithread \
         --enable-newlib-retargetable-locking \
         --enable-newlib-reent-small \

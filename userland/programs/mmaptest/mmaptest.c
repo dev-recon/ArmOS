@@ -7,12 +7,13 @@
  *
  * File: userland/programs/mmaptest/mmaptest.c
  * Layer: Userland / diagnostics
- * Description: Smoke test for anonymous private mmap/munmap.
+ * Description: Exercise anonymous and SHM-backed private mmap/munmap.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -73,6 +74,10 @@ int main(void)
     char *p;
     char *q;
     char *sparse;
+    char *shared;
+    char *private;
+    const char *shm_name = "/mmaptest-private";
+    int shm_fd = -1;
     unsigned rss_before;
     unsigned rss_after_map;
     unsigned rss_after_touch;
@@ -174,6 +179,27 @@ int main(void)
     if (pthread_join(thread, &thread_result) != 0 || thread_result != NULL)
         return fail("mmap from process thread");
     ok("mmap/munmap from process thread");
+
+    shm_unlink(shm_name);
+    shm_fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (shm_fd < 0 || ftruncate(shm_fd, 4096) < 0)
+        return fail("create SHM object for private mmap");
+    shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, shm_fd, 0);
+    if (shared == MAP_FAILED)
+        return fail("map shared SHM source");
+    strcpy(shared, "private SHM snapshot");
+    private = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE, shm_fd, 0);
+    if (private == MAP_FAILED || strcmp(private, shared) != 0)
+        return fail("map private SHM copy");
+    private[0] = 'P';
+    if (shared[0] != 'p')
+        return fail("private SHM write isolation");
+    if (munmap(private, 4096) < 0 || munmap(shared, 4096) < 0 ||
+        close(shm_fd) < 0 || shm_unlink(shm_name) < 0)
+        return fail("private SHM cleanup");
+    ok("MAP_PRIVATE copies and isolates SHM contents");
 
     printf("mmaptest: all tests passed\n");
     return 0;
