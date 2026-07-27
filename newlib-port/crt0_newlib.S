@@ -33,6 +33,7 @@ _start:
 
     push {r0-r2}
     bl __armos_runtime_init
+    bl __armos_runtime_run_init_array
     pop {r0-r2}
 
     push {r0-r2}

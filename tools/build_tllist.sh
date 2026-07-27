@@ -33,6 +33,7 @@ BUILD_DIR="$WORK_DIR/build"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_PREFIX="$BUNDLE_ROOT/opt/tllist"
 BUNDLE_USR_BIN="$BUNDLE_ROOT/usr/bin"
+BUNDLE_TCC_INCLUDE="$BUNDLE_ROOT/opt/tcc/include"
 ARCHIVE_PATH="${TLLIST_ARCHIVE_PATH:-$DOWNLOAD_DIR/$TLLIST_ARCHIVE}"
 SRC_DIR="${SRC_DIR:-$SOURCE_ROOT/tllist}"
 
@@ -76,9 +77,10 @@ fi
 
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include" \
-    "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN"
+    "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" "$BUNDLE_TCC_INCLUDE"
 
-cp "$SRC_DIR/tllist.h" "$BUNDLE_PREFIX/include/"
+cp "$ROOT_DIR/userland/include/tllist.h" "$BUNDLE_PREFIX/include/"
+cp "$ROOT_DIR/userland/include/tllist.h" "$BUNDLE_TCC_INCLUDE/"
 cp "$SRC_DIR/LICENSE" "$BUNDLE_PREFIX/"
 
 cat > "$BUNDLE_PREFIX/lib/pkgconfig/tllist.pc" <<EOF

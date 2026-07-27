@@ -59,6 +59,8 @@ $(BUILD_DIR):
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/pthread_sync.o: CFLAGS += -ftls-model=local-exec
+
 $(BUILD_DIR)/crt0_newlib.o: $(CRT0_SOURCE) | $(BUILD_DIR)
 	$(AS) $(ASFLAGS) $< -o $@
 

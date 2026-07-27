@@ -103,7 +103,7 @@ static int exec_armos_link(int argc, char **argv)
     int n = 0;
     int i;
 
-    if (argc + 18 >= TCC_MAX_ARGS) {
+    if (argc + 20 >= TCC_MAX_ARGS) {
         fprintf(stderr, "tcc: too many arguments\n");
         return 1;
     }
@@ -122,10 +122,14 @@ static int exec_armos_link(int argc, char **argv)
     real_argv[n++] = "/opt/tcc/lib/syscall_raw.o";
     real_argv[n++] = "/opt/tcc/lib/syscalls_min.o";
     real_argv[n++] = "/opt/tcc/lib/stdio_lock.o";
+    real_argv[n++] = "/opt/tcc/lib/pthread.o";
+    real_argv[n++] = "/opt/tcc/lib/pthread_sync.o";
 
     for (i = 1; i < argc; i++) {
         if (arg_is(argv[i], "-lncurses") || arg_is(argv[i], "-lcurses"))
             real_argv[n++] = "/opt/ncurses/lib/libncurses.a";
+        else if (arg_is(argv[i], "-lm") || arg_is(argv[i], "-lc"))
+            continue;
         else
             real_argv[n++] = argv[i];
     }

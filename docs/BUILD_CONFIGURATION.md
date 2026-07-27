@@ -153,6 +153,8 @@ BUILD_UTF8PROC=no
 BUILD_FREETYPE=no
 BUILD_EXPAT=no
 BUILD_FONTCONFIG=no
+BUILD_HARFBUZZ=no
+BUILD_FCFT=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -165,7 +167,12 @@ library used by Foot and its font stack. `BUILD_FREETYPE=yes` installs the
 FreeType rasterizer, the Meslo terminal font and its target-side regression
 test. `BUILD_EXPAT=yes` installs the XML parser needed by Fontconfig.
 `BUILD_FONTCONFIG=yes` installs font discovery and the generic monospace
-policy used by Foot. `BUILD_ALL_USERLAND=yes` enables the
+policy used by Foot. `BUILD_HARFBUZZ=yes` cross-compiles the HarfBuzz
+amalgamation with the host C++ compiler, without exceptions, RTTI, GLib, ICU,
+Graphite or subsetting. Only the C headers and static `libharfbuzz.a` are
+installed in ArmOS; TCC can consume the library but does not build it.
+`BUILD_FCFT=yes` installs fcft 2.5.1 with HarfBuzz and utf8proc shaping for
+Foot. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
 

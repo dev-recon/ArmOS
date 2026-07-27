@@ -38,6 +38,7 @@ BUILD_DIR="$WORK_DIR/build"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_PREFIX="$BUNDLE_ROOT/opt/pixman"
 BUNDLE_USR_BIN="$BUNDLE_ROOT/usr/bin"
+BUNDLE_TCC_INCLUDE="$BUNDLE_ROOT/opt/tcc/include"
 ARCHIVE_PATH="${PIXMAN_ARCHIVE_PATH:-$DOWNLOAD_DIR/$PIXMAN_ARCHIVE}"
 SRC_DIR="${SRC_DIR:-$SOURCE_ROOT/pixman-$PIXMAN_VERSION}"
 
@@ -136,7 +137,7 @@ fi
 
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/pixman-1" \
-    "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN"
+    "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" "$BUNDLE_TCC_INCLUDE"
 
 cat > "$BUILD_DIR/pixman-config.h" <<EOF
 #ifndef PIXMAN_CONFIG_H
@@ -188,8 +189,12 @@ done
 "$AR" rcs "$BUNDLE_PREFIX/lib/libpixman-1.a" "${OBJECTS[@]}"
 "$RANLIB" "$BUNDLE_PREFIX/lib/libpixman-1.a"
 
-cp "$SRC_DIR/pixman/pixman.h" "$BUILD_DIR/pixman-version.h" \
+cp "$ROOT_DIR/userland/include/pixman.h" \
+    "$ROOT_DIR/userland/include/pixman-version.h" \
     "$BUNDLE_PREFIX/include/pixman-1/"
+cp "$ROOT_DIR/userland/include/pixman.h" \
+    "$ROOT_DIR/userland/include/pixman-version.h" \
+    "$BUNDLE_TCC_INCLUDE/"
 cp "$SRC_DIR/COPYING" "$BUNDLE_PREFIX/"
 
 cat > "$BUNDLE_PREFIX/lib/pkgconfig/pixman-1.pc" <<EOF

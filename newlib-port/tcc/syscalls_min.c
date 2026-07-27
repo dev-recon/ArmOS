@@ -27,6 +27,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pwd.h>
+#include <reent.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -37,10 +38,13 @@
 #include <termios.h>
 #include <time.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/shm.h>
 #include <uapi/armos/statvfs.h>
+#include <uapi/armos/thread.h>
 #include <uapi/armos/time.h>
+#include <uapi/armos/tls.h>
 #include <sys/mman.h>
 #include <sys/eventfd.h>
 #include <poll.h>
@@ -117,6 +121,14 @@ extern long sys_fstat(int fd, void *st);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
 extern long sys_sysinfo(void *resp);
 extern long sys_gettimeofday(struct timeval *tv, void *tz);
+extern long sys_gettid(void);
+extern void sys_thread_exit(int status);
+extern long sys_futex(volatile uint32_t *address, int operation,
+                      uint32_t value, const armos_timespec_t *timeout);
+extern long sys_clone(const armos_clone_args_t *args, size_t args_size);
+extern long sys_sched_yield(void);
+extern long sys_set_tls(unsigned long tls_base);
+extern long sys_get_tls_info(armos_tls_info_t *info);
 extern long sys_getrusage(int who, void *usage);
 extern long sys_getrlimit(int resource, armos_rlimit_t *limit);
 extern long sys_setrlimit(int resource, const armos_rlimit_t *limit);
@@ -218,8 +230,50 @@ extern void __signal_return_trampoline(void);
 #define ARMOS_OPEN_MAX 256
 
 static const char *program_name = "program";
-static int cancel_state = PTHREAD_CANCEL_ENABLE;
 extern char **environ;
+
+typedef void (*armos_runtime_array_fn)(void);
+
+extern armos_runtime_array_fn __preinit_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __preinit_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_end[]
+    __attribute__((weak));
+
+static void armos_runtime_run_fini_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    if (!__fini_array_start || !__fini_array_end)
+        return;
+    for (fn = __fini_array_end; fn != __fini_array_start; )
+        (*--fn)();
+}
+
+void __armos_runtime_run_init_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    if (__fini_array_start && __fini_array_end &&
+        __fini_array_start != __fini_array_end)
+        (void)atexit(armos_runtime_run_fini_array);
+
+    if (__preinit_array_start && __preinit_array_end) {
+        for (fn = __preinit_array_start; fn != __preinit_array_end; ++fn)
+            (*fn)();
+    }
+    if (__init_array_start && __init_array_end) {
+        for (fn = __init_array_start; fn != __init_array_end; ++fn)
+            (*fn)();
+    }
+}
 
 struct os_stat {
     uint32_t st_dev;
@@ -244,25 +298,6 @@ static int ret_errno(long ret)
         return -1;
     }
     return (int)ret;
-}
-
-void __armos_runtime_init(void)
-{
-    /*
-     * TinyCC's minimal runtime is single-threaded and uses newlib's initial
-     * process reentrancy object.  The full runtime installs per-thread TLS.
-     */
-}
-
-int pthread_setcancelstate(int state, int *oldstate)
-{
-    if (state != PTHREAD_CANCEL_ENABLE &&
-        state != PTHREAD_CANCEL_DISABLE)
-        return EINVAL;
-    if (oldstate)
-        *oldstate = cancel_state;
-    cancel_state = state;
-    return 0;
 }
 
 void __armos_init_program_name(const char *argv0)
@@ -1746,6 +1781,159 @@ int getsysinfo(struct sysinfo_response *resp)
 {
     return ret_errno(sys_sysinfo(resp));
 }
+
+int armos_gettid(void)
+{
+    return (int)sys_gettid();
+}
+
+int armos_futex_wait(volatile uint32_t *address, uint32_t expected,
+                     const armos_timespec_t *timeout)
+{
+    long result =
+        sys_futex(address, ARMOS_FUTEX_WAIT, expected, timeout);
+
+    if (result == ARMOS_FUTEX_RESULT_TIMEDOUT) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    return ret_errno(result);
+}
+
+int armos_futex_wake(volatile uint32_t *address, uint32_t count)
+{
+    return ret_errno(sys_futex(address, ARMOS_FUTEX_WAKE, count, NULL));
+}
+
+void armos_thread_exit(int status)
+{
+    sys_thread_exit(status);
+    for (;;)
+        ;
+}
+
+int sched_yield(void)
+{
+    return ret_errno(sys_sched_yield());
+}
+
+int armos_clone(const armos_clone_args_t *args)
+{
+    return ret_errno(sys_clone(args, sizeof(*args)));
+}
+
+int armos_set_tls(void *tls_base)
+{
+    return ret_errno(sys_set_tls((unsigned long)(uintptr_t)tls_base));
+}
+
+int armos_get_tls_info(armos_tls_info_t *info)
+{
+    return ret_errno(sys_get_tls_info(info));
+}
+
+static struct _reent *armos_current_reent(void)
+{
+    uintptr_t pointer;
+    uintptr_t *tcb;
+
+#if defined(__aarch64__)
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(pointer));
+#elif defined(__arm__)
+    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(pointer));
+#else
+    pointer = 0;
+#endif
+    tcb = (uintptr_t *)pointer;
+    return tcb && tcb[1] ? (struct _reent *)tcb[1] : _impure_ptr;
+}
+
+struct _reent *__getreent(void)
+{
+    return armos_current_reent();
+}
+
+void *armos_thread_reent_create(void)
+{
+    armos_tls_info_t info;
+    struct _reent *reent;
+    uintptr_t alignment;
+    uintptr_t tls_offset;
+    uintptr_t raw_address;
+    uintptr_t tcb_address;
+    uintptr_t *tcb;
+    void *raw;
+    size_t total;
+
+    memset(&info, 0, sizeof(info));
+    if (armos_get_tls_info(&info) < 0)
+        return NULL;
+    alignment = info.alignment;
+    if (alignment < sizeof(uintptr_t) * 2u)
+        alignment = sizeof(uintptr_t) * 2u;
+    if ((alignment & (alignment - 1u)) != 0)
+        return NULL;
+    tls_offset =
+        (sizeof(uintptr_t) * 2u + alignment - 1u) & ~(alignment - 1u);
+    if (info.memory_size > SIZE_MAX - tls_offset - alignment)
+        return NULL;
+    total = (size_t)(tls_offset + info.memory_size + alignment - 1u);
+    raw = calloc(1, total);
+    reent = calloc(1, sizeof(*reent));
+    if (!raw || !reent) {
+        free(reent);
+        free(raw);
+        return NULL;
+    }
+    raw_address = (uintptr_t)raw;
+    tcb_address = (raw_address + alignment - 1u) & ~(alignment - 1u);
+    tcb = (uintptr_t *)tcb_address;
+    tcb[0] = raw_address;
+    tcb[1] = (uintptr_t)reent;
+    if (info.file_size) {
+        memcpy((void *)(tcb_address + tls_offset),
+               (const void *)(uintptr_t)info.image,
+               (size_t)info.file_size);
+    }
+    _REENT_INIT_PTR(reent);
+    return tcb;
+}
+
+void armos_thread_reent_destroy(void *opaque)
+{
+    uintptr_t *tcb = (uintptr_t *)opaque;
+    struct _reent *reent;
+    void *raw;
+
+    if (!tcb)
+        return;
+    raw = (void *)tcb[0];
+    reent = (struct _reent *)tcb[1];
+    _reclaim_reent(reent);
+    free(reent);
+    free(raw);
+}
+
+void __armos_pthread_runtime_init(void *tcb) __attribute__((weak));
+
+void __armos_runtime_init(void)
+{
+    void *tcb = armos_thread_reent_create();
+
+    if (!tcb)
+        return;
+    if (armos_set_tls(tcb) < 0) {
+        armos_thread_reent_destroy(tcb);
+        return;
+    }
+    if (__armos_pthread_runtime_init)
+        __armos_pthread_runtime_init(tcb);
+}
+
+#if defined(__arm__)
+const unsigned char __exidx_start[1] __attribute__((weak)) = {0};
+const unsigned char __exidx_end[1] __attribute__((weak)) = {0};
+#endif
 
 static int clock_id_to_armos(clockid_t clock_id)
 {

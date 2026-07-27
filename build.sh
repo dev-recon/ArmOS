@@ -40,6 +40,8 @@ enable_complete_userland_build()
     BUILD_FREETYPE=1
     BUILD_EXPAT=1
     BUILD_FONTCONFIG=1
+    BUILD_HARFBUZZ=1
+    BUILD_FCFT=1
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -75,6 +77,8 @@ BUILD_UTF8PROC="${BUILD_UTF8PROC:-0}"
 BUILD_FREETYPE="${BUILD_FREETYPE:-0}"
 BUILD_EXPAT="${BUILD_EXPAT:-0}"
 BUILD_FONTCONFIG="${BUILD_FONTCONFIG:-0}"
+BUILD_HARFBUZZ="${BUILD_HARFBUZZ:-0}"
+BUILD_FCFT="${BUILD_FCFT:-0}"
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -284,6 +288,26 @@ if [ "$BUILD_FONTCONFIG" = "1" ]; then
     WORK_DIR="$TARGET_BUNDLES/fontconfig" ARCH="$ARCH" \
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_fontconfig.sh
     rsync -a "$TARGET_BUNDLES/fontconfig/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_HARFBUZZ" = "1" ]; then
+    echo "=== Building HarfBuzz text shaping bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/harfbuzz" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_harfbuzz.sh
+    rsync -a "$TARGET_BUNDLES/harfbuzz/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FCFT" = "1" ]; then
+    echo "=== Building fcft font rasterization bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/fcft" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_fcft.sh
+    # fcft is linked statically, but its runtime font policy and font file
+    # still come from the dependency bundles. Keep a focused fcft build
+    # independently bootable even when the target userfs was freshly seeded.
+    for dependency in pixman tllist utf8proc freetype expat fontconfig harfbuzz; do
+        rsync -a "$TARGET_BUNDLES/$dependency/bundle/" "$TARGET_USERFS/"
+    done
+    rsync -a "$TARGET_BUNDLES/fcft/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

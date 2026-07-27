@@ -2490,29 +2490,32 @@ static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
     {
         /* Create PT_TLS segment covering all TLS sections */
         Section *tls_start_sec = NULL;
-        addr_t tls_start = 0, tls_end = 0;
+        addr_t tls_start = 0, tls_file_end = 0, tls_mem_end = 0;
+        addr_t tls_align = 1;
         for (i = 1; i < s1->nb_sections; i++) {
             s = s1->sections[i];
             if (s->sh_flags & SHF_TLS && s->sh_size) {
-                if (!tls_start_sec) {
+                if (!tls_start_sec || s->sh_addr < tls_start) {
                     tls_start_sec = s;
                     tls_start = s->sh_addr;
-                    tls_end = s->sh_addr + s->sh_size;
-                } else {
-                    if (s->sh_addr < tls_start)
-                        tls_start = s->sh_addr;
-                    if (s->sh_addr + s->sh_size > tls_end)
-                        tls_end = s->sh_addr + s->sh_size;
                 }
+                if (s->sh_type != SHT_NOBITS
+                    && s->sh_addr + s->sh_size > tls_file_end)
+                    tls_file_end = s->sh_addr + s->sh_size;
+                if (s->sh_addr + s->sh_size > tls_mem_end)
+                    tls_mem_end = s->sh_addr + s->sh_size;
+                if (s->sh_addralign > tls_align)
+                    tls_align = s->sh_addralign;
             }
         }
         if (tls_start_sec) {
             ph = fill_phdr(++ph, PT_TLS, tls_start_sec);
             ph->p_vaddr = tls_start;
             ph->p_paddr = tls_start;
-            ph->p_filesz = tls_end - tls_start;
-            ph->p_memsz = ph->p_filesz;
-            ph->p_align = tls_start_sec->sh_addralign;
+            ph->p_filesz = tls_file_end > tls_start
+                ? tls_file_end - tls_start : 0;
+            ph->p_memsz = tls_mem_end - tls_start;
+            ph->p_align = tls_align;
         }
     }
     if (d->interp)

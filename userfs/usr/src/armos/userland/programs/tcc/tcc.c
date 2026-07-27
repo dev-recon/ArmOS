@@ -21,6 +21,15 @@ extern char **environ;
 #define REAL_TCC "/opt/tcc/bin/tcc"
 #define TCC_MAX_ARGS 128
 
+#ifndef ARMOS_USER_TEXT_ADDRESS
+#define ARMOS_USER_TEXT_ADDRESS 0x8000
+#endif
+
+#define STRINGIFY_VALUE(value) #value
+#define STRINGIFY(value) STRINGIFY_VALUE(value)
+#define ARMOS_TCC_TEXT_OPTION \
+    "-Wl,-Ttext=" STRINGIFY(ARMOS_USER_TEXT_ADDRESS)
+
 static int arg_is(const char *arg, const char *name)
 {
     return arg && strcmp(arg, name) == 0;
@@ -66,7 +75,7 @@ static int exec_real_tcc(int argc, char **argv, int add_include_paths)
     char *real_argv[TCC_MAX_ARGS];
     int i, n = 0;
 
-    if (argc + (add_include_paths ? 4 : 0) >= TCC_MAX_ARGS) {
+    if (argc + (add_include_paths ? 6 : 0) >= TCC_MAX_ARGS) {
         fprintf(stderr, "tcc: too many arguments\n");
         return 1;
     }
@@ -74,7 +83,10 @@ static int exec_real_tcc(int argc, char **argv, int add_include_paths)
     real_argv[n++] = (char *)REAL_TCC;
     if (add_include_paths) {
         real_argv[n++] = "-I/opt/tcc/lib/tcc/include";
+        real_argv[n++] = "-I/opt/tcc/include/armos";
         real_argv[n++] = "-I/opt/tcc/include";
+        real_argv[n++] = "-I/opt/ncurses/include";
+        real_argv[n++] = "-I/opt/ncurses/include/ncurses";
     }
     for (i = 1; i < argc; i++)
         real_argv[n++] = argv[i];
@@ -91,7 +103,7 @@ static int exec_armos_link(int argc, char **argv)
     int n = 0;
     int i;
 
-    if (argc + 13 >= TCC_MAX_ARGS) {
+    if (argc + 20 >= TCC_MAX_ARGS) {
         fprintf(stderr, "tcc: too many arguments\n");
         return 1;
     }
@@ -99,16 +111,28 @@ static int exec_armos_link(int argc, char **argv)
     real_argv[n++] = (char *)REAL_TCC;
     real_argv[n++] = "-static";
     real_argv[n++] = "-nostdlib";
-    real_argv[n++] = "-Wl,-Ttext=0x8000";
+    real_argv[n++] = ARMOS_TCC_TEXT_OPTION;
     real_argv[n++] = "-Wl,-e,_start";
     real_argv[n++] = "-I/opt/tcc/lib/tcc/include";
+    real_argv[n++] = "-I/opt/tcc/include/armos";
     real_argv[n++] = "-I/opt/tcc/include";
+    real_argv[n++] = "-I/opt/ncurses/include";
+    real_argv[n++] = "-I/opt/ncurses/include/ncurses";
     real_argv[n++] = "/opt/tcc/lib/crt0_newlib.o";
     real_argv[n++] = "/opt/tcc/lib/syscall_raw.o";
     real_argv[n++] = "/opt/tcc/lib/syscalls_min.o";
+    real_argv[n++] = "/opt/tcc/lib/stdio_lock.o";
+    real_argv[n++] = "/opt/tcc/lib/pthread.o";
+    real_argv[n++] = "/opt/tcc/lib/pthread_sync.o";
 
-    for (i = 1; i < argc; i++)
-        real_argv[n++] = argv[i];
+    for (i = 1; i < argc; i++) {
+        if (arg_is(argv[i], "-lncurses") || arg_is(argv[i], "-lcurses"))
+            real_argv[n++] = "/opt/ncurses/lib/libncurses.a";
+        else if (arg_is(argv[i], "-lm") || arg_is(argv[i], "-lc"))
+            continue;
+        else
+            real_argv[n++] = argv[i];
+    }
 
     real_argv[n++] = "/opt/tcc/lib/libm.a";
     real_argv[n++] = "/opt/tcc/lib/libc.a";

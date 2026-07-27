@@ -2019,6 +2019,53 @@ void armos_thread_reent_destroy(void *opaque)
 
 void __armos_pthread_runtime_init(void *tcb) __attribute__((weak));
 
+typedef void (*armos_runtime_array_fn)(void);
+
+extern armos_runtime_array_fn __preinit_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __preinit_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_end[]
+    __attribute__((weak));
+
+static void armos_runtime_run_fini_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    if (!__fini_array_start || !__fini_array_end)
+        return;
+    for (fn = __fini_array_end; fn != __fini_array_start; )
+        (*--fn)();
+}
+
+void __armos_runtime_run_init_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    /*
+     * Register finalizers first so callbacks installed by constructors or
+     * main run before the static destructors, matching the usual CRT order.
+     */
+    if (__fini_array_start && __fini_array_end &&
+        __fini_array_start != __fini_array_end)
+        (void)atexit(armos_runtime_run_fini_array);
+
+    if (__preinit_array_start && __preinit_array_end) {
+        for (fn = __preinit_array_start; fn != __preinit_array_end; ++fn)
+            (*fn)();
+    }
+    if (__init_array_start && __init_array_end) {
+        for (fn = __init_array_start; fn != __init_array_end; ++fn)
+            (*fn)();
+    }
+}
+
 void __armos_runtime_init(void)
 {
     void *tcb = armos_thread_reent_create();

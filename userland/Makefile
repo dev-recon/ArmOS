@@ -128,11 +128,13 @@ WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
 XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
 THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
+SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
 XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
 THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
+SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
 WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
                      $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
@@ -140,7 +142,8 @@ WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
 TEAPOT_DEMO_TARGET := $(OUT_USR_BIN)/teapot-demo
 
-TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(WAYLAND_API_TEST_TARGET) \
+TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
+           $(WAYLAND_API_TEST_TARGET) \
            $(TEAPOT_DEMO_TARGET)
 
 $(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
@@ -204,6 +207,10 @@ $(BUILD_DIR)/lib/threads/%.o: lib/threads/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/syslog/%.o: lib/syslog/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
@@ -221,6 +228,10 @@ $(XKBCOMMON_LIBRARY): $(XKBCOMMON_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(THREADS_LIBRARY): $(THREADS_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -344,6 +355,7 @@ install: $(TARGETS)
 	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
+	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
 	cp $(TEAPOT_DEMO_TARGET) $(USERFS_USR_BIN)/teapot-demo
