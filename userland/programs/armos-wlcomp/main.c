@@ -146,6 +146,10 @@ static int wl_server_render_event(void *data)
         server->fatal_error = true;
         return -1;
     }
+    if (wl_server_complete_frame_callbacks(server) < 0) {
+        server->fatal_error = true;
+        return -1;
+    }
     return 0;
 }
 

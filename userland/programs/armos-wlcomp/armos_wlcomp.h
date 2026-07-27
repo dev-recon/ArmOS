@@ -37,6 +37,7 @@
 #define WL_SERVER_MAX_BUFFERS       64u
 #define WL_SERVER_MAX_SURFACES      32u
 #define WL_SERVER_MAX_CALLBACKS     16u
+#define WL_SERVER_MAX_DAMAGE_RECTS  16u
 #define WL_SERVER_MAX_RECEIVE       (64u * 1024u)
 #define WL_SERVER_MAX_PENDING_FDS   16u
 #define WL_SERVER_MAX_DATA_SOURCES  8u
@@ -192,6 +193,13 @@ struct wl_server_renderer {
     bool pointer_backing_valid;
 };
 
+struct wl_renderer_rect {
+    int32_t x0;
+    int32_t y0;
+    int32_t x1;
+    int32_t y1;
+};
+
 struct wl_server {
     int listen_fd;
     int input_fd;
@@ -218,10 +226,8 @@ struct wl_server {
     int32_t drag_offset_x;
     int32_t drag_offset_y;
     bool damage_pending;
-    int32_t damage_x0;
-    int32_t damage_y0;
-    int32_t damage_x1;
-    int32_t damage_y1;
+    size_t damage_count;
+    struct wl_renderer_rect damage[WL_SERVER_MAX_DAMAGE_RECTS];
     struct wl_server_client *focus_client;
     struct wl_server_surface *focus_surface;
     struct wl_server_client *drag_client;
@@ -285,6 +291,7 @@ void wl_renderer_damage_surface_at(
 void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
                              uint32_t width, uint32_t height);
 int wl_renderer_compose_damage(struct wl_server *server);
+int wl_server_complete_frame_callbacks(struct wl_server *server);
 int wl_server_schedule_render(struct wl_server *server, bool scene_damage);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,

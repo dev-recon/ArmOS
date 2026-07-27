@@ -27,6 +27,7 @@
 #include <kernel/task.h>
 #include <kernel/spinlock.h>
 #include <kernel/arch_memory.h>
+#include <kernel/userspace.h>
 
 extern file_t* create_file(void);
 
@@ -1993,6 +1994,8 @@ int framebuffer_release(file_t *file)
 
 int framebuffer_blit(file_t *file, const struct armos_fb_blit *blit)
 {
+    uint8_t *destination;
+    uint32_t destination_pitch;
     uint64_t source_end;
     uint32_t row_bytes;
 
@@ -2031,30 +2034,22 @@ int framebuffer_blit(file_t *file, const struct armos_fb_blit *blit)
         spin_unlock(&display_geometry_lock);
         return -EINVAL;
     }
+    destination_pitch = display.pitch;
+    destination = framebuffer_base +
+        blit->y * destination_pitch +
+        blit->x * sizeof(uint32_t);
     spin_unlock(&display_geometry_lock);
 
-    for (uint32_t row = 0u; row < blit->height; row++) {
-        uint64_t source = blit->source +
-            (uint64_t)row * blit->source_pitch;
-        uint8_t *destination;
-
-        spin_lock(&display_geometry_lock);
-        if (!framebuffer_base ||
-            blit->x + blit->width > display.width ||
-            blit->y + blit->height > display.height) {
-            spin_unlock(&display_geometry_lock);
-            return -EAGAIN;
-        }
-        destination = framebuffer_base +
-            (blit->y + row) * display.pitch +
-            blit->x * sizeof(uint32_t);
-        if (copy_from_user(destination, (const void *)(uintptr_t)source,
-                           row_bytes) < 0) {
-            spin_unlock(&display_geometry_lock);
-            return -EFAULT;
-        }
-        spin_unlock(&display_geometry_lock);
-    }
+    /*
+     * Validate the complete userspace span once. Re-entering generic
+     * copy_from_user() for every scanline repeats the VMA walk hundreds of
+     * times and dominated physical Raspberry Pi presentation.
+     */
+    if (copy_from_user_2d(destination, destination_pitch,
+                          (const void *)(uintptr_t)blit->source,
+                          blit->source_pitch, row_bytes,
+                          blit->height) < 0)
+        return -EFAULT;
 
     framebuffer_mark_dirty(blit->x, blit->y,
                            blit->width, blit->height);

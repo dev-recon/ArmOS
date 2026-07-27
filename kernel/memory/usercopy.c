@@ -154,6 +154,50 @@ int copy_from_user(void *to, const void *from, size_t n)
     return copy_user_pages(to, (vaddr_t)(uintptr_t)from, n, false);
 }
 
+int copy_from_user_2d(void *to, size_t to_stride,
+                      const void *from, size_t from_stride,
+                      size_t row_bytes, size_t rows)
+{
+    vm_space_t *vm = current_user_vm();
+    uint8_t *destination = to;
+    vaddr_t source = (vaddr_t)(uintptr_t)from;
+    size_t span;
+
+    if (!vm || !to || !from || !row_bytes || !rows ||
+        to_stride < row_bytes || from_stride < row_bytes)
+        return -1;
+    if (rows - 1u > ((size_t)-1 - row_bytes) / from_stride)
+        return -1;
+    span = (rows - 1u) * from_stride + row_bytes;
+    if (!vm_validate_user_range(vm, source, span, VMA_READ))
+        return -1;
+
+    for (size_t row = 0u; row < rows; row++) {
+        size_t copied = 0u;
+
+        while (copied < row_bytes) {
+            vaddr_t current = source + row * from_stride + copied;
+            vaddr_t page = current & PAGE_MASK;
+            size_t offset = (size_t)(current & PAGE_OFFSET_MASK);
+            size_t chunk = PAGE_SIZE - offset;
+            paddr_t physical;
+            uint8_t *mapped;
+
+            if (chunk > row_bytes - copied)
+                chunk = row_bytes - copied;
+            if (prepare_user_page(vm, page, false) != 0)
+                return -1;
+            physical = get_physical_address(vm->pgdir, page);
+            if (!physical)
+                return -1;
+            mapped = (uint8_t *)(uintptr_t)phys_to_virt(physical + offset);
+            memcpy(destination + row * to_stride + copied, mapped, chunk);
+            copied += chunk;
+        }
+    }
+    return 0;
+}
+
 int strncpy_from_user(char *to, const char *from, size_t max_len)
 {
     size_t index;

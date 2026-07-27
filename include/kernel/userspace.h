@@ -28,6 +28,9 @@ bool is_kernel_pointer(const void* ptr);
 int copy_to_user(void* to, const void* from, size_t n);
 
 int copy_from_user(void* to, const void* from, size_t n);
+int copy_from_user_2d(void *to, size_t to_stride,
+                      const void *from, size_t from_stride,
+                      size_t row_bytes, size_t rows);
 
 int strncpy_from_user(char* to, const char* from, size_t max_len);
 int copy_to_user_safe(void* to, const void* from, size_t n, size_t max_size);
