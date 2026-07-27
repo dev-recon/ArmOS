@@ -973,6 +973,7 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     struct armos_fb_info fbinfo;
     struct armos_fb_orientation fborientation;
     struct armos_fb_mode fbmode;
+    struct armos_fb_blit fbblit;
     int tty_id;
     int fbret;
 
@@ -1043,6 +1044,15 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
         if (file->type != FILE_TYPE_FRAMEBUFFER)
             return -ENOTTY;
         return framebuffer_release(file);
+
+    case ARMOS_FBIOBLIT:
+        if (file->type != FILE_TYPE_FRAMEBUFFER)
+            return -ENOTTY;
+        if (!arg)
+            return -EFAULT;
+        if (copy_from_user(&fbblit, (void *)arg, sizeof(fbblit)) < 0)
+            return -EFAULT;
+        return framebuffer_blit(file, &fbblit);
 
     case TIOCGWINSZ:
         if (!file_is_tty(file))

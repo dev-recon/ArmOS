@@ -545,6 +545,7 @@ static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
                                     int32_t x, int32_t y,
                                     uint32_t width, uint32_t height)
 {
+    struct armos_fb_blit blit;
     int32_t x1;
     int32_t y1;
 
@@ -563,22 +564,26 @@ static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
     if (x >= x1 || y >= y1)
         return 0;
     width = (uint32_t)(x1 - x);
-    /*
-     * Large damage rectangles are cheaper as one contiguous band.  This
-     * trades a bounded amount of extra copying for hundreds of lseek/write
-     * pairs while a window is being dragged.
-     */
-    if ((uint32_t)(y1 - y) >= 64u) {
-        off_t offset = (off_t)(uint32_t)y * renderer->framebuffer.pitch;
-        const uint8_t *source =
-            (const uint8_t *)renderer->canvas + offset;
-        size_t size = (size_t)(uint32_t)(y1 - y) *
-            renderer->framebuffer.pitch;
+    height = (uint32_t)(y1 - y);
+    blit.x = (uint32_t)x;
+    blit.y = (uint32_t)y;
+    blit.width = width;
+    blit.height = height;
+    blit.source_pitch = renderer->framebuffer.pitch;
+    blit.source = (uint64_t)(uintptr_t)(
+        (const uint8_t *)renderer->canvas +
+        (uint32_t)y * renderer->framebuffer.pitch +
+        (uint32_t)x * sizeof(uint32_t));
+    if (ioctl(renderer->framebuffer_fd, ARMOS_FBIOBLIT, &blit) == 0)
+        return 0;
+    if (errno != ENOTTY && errno != ENOSYS)
+        return -1;
 
-        if (lseek(renderer->framebuffer_fd, offset, SEEK_SET) < 0)
-            return -1;
-        return wl_write_full(renderer->framebuffer_fd, source, size);
-    }
+    /*
+     * Compatibility path for kernels predating ARMOS_FBIOBLIT. Keep precise
+     * rows: writing complete scanline bands can multiply the transferred
+     * bytes for narrow damage rectangles on physical framebuffers.
+     */
     for (int32_t row = y; row < y1; row++) {
         off_t offset = (off_t)(uint32_t)row * renderer->framebuffer.pitch +
             (off_t)(uint32_t)x * sizeof(uint32_t);

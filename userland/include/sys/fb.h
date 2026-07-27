@@ -21,6 +21,7 @@
 #define ARMOS_FBIOSET_MODE      0x4603u
 #define ARMOS_FBIOACQUIRE       0x4604u
 #define ARMOS_FBIORELEASE       0x4605u
+#define ARMOS_FBIOBLIT          0x4606u
 #define ARMOS_FB_FORMAT_ARGB8888 1u
 
 #define ARMOS_FB_ORIENTATION_PORTRAIT  0u
@@ -42,6 +43,15 @@ struct armos_fb_orientation {
 struct armos_fb_mode {
     uint32_t width;
     uint32_t height;
+};
+
+struct armos_fb_blit {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t source_pitch;
+    uint64_t source;
 };
 
 #endif

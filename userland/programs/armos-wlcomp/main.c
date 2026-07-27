@@ -32,6 +32,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#define WL_SERVER_FRAME_INTERVAL_MS 16
+
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
 static void wl_server_usage(const char *program)
@@ -156,7 +158,8 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
     if (server->render_pending)
         return 0;
     server->render_pending = true;
-    if (wl_event_source_timer_update(server->render_timer, 0) < 0) {
+    if (wl_event_source_timer_update(server->render_timer,
+                                     WL_SERVER_FRAME_INTERVAL_MS) < 0) {
         server->render_pending = false;
         return -1;
     }
