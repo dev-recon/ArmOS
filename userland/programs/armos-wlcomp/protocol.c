@@ -829,11 +829,6 @@ static int wl_dispatch_surface(struct wl_server *server,
     if (!surface)
         return -1;
     if (opcode == 0u && wl_request_complete(request)) {
-        if (server->move_surface == surface) {
-            server->move_client = NULL;
-            server->move_surface = NULL;
-            server->move_damage_pending = false;
-        }
         for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
             struct wl_server_surface *child = &client->surfaces[index];
 

@@ -126,14 +126,17 @@ static int wl_server_render_event(void *data)
     int result;
 
     server->render_pending = false;
-    if (server->move_damage_pending) {
-        result = wl_renderer_compose_move(server);
-        if (result == 0)
-            server->scene_damage_pending = false;
-    } else if (server->scene_damage_pending) {
+    /*
+     * A scene update may cover several surfaces (focus, stacking, removal).
+     * It must win over a queued local update; the full composition consumes
+     * the latter as well.
+     */
+    if (server->scene_damage_pending) {
         result = wl_renderer_compose(server);
         if (result == 0)
             server->scene_damage_pending = false;
+    } else if (server->damage_pending) {
+        result = wl_renderer_compose_damage(server);
     } else {
         result = wl_renderer_compose_pointer(server);
     }

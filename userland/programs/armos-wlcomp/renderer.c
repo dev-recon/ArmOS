@@ -32,6 +32,8 @@
 #define WL_BACKGROUND      0xffd8dde5u
 #define WL_WINDOW_TITLE_HEIGHT 28u
 #define WL_WINDOW_RADIUS       10u
+#define WL_WINDOW_TITLE_ACTIVE   0xff5ac8fau
+#define WL_WINDOW_TITLE_INACTIVE 0xffe8e8eau
 
 static const char *const wl_pointer_shape[] = {
     "X...........",
@@ -297,12 +299,14 @@ static void wl_renderer_title(struct wl_server_renderer *renderer,
 }
 
 static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
-                                     const struct wl_server_surface *surface)
+                                     const struct wl_server_surface *surface,
+                                     bool active)
 {
     uint32_t frame_width = surface->width;
     uint32_t frame_height = surface->height + WL_WINDOW_TITLE_HEIGHT;
     int32_t content_y = surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT;
     int32_t content_x = surface->x;
+    bool content_only_damage = false;
 
     if (surface->is_subsurface) {
         const struct wl_server_surface *ancestor = surface;
@@ -327,50 +331,86 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
         goto draw_content;
     }
 
-    /* Soft multi-pass shadow, generated rather than sourced from an asset. */
-    for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
-        uint32_t alpha = 8u + (8u - spread) * 3u;
+    if (renderer->clip_enabled && surface->opaque &&
+        renderer->clip_x0 >= content_x &&
+        renderer->clip_y0 >= content_y &&
+        renderer->clip_x1 <= content_x + (int32_t)surface->width &&
+        renderer->clip_y1 <= content_y + (int32_t)surface->height)
+        content_only_damage = true;
 
+    if (!content_only_damage) {
+        /* Soft multi-pass shadow, generated rather than sourced from an asset. */
+        for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
+            uint32_t alpha = 8u + (8u - spread) * 3u;
+
+            wl_renderer_rounded_rect(
+                renderer, surface->x - (int32_t)spread,
+                surface->y - (int32_t)spread + 4,
+                frame_width + spread * 2u, frame_height + spread * 2u,
+                WL_WINDOW_RADIUS + spread,
+                (alpha << 24));
+        }
+        wl_renderer_rounded_rect(renderer, surface->x, surface->y,
+                                 frame_width, frame_height, WL_WINDOW_RADIUS,
+                                 0xfff4f4f5u);
         wl_renderer_rounded_rect(
-            renderer, surface->x - (int32_t)spread,
-            surface->y - (int32_t)spread + 4,
-            frame_width + spread * 2u, frame_height + spread * 2u,
-            WL_WINDOW_RADIUS + spread,
-            (alpha << 24));
+            renderer, surface->x + 1, surface->y + 1,
+            frame_width > 2u ? frame_width - 2u : frame_width,
+            WL_WINDOW_TITLE_HEIGHT,
+            WL_WINDOW_RADIUS > 1u ? WL_WINDOW_RADIUS - 1u : 0u,
+            active ? WL_WINDOW_TITLE_ACTIVE : WL_WINDOW_TITLE_INACTIVE);
+        wl_renderer_circle(renderer, surface->x + 14, surface->y + 14,
+                           5u, 0xffff5f57u);
+        wl_renderer_circle(renderer, surface->x + 30, surface->y + 14,
+                           5u, 0xffffbd2eu);
+        wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
+                           5u, 0xff28c840u);
+        wl_renderer_title(renderer, surface);
     }
-    wl_renderer_rounded_rect(renderer, surface->x, surface->y,
-                             frame_width, frame_height, WL_WINDOW_RADIUS,
-                             0xfff4f4f5u);
-    wl_renderer_rounded_rect(renderer, surface->x + 1, surface->y + 1,
-                             frame_width > 2u ? frame_width - 2u : frame_width,
-                             WL_WINDOW_TITLE_HEIGHT,
-                             WL_WINDOW_RADIUS > 1u ?
-                                 WL_WINDOW_RADIUS - 1u : 0u,
-                             0xffe8e8eau);
-    wl_renderer_circle(renderer, surface->x + 14, surface->y + 14,
-                       5u, 0xffff5f57u);
-    wl_renderer_circle(renderer, surface->x + 30, surface->y + 14,
-                       5u, 0xffffbd2eu);
-    wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
-                       5u, 0xff28c840u);
-    wl_renderer_title(renderer, surface);
 
 draw_content:
-    for (uint32_t source_y = 0; source_y < surface->height; source_y++) {
-        int32_t target_y = content_y + (int32_t)source_y;
+    {
+        int32_t source_x0 = content_x < 0 ? -content_x : 0;
+        int32_t source_y0 = content_y < 0 ? -content_y : 0;
+        int32_t source_x1 = (int32_t)surface->width;
+        int32_t source_y1 = (int32_t)surface->height;
+        uint32_t canvas_width = renderer->framebuffer.pitch /
+            sizeof(uint32_t);
 
-        if (target_y < 0 ||
-            (uint32_t)target_y >= renderer->framebuffer.height)
-            continue;
-        for (uint32_t source_x = 0; source_x < surface->width; source_x++) {
-            int32_t target_x = content_x + (int32_t)source_x;
-            uint32_t source;
+        if (content_x + source_x1 > (int32_t)renderer->framebuffer.width)
+            source_x1 = (int32_t)renderer->framebuffer.width - content_x;
+        if (content_y + source_y1 > (int32_t)renderer->framebuffer.height)
+            source_y1 = (int32_t)renderer->framebuffer.height - content_y;
+        if (renderer->clip_enabled) {
+            if (content_x + source_x0 < renderer->clip_x0)
+                source_x0 = renderer->clip_x0 - content_x;
+            if (content_y + source_y0 < renderer->clip_y0)
+                source_y0 = renderer->clip_y0 - content_y;
+            if (content_x + source_x1 > renderer->clip_x1)
+                source_x1 = renderer->clip_x1 - content_x;
+            if (content_y + source_y1 > renderer->clip_y1)
+                source_y1 = renderer->clip_y1 - content_y;
+        }
+        if (source_x0 >= source_x1 || source_y0 >= source_y1)
+            return;
+        for (int32_t source_y = source_y0;
+             source_y < source_y1; source_y++) {
+            uint32_t *destination = renderer->canvas +
+                (uint32_t)(content_y + source_y) * canvas_width +
+                (uint32_t)(content_x + source_x0);
+            const uint32_t *source = surface->pixels +
+                (size_t)(uint32_t)source_y * surface->width +
+                (uint32_t)source_x0;
+            size_t count = (size_t)(source_x1 - source_x0);
 
-            if (target_x < 0 ||
-                (uint32_t)target_x >= renderer->framebuffer.width)
-                continue;
-            source = surface->pixels[source_y * surface->width + source_x];
-            wl_renderer_put_pixel(renderer, target_x, target_y, source);
+            if (surface->opaque) {
+                memcpy(destination, source, count * sizeof(*source));
+            } else {
+                for (size_t index = 0u; index < count; index++) {
+                    destination[index] = wl_blend_pixel(
+                        destination[index], source[index]);
+                }
+            }
         }
     }
 }
@@ -471,8 +511,11 @@ static void wl_renderer_draw_surfaces(struct wl_server *server)
             count++;
         }
     }
-    for (size_t index = 0u; index < count; index++)
-        wl_renderer_draw_surface(&server->renderer, ordered[index]);
+    for (size_t index = 0u; index < count; index++) {
+        wl_renderer_draw_surface(
+            &server->renderer, ordered[index],
+            ordered[index] == server->focus_surface);
+    }
 }
 
 static int wl_renderer_build_canvas(struct wl_server *server)
@@ -552,6 +595,7 @@ static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
 int wl_renderer_compose(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
+    int result;
 
     if (wl_renderer_build_canvas(server) < 0)
         return -1;
@@ -559,12 +603,23 @@ int wl_renderer_compose(struct wl_server *server)
     server->pointer_presented = true;
     server->presented_pointer_x = server->pointer_x;
     server->presented_pointer_y = server->pointer_y;
-    if (renderer->headless)
-        return 0;
-    if (lseek(renderer->framebuffer_fd, 0, SEEK_SET) < 0)
-        return -1;
-    return wl_write_full(renderer->framebuffer_fd, renderer->canvas,
-                         renderer->canvas_size);
+    if (renderer->headless) {
+        result = 0;
+    } else {
+        if (lseek(renderer->framebuffer_fd, 0, SEEK_SET) < 0)
+            return -1;
+        result = wl_write_full(renderer->framebuffer_fd, renderer->canvas,
+                               renderer->canvas_size);
+    }
+    if (result == 0) {
+        /*
+         * A complete composition subsumes every queued partial update.
+         * Keeping an older damage rectangle would repaint stale geometry on
+         * the next timer tick.
+         */
+        server->damage_pending = false;
+    }
+    return result;
 }
 
 int wl_renderer_compose_pointer(struct wl_server *server)
@@ -619,6 +674,46 @@ static void wl_renderer_rect_add(struct wl_renderer_rect *damage,
         damage->y1 = y1;
 }
 
+void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
+                             uint32_t width, uint32_t height)
+{
+    struct wl_renderer_rect damage;
+
+    if (!server || width == 0u || height == 0u)
+        return;
+    damage.x0 = x;
+    damage.y0 = y;
+    damage.x1 = x + (int32_t)width;
+    damage.y1 = y + (int32_t)height;
+    if (!server->damage_pending) {
+        server->damage_x0 = damage.x0;
+        server->damage_y0 = damage.y0;
+        server->damage_x1 = damage.x1;
+        server->damage_y1 = damage.y1;
+        server->damage_pending = true;
+        return;
+    }
+    if (damage.x0 < server->damage_x0)
+        server->damage_x0 = damage.x0;
+    if (damage.y0 < server->damage_y0)
+        server->damage_y0 = damage.y0;
+    if (damage.x1 > server->damage_x1)
+        server->damage_x1 = damage.x1;
+    if (damage.y1 > server->damage_y1)
+        server->damage_y1 = damage.y1;
+}
+
+void wl_renderer_damage_surface_at(
+    struct wl_server *server, const struct wl_server_surface *surface,
+    int32_t x, int32_t y)
+{
+    if (!surface)
+        return;
+    wl_renderer_damage_rect(
+        server, x - 8, y - 4, surface->width + 16u,
+        surface->height + WL_WINDOW_TITLE_HEIGHT + 16u);
+}
+
 static int wl_renderer_clip_rect(struct wl_server_renderer *renderer,
                                  struct wl_renderer_rect *damage)
 {
@@ -647,11 +742,22 @@ static void wl_renderer_clear_rect(struct wl_server_renderer *renderer,
     }
 }
 
-int wl_renderer_compose_move(struct wl_server *server)
+static bool wl_renderer_rect_intersects(
+    const struct wl_renderer_rect *damage, int32_t x, int32_t y,
+    uint32_t width, uint32_t height)
+{
+    int32_t x1 = x + (int32_t)width;
+    int32_t y1 = y + (int32_t)height;
+
+    return x < damage->x1 && x1 > damage->x0 &&
+           y < damage->y1 && y1 > damage->y0;
+}
+
+int wl_renderer_compose_damage(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
-    struct wl_server_surface *surface;
     struct wl_renderer_rect damage;
+    bool pointer_damage;
     uint32_t damage_width;
     uint32_t damage_height;
     int result;
@@ -659,36 +765,34 @@ int wl_renderer_compose_move(struct wl_server *server)
     if (!server || !server->renderer.canvas)
         return -1;
     renderer = &server->renderer;
-    surface = server->move_surface;
-    if (!server->move_damage_pending || !surface || !surface->used ||
-        !surface->mapped || !surface->pixels) {
-        server->move_damage_pending = false;
-        server->move_client = NULL;
-        server->move_surface = NULL;
+    if (!server->damage_pending)
         return wl_renderer_compose(server);
-    }
 
-    damage.x0 = server->move_old_x - 8;
-    damage.y0 = server->move_old_y - 4;
-    damage.x1 = server->move_old_x + (int32_t)surface->width + 8;
-    damage.y1 = server->move_old_y + (int32_t)surface->height +
-        (int32_t)WL_WINDOW_TITLE_HEIGHT + 12;
-    wl_renderer_rect_add(&damage, surface->x - 8, surface->y - 4,
-                         surface->width + 16u,
-                         surface->height + WL_WINDOW_TITLE_HEIGHT + 16u);
-    wl_renderer_rect_add(&damage, server->presented_pointer_x,
-                         server->presented_pointer_y,
-                         WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
-    wl_renderer_rect_add(&damage, server->pointer_x, server->pointer_y,
-                         WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+    damage.x0 = server->damage_x0;
+    damage.y0 = server->damage_y0;
+    damage.x1 = server->damage_x1;
+    damage.y1 = server->damage_y1;
+    pointer_damage = !server->pointer_presented ||
+        server->presented_pointer_x != server->pointer_x ||
+        server->presented_pointer_y != server->pointer_y ||
+        wl_renderer_rect_intersects(
+            &damage, server->presented_pointer_x,
+            server->presented_pointer_y,
+            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+    if (pointer_damage) {
+        wl_renderer_rect_add(&damage, server->presented_pointer_x,
+                             server->presented_pointer_y,
+                             WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+        wl_renderer_rect_add(&damage, server->pointer_x, server->pointer_y,
+                             WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+    }
     if (!wl_renderer_clip_rect(renderer, &damage)) {
-        server->move_damage_pending = false;
-        server->move_client = NULL;
-        server->move_surface = NULL;
+        server->damage_pending = false;
         return 0;
     }
 
-    wl_renderer_restore_pointer(server);
+    if (pointer_damage)
+        wl_renderer_restore_pointer(server);
     wl_renderer_clear_rect(renderer, &damage);
     renderer->clip_enabled = true;
     renderer->clip_x0 = damage.x0;
@@ -697,7 +801,8 @@ int wl_renderer_compose_move(struct wl_server *server)
     renderer->clip_y1 = damage.y1;
     wl_renderer_draw_surfaces(server);
     renderer->clip_enabled = false;
-    wl_renderer_draw_pointer(server);
+    if (pointer_damage)
+        wl_renderer_draw_pointer(server);
 
     damage_width = (uint32_t)(damage.x1 - damage.x0);
     damage_height = (uint32_t)(damage.y1 - damage.y0);
@@ -705,12 +810,12 @@ int wl_renderer_compose_move(struct wl_server *server)
                                       damage_width, damage_height);
     if (result < 0)
         return result;
-    server->pointer_presented = true;
-    server->presented_pointer_x = server->pointer_x;
-    server->presented_pointer_y = server->pointer_y;
-    server->move_damage_pending = false;
-    server->move_client = NULL;
-    server->move_surface = NULL;
+    if (pointer_damage) {
+        server->pointer_presented = true;
+        server->presented_pointer_x = server->pointer_x;
+        server->presented_pointer_y = server->pointer_y;
+    }
+    server->damage_pending = false;
     return 0;
 }
 
@@ -755,6 +860,7 @@ int wl_surface_commit(struct wl_server *server,
             surface->pixels = NULL;
             surface->pixels_size = 0;
             surface->mapped = false;
+            surface->opaque = false;
             surface->width = 0;
             surface->height = 0;
         } else {
@@ -765,26 +871,33 @@ int wl_surface_commit(struct wl_server *server,
             if (!wl_surface_buffer_valid(buffer) ||
                 pixel_bytes > (uint64_t)SIZE_MAX)
                 return -1;
-            copy = malloc((size_t)pixel_bytes);
-            if (!copy)
-                return -1;
-            for (uint32_t y = 0; y < buffer->height; y++) {
-                const uint8_t *source = buffer->pool->mapping +
-                    buffer->offset + (size_t)y * buffer->stride;
-                uint32_t *destination = copy + (size_t)y * buffer->width;
+            if (surface->pixels_size != (size_t)pixel_bytes) {
+                copy = realloc(surface->pixels, (size_t)pixel_bytes);
+                if (!copy)
+                    return -1;
+                surface->pixels = copy;
+                surface->pixels_size = (size_t)pixel_bytes;
+            } else {
+                copy = surface->pixels;
+            }
+            if (buffer->stride == buffer->width * sizeof(uint32_t)) {
+                memcpy(copy, buffer->pool->mapping + buffer->offset,
+                       (size_t)pixel_bytes);
+            } else {
+                for (uint32_t y = 0; y < buffer->height; y++) {
+                    const uint8_t *source = buffer->pool->mapping +
+                        buffer->offset + (size_t)y * buffer->stride;
+                    uint32_t *destination =
+                        copy + (size_t)y * buffer->width;
 
-                memcpy(destination, source, (size_t)buffer->width * 4u);
-                if (buffer->format == WL_SHM_FORMAT_XRGB8888) {
-                    for (uint32_t x = 0; x < buffer->width; x++)
-                        destination[x] |= 0xff000000u;
+                    memcpy(destination, source,
+                           (size_t)buffer->width * sizeof(uint32_t));
                 }
             }
-            free(surface->pixels);
-            surface->pixels = copy;
-            surface->pixels_size = (size_t)pixel_bytes;
             surface->width = buffer->width;
             surface->height = buffer->height;
             surface->mapped = true;
+            surface->opaque = buffer->format == WL_SHM_FORMAT_XRGB8888;
             if (buffer->object_alive) {
                 (void)wl_client_send_words(client, buffer->object_id, 0,
                                            NULL, 0);
@@ -797,16 +910,11 @@ int wl_surface_commit(struct wl_server *server,
             (previous_width == surface->width &&
              previous_height == surface->height);
 
-        if (surface->mapped && same_extent &&
-            (!server->move_damage_pending ||
-             server->move_surface == surface)) {
-            if (!server->move_damage_pending) {
-                server->move_old_x = surface->x;
-                server->move_old_y = surface->y;
-            }
-            server->move_client = client;
-            server->move_surface = surface;
-            server->move_damage_pending = true;
+        if (surface->mapped && same_extent) {
+            wl_renderer_damage_rect(
+                server, surface->x,
+                surface->y + (int32_t)WL_WINDOW_TITLE_HEIGHT,
+                surface->width, surface->height);
             if (wl_server_schedule_render(server, false) < 0)
                 return -1;
         } else if (wl_server_schedule_render(server, true) < 0) {

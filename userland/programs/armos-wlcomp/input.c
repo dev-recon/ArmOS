@@ -179,6 +179,11 @@ static void wl_focus_surface(struct wl_server *server,
 
     if (server->focus_client == client && server->focus_surface == surface)
         return;
+    /*
+     * Both the previous and new title bars change decoration.  A pointer-only
+     * or surface-local update cannot represent that focus transition.
+     */
+    server->scene_damage_pending = true;
     if (server->focus_client && server->focus_client->used &&
         server->focus_surface && server->focus_surface->used) {
         old_pointer = wl_find_input_object(server->focus_client,
@@ -369,17 +374,16 @@ static void wl_handle_input_event(struct wl_server *server,
              server->pointer_y != previous_pointer_y) &&
             server->drag_surface && server->drag_client &&
             server->drag_surface->used && server->drag_client->used) {
-            if (!server->move_damage_pending) {
-                server->move_old_x = server->drag_surface->x;
-                server->move_old_y = server->drag_surface->y;
-                server->move_client = server->drag_client;
-                server->move_surface = server->drag_surface;
-                server->move_damage_pending = true;
-            }
+            wl_renderer_damage_surface_at(
+                server, server->drag_surface,
+                server->drag_surface->x, server->drag_surface->y);
             server->drag_surface->x =
                 server->pointer_x - server->drag_offset_x;
             server->drag_surface->y =
                 server->pointer_y - server->drag_offset_y;
+            wl_renderer_damage_surface_at(
+                server, server->drag_surface,
+                server->drag_surface->x, server->drag_surface->y);
         }
         wl_send_pointer_motion(server, event->timestamp_ms);
     } else if (event->type == ARMOS_INPUT_EVENT_KEY) {

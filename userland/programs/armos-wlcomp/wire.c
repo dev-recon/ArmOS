@@ -439,11 +439,6 @@ void wl_server_disconnect_client(struct wl_server *server,
             server->drag_client = NULL;
             server->drag_surface = NULL;
         }
-        if (server->move_client == client) {
-            server->move_client = NULL;
-            server->move_surface = NULL;
-            server->move_damage_pending = false;
-        }
         for (size_t client_index = 0u;
              client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
             struct wl_server_client *other = &server->clients[client_index];
