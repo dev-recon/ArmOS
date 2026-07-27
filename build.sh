@@ -42,6 +42,7 @@ enable_complete_userland_build()
     BUILD_FONTCONFIG=1
     BUILD_HARFBUZZ=1
     BUILD_FCFT=1
+    BUILD_FOOT=1
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -79,6 +80,7 @@ BUILD_EXPAT="${BUILD_EXPAT:-0}"
 BUILD_FONTCONFIG="${BUILD_FONTCONFIG:-0}"
 BUILD_HARFBUZZ="${BUILD_HARFBUZZ:-0}"
 BUILD_FCFT="${BUILD_FCFT:-0}"
+BUILD_FOOT="${BUILD_FOOT:-0}"
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -308,6 +310,13 @@ if [ "$BUILD_FCFT" = "1" ]; then
         rsync -a "$TARGET_BUNDLES/$dependency/bundle/" "$TARGET_USERFS/"
     done
     rsync -a "$TARGET_BUNDLES/fcft/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FOOT" = "1" ]; then
+    echo "=== Building Foot terminal bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/foot" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" ./tools/build_foot.sh
+    rsync -a "$TARGET_BUNDLES/foot/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

@@ -856,6 +856,13 @@ int xkb_state_key_get_utf8(struct xkb_state *state, xkb_keycode_t key,
     return encode_utf8(xkb_state_key_get_utf32(state, key), buffer, size);
 }
 
+xkb_mod_mask_t xkb_state_key_get_consumed_mods(
+    struct xkb_state *state, xkb_keycode_t key)
+{
+    return xkb_state_key_get_consumed_mods2(
+        state, key, XKB_CONSUMED_MODE_XKB);
+}
+
 xkb_mod_mask_t xkb_state_key_get_consumed_mods2(
     struct xkb_state *state, xkb_keycode_t key,
     enum xkb_consumed_mode mode)

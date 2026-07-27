@@ -919,6 +919,12 @@ void pthread_yield(void)
     (void)sched_yield();
 }
 
+int pthread_setname_np(pthread_t thread, const char *name)
+{
+    (void)thread;
+    return name ? 0 : EINVAL;
+}
+
 int pthread_atfork(void (*prepare)(void), void (*parent)(void),
                    void (*child)(void))
 {

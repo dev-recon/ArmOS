@@ -155,6 +155,7 @@ BUILD_EXPAT=no
 BUILD_FONTCONFIG=no
 BUILD_HARFBUZZ=no
 BUILD_FCFT=no
+BUILD_FOOT=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -172,7 +173,9 @@ amalgamation with the host C++ compiler, without exceptions, RTTI, GLib, ICU,
 Graphite or subsetting. Only the C headers and static `libharfbuzz.a` are
 installed in ArmOS; TCC can consume the library but does not build it.
 `BUILD_FCFT=yes` installs fcft 2.5.1 with HarfBuzz and utf8proc shaping for
-Foot. `BUILD_ALL_USERLAND=yes` enables the
+Foot. `BUILD_FOOT=yes` cross-builds the unmodified Foot 1.9.2 sources and
+generates their Wayland protocol bindings below the target-specific build
+tree. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
 

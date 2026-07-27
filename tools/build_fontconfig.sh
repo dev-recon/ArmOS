@@ -86,7 +86,7 @@ fi
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/fontconfig" \
     "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" \
-    "$BUNDLE_ROOT/etc/fonts/conf.d" "$BUNDLE_ROOT/var/cache/fontconfig" \
+    "$BUNDLE_ROOT/etc/fonts/conf.d" \
     "$BUNDLE_TCC_INCLUDE/fontconfig"
 
 CFLAGS="$ARM_FLAGS -O2 -ffreestanding -fno-builtin \
@@ -145,7 +145,7 @@ TEST_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static \
             --disable-docbook \
             --disable-cache-build \
             --with-default-fonts=/usr/share/fonts/armos \
-            --with-cache-dir=/var/cache/fontconfig \
+            --with-cache-dir=/tmp/fontconfig-cache \
             --with-baseconfigdir=/etc/fonts \
             --with-configdir=/etc/fonts/conf.d
     make -C fc-genericfamily fcgenericfamily.h
@@ -184,7 +184,7 @@ cat > "$BUNDLE_ROOT/etc/fonts/fonts.conf" <<'EOF'
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
   <dir>/usr/share/fonts/armos</dir>
-  <cachedir>/var/cache/fontconfig</cachedir>
+  <cachedir>/tmp/fontconfig-cache</cachedir>
   <alias>
     <family>monospace</family>
     <prefer><family>MesloLGS NF</family></prefer>

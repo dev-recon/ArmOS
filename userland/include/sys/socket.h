@@ -29,6 +29,8 @@
 #define PF_INET      AF_INET
 #define SOCK_STREAM  1
 #define SOCK_DGRAM   2
+#define SOCK_NONBLOCK 0x4000
+#define SOCK_CLOEXEC  0x40000
 
 #define SHUT_RD      0
 #define SHUT_WR      1
@@ -106,6 +108,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int listen(int sockfd, int backlog);
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
 ssize_t send(int sockfd, const void *buffer, size_t length, int flags);
 ssize_t recv(int sockfd, void *buffer, size_t length, int flags);
 ssize_t sendto(int sockfd, const void *buffer, size_t length, int flags,

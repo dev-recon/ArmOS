@@ -66,6 +66,8 @@
 #define ARMOS_TIOCGPTN   0x80045430u
 #define ARMOS_TIOCSPTLCK 0x40045431u
 
+#define ARMOS_GETDELIM_INITIAL_CAPACITY 128u
+
 extern long sys_read(int fd, void *buf, unsigned long count);
 extern long sys_write(int fd, const void *buf, unsigned long count);
 extern long sys_pread(int fd, void *buf, unsigned long count,
@@ -88,6 +90,59 @@ extern long sys_rename(const char *oldpath, const char *newpath);
 extern long sys_renameat(int olddirfd, const char *oldpath,
                          int newdirfd, const char *newpath);
 extern long sys_mkdir(const char *pathname, int mode);
+
+ssize_t getdelim(char **line, size_t *capacity, int delimiter, FILE *stream)
+{
+    size_t length = 0u;
+    int character;
+
+    if (!line || !capacity || !stream) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!*line || !*capacity) {
+        char *new_line = malloc(ARMOS_GETDELIM_INITIAL_CAPACITY);
+
+        if (!new_line) {
+            errno = ENOMEM;
+            return -1;
+        }
+        *line = new_line;
+        *capacity = ARMOS_GETDELIM_INITIAL_CAPACITY;
+    }
+
+    while ((character = fgetc(stream)) != EOF) {
+        if (length + 1u >= *capacity) {
+            size_t new_capacity;
+            char *new_line;
+
+            if (*capacity > SIZE_MAX / 2u) {
+                errno = EOVERFLOW;
+                return -1;
+            }
+            new_capacity = *capacity * 2u;
+            new_line = realloc(*line, new_capacity);
+            if (!new_line) {
+                errno = ENOMEM;
+                return -1;
+            }
+            *line = new_line;
+            *capacity = new_capacity;
+        }
+        (*line)[length++] = (char)character;
+        if ((unsigned char)character == (unsigned char)delimiter)
+            break;
+    }
+    if (!length && character == EOF)
+        return -1;
+    (*line)[length] = '\0';
+    return (ssize_t)length;
+}
+
+ssize_t getline(char **line, size_t *capacity, FILE *stream)
+{
+    return getdelim(line, capacity, '\n', stream);
+}
 extern long sys_mkdirat(int dirfd, const char *pathname, int mode);
 extern long sys_rmdir(const char *pathname);
 extern long sys_symlink(const char *target, const char *linkpath);
@@ -1029,6 +1084,27 @@ int uname(struct utsname *name)
     return ret_errno(sys_uname(name));
 }
 
+int gethostname(char *name, size_t length)
+{
+    struct utsname identity;
+    size_t required;
+
+    if (!name || !length) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (uname(&identity) < 0)
+        return -1;
+    required = strlen(identity.nodename) + 1u;
+    if (required > length) {
+        memcpy(name, identity.nodename, length);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(name, identity.nodename, required);
+    return 0;
+}
+
 int lstat(const char *pathname, struct stat *st)
 {
     return _lstat(pathname, st);
@@ -1523,14 +1599,65 @@ int dup2(int oldfd, int newfd)
     return ret_errno(sys_dup2(oldfd, newfd));
 }
 
+static int socket_apply_flags(int fd, int type)
+{
+    if ((type & SOCK_CLOEXEC) != 0 &&
+        fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
+        return -1;
+    if ((type & SOCK_NONBLOCK) != 0 &&
+        fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
+        return -1;
+    return 0;
+}
+
 int socket(int domain, int type, int protocol)
 {
-    return ret_errno(sys_socket(domain, type, protocol));
+    int flags = type & (SOCK_CLOEXEC | SOCK_NONBLOCK);
+    int base_type = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    int fd;
+
+    if (base_type != SOCK_STREAM && base_type != SOCK_DGRAM) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = ret_errno(sys_socket(domain, base_type, protocol));
+    if (fd < 0)
+        return -1;
+    if (socket_apply_flags(fd, flags) < 0) {
+        int saved_errno = errno;
+
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    return fd;
 }
 
 int socketpair(int domain, int type, int protocol, int sockets[2])
 {
-    return ret_errno(sys_socketpair(domain, type, protocol, sockets));
+    int flags = type & (SOCK_CLOEXEC | SOCK_NONBLOCK);
+    int base_type = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    int result;
+
+    if (base_type != SOCK_STREAM && base_type != SOCK_DGRAM) {
+        errno = EINVAL;
+        return -1;
+    }
+    result = ret_errno(sys_socketpair(domain, base_type, protocol, sockets));
+    if (result < 0)
+        return -1;
+    if (socket_apply_flags(sockets[0], flags) < 0 ||
+        socket_apply_flags(sockets[1], flags) < 0) {
+        int saved_errno = errno;
+
+        close(sockets[0]);
+        close(sockets[1]);
+        sockets[0] = -1;
+        sockets[1] = -1;
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
 }
 
 ssize_t sendmsg(int sockfd, const struct msghdr *message, int flags)
@@ -1568,6 +1695,27 @@ int listen(int sockfd, int backlog)
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 {
     return ret_errno(sys_accept(sockfd, addr, (unsigned long *)addrlen));
+}
+
+int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
+{
+    int fd;
+
+    if ((flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = accept(sockfd, addr, addrlen);
+    if (fd < 0)
+        return -1;
+    if (socket_apply_flags(fd, flags) < 0) {
+        int saved_errno = errno;
+
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    return fd;
 }
 
 int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
