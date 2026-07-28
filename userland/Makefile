@@ -146,6 +146,8 @@ HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64
 ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
 ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
 $(ARMOS_WLCOMP_OBJECTS): programs/armos-wlcomp/armos_wlcomp.h
+# Software composition is a per-pixel hot path on Raspberry Pi.
+$(ARMOS_WLCOMP_OBJECTS): CFLAGS += -O3
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
@@ -170,6 +172,8 @@ TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
            $(TEAPOT_DEMO_TARGET)
 
 $(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
+# The demo is deliberately CPU-rendered and benefits substantially over -Os.
+$(TEAPOT_DEMO_OBJECT): CFLAGS += -O3
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)

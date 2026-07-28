@@ -21,15 +21,36 @@
 #include <kernel/stdarg.h>
 #include <kernel/kprintf.h>
 
+/*
+ * GCC's may_alias keeps the word-at-a-time fast paths valid when the caller's
+ * storage has a different declared type.  Raspberry Pi framebuffer updates
+ * move several hundred KiB per frame, so byte-at-a-time copies are far too
+ * expensive even in a diagnostic -O0 kernel build.
+ */
+typedef uintptr_t string_word_t __attribute__((__may_alias__));
+
 void* memset(void* dest, int val, size_t len)
 {
     unsigned char* d = (unsigned char*)dest;
-    size_t i; /* Declaration GNU89 */
-    
-    for (i = 0; i < len; i++) {
-        d[i] = (unsigned char)val;
+    unsigned char byte = (unsigned char)val;
+    string_word_t word = byte;
+
+    while (len != 0u &&
+           ((uintptr_t)d & (sizeof(string_word_t) - 1u)) != 0u) {
+        *d++ = byte;
+        len--;
     }
-    
+    for (size_t shift = 8u;
+         shift < sizeof(string_word_t) * 8u; shift <<= 1u)
+        word |= word << shift;
+    while (len >= sizeof(string_word_t)) {
+        *(string_word_t *)(void *)d = word;
+        d += sizeof(string_word_t);
+        len -= sizeof(string_word_t);
+    }
+    while (len-- != 0u)
+        *d++ = byte;
+
     return dest;
 }
 
@@ -37,12 +58,25 @@ void* memcpy(void* dest, const void* src, size_t len)
 {
     const unsigned char* s = (const unsigned char*)src;
     unsigned char* d = (unsigned char*)dest;
-    size_t i; /* Declaration GNU89 */
 
-    for (i = 0; i < len; i++) {
-        d[i] = s[i];
+    if ((((uintptr_t)d ^ (uintptr_t)s) &
+         (sizeof(string_word_t) - 1u)) == 0u) {
+        while (len != 0u &&
+               ((uintptr_t)d & (sizeof(string_word_t) - 1u)) != 0u) {
+            *d++ = *s++;
+            len--;
+        }
+        while (len >= sizeof(string_word_t)) {
+            *(string_word_t *)(void *)d =
+                *(const string_word_t *)(const void *)s;
+            d += sizeof(string_word_t);
+            s += sizeof(string_word_t);
+            len -= sizeof(string_word_t);
+        }
     }
-    
+    while (len-- != 0u)
+        *d++ = *s++;
+
     return dest;
 }
 
@@ -55,13 +89,41 @@ void* memmove(void* dest, const void* src, size_t len)
         return dest;
 
     if ((uintptr_t)d < (uintptr_t)s) {
-        for (size_t i = 0; i < len; i++)
-            d[i] = s[i];
-    } else {
-        while (len > 0) {
-            len--;
-            d[len] = s[len];
+        if ((((uintptr_t)d ^ (uintptr_t)s) &
+             (sizeof(string_word_t) - 1u)) == 0u) {
+            while (len != 0u &&
+                   ((uintptr_t)d & (sizeof(string_word_t) - 1u)) != 0u) {
+                *d++ = *s++;
+                len--;
+            }
+            while (len >= sizeof(string_word_t)) {
+                *(string_word_t *)(void *)d =
+                    *(const string_word_t *)(const void *)s;
+                d += sizeof(string_word_t);
+                s += sizeof(string_word_t);
+                len -= sizeof(string_word_t);
+            }
         }
+        while (len-- != 0u)
+            *d++ = *s++;
+    } else {
+        d += len;
+        s += len;
+        while (len != 0u &&
+               (((uintptr_t)d | (uintptr_t)s) &
+                (sizeof(string_word_t) - 1u)) != 0u) {
+            *--d = *--s;
+            len--;
+        }
+        while (len >= sizeof(string_word_t)) {
+            d -= sizeof(string_word_t);
+            s -= sizeof(string_word_t);
+            *(string_word_t *)(void *)d =
+                *(const string_word_t *)(const void *)s;
+            len -= sizeof(string_word_t);
+        }
+        while (len-- != 0u)
+            *--d = *--s;
     }
 
     return dest;

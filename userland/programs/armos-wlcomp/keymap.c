@@ -65,10 +65,6 @@ static const char keymap_prefix[] =
     "   modifiers=Shift+Mod4; map[None]=Level1; map[Shift]=Level2;\n"
     "   map[Mod4]=Level3; map[Shift+Mod4]=Level4;\n"
     "  };\n"
-    "  type \"FOUR_LEVEL_ALT\" {\n"
-    "   modifiers=Shift+Mod1; map[None]=Level1; map[Shift]=Level2;\n"
-    "   map[Mod1]=Level3; map[Shift+Mod1]=Level4;\n"
-    "  };\n"
     " };\n"
     " xkb_compatibility \"armos\" {\n"
     "  virtual_modifiers NumLock;\n"
@@ -212,11 +208,11 @@ static const char keymap_fr_legacy_symbols[] =
 static const char keymap_fr_mac_symbols[] =
     "  key <AE01> { [ ampersand, 1 ] }; key <AE02> { [ eacute, 2 ] };\n"
     "  key <AE03> { [ quotedbl, 3 ] }; key <AE04> { [ apostrophe, 4 ] };\n"
-    "  key <AE05> { type[Group1]=\"FOUR_LEVEL_ALT\", [ parenleft, 5, braceleft, bracketleft ] };\n"
+    "  key <AE05> { type[Group1]=\"FOUR_LEVEL_LEVEL3\", [ parenleft, 5, braceleft, bracketleft ] };\n"
     "  key <AE06> { [ section, 6 ] };\n"
     "  key <AE07> { [ egrave, 7 ] }; key <AE08> { [ exclam, 8 ] };\n"
     "  key <AE09> { [ ccedilla, 9 ] }; key <AE10> { [ agrave, 0 ] };\n"
-    "  key <AE11> { type[Group1]=\"FOUR_LEVEL_ALT\", [ parenright, degree, braceright, bracketright ] };\n"
+    "  key <AE11> { type[Group1]=\"FOUR_LEVEL_LEVEL3\", [ parenright, degree, braceright, bracketright ] };\n"
     "  key <AE12> { [ minus, underscore ] };\n"
     "  key <AD01> { type[Group1]=\"FOUR_LEVEL_LOGO\", [ a, A, at, at ] };\n"
     "  key <AD02> { [ z, Z ] };\n"
@@ -230,22 +226,26 @@ static const char keymap_fr_mac_symbols[] =
     "  key <AC04> { [ f, F ] };\n"
     "  key <AC05> { [ g, G ] }; key <AC06> { [ h, H ] };\n"
     "  key <AC07> { [ j, J ] }; key <AC08> { [ k, K ] };\n"
-    "  key <AC09> { type[Group1]=\"FOUR_LEVEL_ALT\", [ l, L, U00ac, bar ] };\n"
+    "  key <AC09> { type[Group1]=\"FOUR_LEVEL_LEVEL3\", [ l, L, U00ac, bar ] };\n"
     "  key <AC10> { [ m, M ] };\n"
     "  key <AC11> { [ ugrave, percent ] };\n"
     "  key <TLDE> { [ less, greater ] }; key <BKSL> { [ grave ] };\n"
     "  key <AB01> { [ w, W ] }; key <AB02> { [ x, X ] };\n"
     "  key <AB03> { [ c, C ] }; key <AB04> { [ v, V ] };\n"
     "  key <AB05> { [ b, B ] };\n"
-    "  key <AB06> { type[Group1]=\"FOUR_LEVEL_ALT\", [ n, N, asciitilde, NoSymbol ] };\n"
+    "  key <AB06> { type[Group1]=\"FOUR_LEVEL_LEVEL3\", [ n, N, asciitilde, NoSymbol ] };\n"
     "  key <AB07> { [ comma, question ] }; key <AB08> { [ semicolon, period ] };\n"
-    "  key <AB09> { type[Group1]=\"FOUR_LEVEL_ALT\", [ colon, slash, U00f7, backslash ] };\n"
+    "  key <AB09> { type[Group1]=\"FOUR_LEVEL_LEVEL3\", [ colon, slash, U00f7, backslash ] };\n"
     "  key <AB10> { [ equal, plus ] };\n";
 
 static const char keymap_standard_modifiers[] =
     "  key <RALT> { [ Alt_R ] };\n";
 
 static const char keymap_fr_modifiers[] =
+    "  key <RALT> { [ ISO_Level3_Shift ] };\n";
+
+static const char keymap_fr_mac_modifiers[] =
+    "  key <LALT> { [ ISO_Level3_Shift ] };\n"
     "  key <RALT> { [ ISO_Level3_Shift ] };\n";
 
 static const char keymap_standard_suffix[] =
@@ -263,6 +263,15 @@ static const char keymap_fr_suffix[] =
     "  modifier_map Mod1 { <LALT> };\n"
     "  modifier_map Mod4 { <LWIN>, <RWIN> };\n"
     "  modifier_map Mod5 { <RALT> };\n"
+    "  modifier_map Lock { <CAPS> };\n"
+    " };\n"
+    "};\n";
+
+static const char keymap_fr_mac_suffix[] =
+    "  modifier_map Shift { <LFSH>, <RTSH> };\n"
+    "  modifier_map Control { <LCTL>, <RCTL> };\n"
+    "  modifier_map Mod4 { <LWIN>, <RWIN> };\n"
+    "  modifier_map Mod5 { <LALT>, <RALT> };\n"
     "  modifier_map Lock { <CAPS> };\n"
     " };\n"
     "};\n";
@@ -304,6 +313,8 @@ static const char *wl_layout_name(uint32_t layout)
 
 static const char *wl_layout_modifier_symbols(uint32_t layout)
 {
+    if (layout == ARMOS_KEYBOARD_LAYOUT_FR_MAC)
+        return keymap_fr_mac_modifiers;
     return (layout == ARMOS_KEYBOARD_LAYOUT_FR ||
             layout == ARMOS_KEYBOARD_LAYOUT_FR_LEGACY) ?
         keymap_fr_modifiers : keymap_standard_modifiers;
@@ -311,6 +322,8 @@ static const char *wl_layout_modifier_symbols(uint32_t layout)
 
 static const char *wl_layout_suffix(uint32_t layout)
 {
+    if (layout == ARMOS_KEYBOARD_LAYOUT_FR_MAC)
+        return keymap_fr_mac_suffix;
     return (layout == ARMOS_KEYBOARD_LAYOUT_FR ||
             layout == ARMOS_KEYBOARD_LAYOUT_FR_LEGACY) ?
         keymap_fr_suffix : keymap_standard_suffix;

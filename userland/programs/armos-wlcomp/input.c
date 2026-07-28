@@ -417,14 +417,15 @@ static void wl_handle_key(struct wl_server *server,
     else if (event->code == ARMOS_INPUT_KEY_LEFTCTRL ||
              event->code == ARMOS_INPUT_KEY_RIGHTCTRL)
         mask = WL_XKB_MOD_CONTROL;
-    else if (event->code == ARMOS_INPUT_KEY_LEFTALT ||
-             (event->code == ARMOS_INPUT_KEY_RIGHTALT &&
-              server->keyboard_layout != ARMOS_KEYBOARD_LAYOUT_FR &&
-              server->keyboard_layout !=
-                  ARMOS_KEYBOARD_LAYOUT_FR_LEGACY))
-        mask = WL_XKB_MOD_ALT;
+    else if (event->code == ARMOS_INPUT_KEY_LEFTALT)
+        mask = server->keyboard_layout == ARMOS_KEYBOARD_LAYOUT_FR_MAC ?
+            WL_XKB_MOD_LEVEL3 : WL_XKB_MOD_ALT;
     else if (event->code == ARMOS_INPUT_KEY_RIGHTALT)
-        mask = WL_XKB_MOD_LEVEL3;
+        mask = (server->keyboard_layout == ARMOS_KEYBOARD_LAYOUT_FR ||
+                server->keyboard_layout ==
+                    ARMOS_KEYBOARD_LAYOUT_FR_LEGACY ||
+                server->keyboard_layout == ARMOS_KEYBOARD_LAYOUT_FR_MAC) ?
+            WL_XKB_MOD_LEVEL3 : WL_XKB_MOD_ALT;
     else if (event->code == ARMOS_INPUT_KEY_LEFTMETA ||
              event->code == ARMOS_INPUT_KEY_RIGHTMETA)
         mask = WL_XKB_MOD_LOGO;

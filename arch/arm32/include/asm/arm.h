@@ -920,6 +920,28 @@ INLINE void clean_dcache_by_mva(const void *addr, size_t size)
     data_sync_barrier_inner_shareable();
 }
 
+INLINE void clean_dcache_2d_by_mva(const void *addr, size_t stride,
+                                  size_t row_size, size_t rows)
+{
+    if (row_size == 0u || rows == 0u)
+        return;
+
+    uint32_t line = dcache_line_size_bytes();
+    uintptr_t row = (uintptr_t)addr;
+
+    data_sync_barrier_inner_shareable();
+    for (size_t index = 0u; index < rows; index++, row += stride) {
+        uintptr_t start = row & ~(uintptr_t)(line - 1u);
+        uintptr_t end =
+            (row + row_size + line - 1u) & ~(uintptr_t)(line - 1u);
+
+        for (uintptr_t p = start; p < end; p += line)
+            __asm__ volatile("mcr p15, 0, %0, c7, c10, 1"
+                             :: "r"(p) : "memory");
+    }
+    data_sync_barrier_inner_shareable();
+}
+
 INLINE void invalidate_dcache_by_mva(const void *addr, size_t size)
 {
     if (size == 0)

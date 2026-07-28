@@ -505,6 +505,8 @@ if [ "$BUILD_NANO" = "1" ]; then
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
         build_cached_bundle nano ./tools/build_nano.sh ncurses
     rsync -a "$TARGET_BUNDLES/nano/bundle/" "$TARGET_USERFS/"
+    mkdir -p "$TARGET_USERFS/usr/bin"
+    ln -sfn ../../opt/nano/bin/nano "$TARGET_USERFS/usr/bin/nano"
 fi
 
 echo "=== Rebuilding kernel ==="

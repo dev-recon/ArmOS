@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/un.h>
@@ -140,6 +141,18 @@ static int wl_server_render_event(void *data)
 
     server->render_pending = false;
     /*
+     * Rendering and framebuffer presentation are synchronous. Drain pending
+     * key releases first so a client repeat timer cannot overtake them while
+     * a large software frame is being composed.
+     */
+    if (server->input_fd >= 0) {
+        result = wl_server_handle_input(server);
+        if (result < 0) {
+            server->fatal_error = true;
+            return -1;
+        }
+    }
+    /*
      * A scene update may cover several surfaces (focus, stacking, removal).
      * It must win over a queued local update; the full composition consumes
      * the latter as well.
@@ -232,8 +245,15 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
         wl_server_receive_client(server, client) < 0 ||
         (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
         wl_server_disconnect_client(server, client);
-        if (wl_renderer_compose(server) < 0)
-            server->fatal_error = true;
+        /*
+         * A client may disappear without completing its Wayland teardown
+         * (SIGKILL, crash, broken pipe).  Its resources are already detached
+         * above; repaint the remaining scene on the normal frame boundary.
+         * A client failure must never become a compositor failure.
+         */
+        if (wl_server_schedule_render(server, true) < 0)
+            fprintf(stderr,
+                    "armos-wlcomp: cannot schedule client removal repaint\n");
         return -1;
     }
     return 0;
@@ -323,6 +343,12 @@ int main(int argc, char **argv)
     pid_t terminal_pid = -1;
 
     (void)signal(SIGPIPE, SIG_IGN);
+    /*
+     * Keep input dispatch responsive when a software-rendered client consumes
+     * a complete core. The compositor blocks in poll while idle, so this does
+     * not turn it into a CPU hog.
+     */
+    (void)setpriority(PRIO_PROCESS, 0, -5);
     for (int index = 1; index < argc; index++) {
         if (strcmp(argv[index], "--headless") == 0) {
             headless = true;

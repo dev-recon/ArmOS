@@ -895,6 +895,11 @@ int main(void)
 {
     struct app app;
 
+    /*
+     * This diagnostic renderer is intentionally CPU-heavy. Let the compositor
+     * and terminal win scheduling ties so animation cannot degrade input.
+     */
+    (void)nice(5);
     memset(&app, 0, sizeof(app));
     app.shm_fd = -1;
     app.pixels = MAP_FAILED;
