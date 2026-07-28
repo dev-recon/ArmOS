@@ -211,7 +211,9 @@ BUILD_FBVIEW=no
 ```
 
 `BUILD_NANO=yes` requires either `BUILD_NCURSES=yes` or an ncurses bundle
-already installed in `userfs`. `BUILD_EPOLL_SHIM=yes` installs the common
+already installed in `userfs`. The bundle remains under `/opt/nano`, with
+`/usr/bin/nano` created as a relative symlink during userfs staging.
+`BUILD_EPOLL_SHIM=yes` installs the common
 poll-backed epoll compatibility library and its regression test for ports such
 as Foot. `BUILD_UTF8PROC=yes` installs the Unicode normalization and grapheme
 library used by Foot and its font stack. `BUILD_FREETYPE=yes` installs the
@@ -223,9 +225,9 @@ amalgamation with the host C++ compiler, without exceptions, RTTI, GLib, ICU,
 Graphite or subsetting. Only the C headers and static `libharfbuzz.a` are
 installed in ArmOS; TCC can consume the library but does not build it.
 `BUILD_FCFT=yes` installs fcft 2.5.1 with HarfBuzz and utf8proc shaping for
-Foot. `BUILD_FOOT=yes` cross-builds the unmodified Foot 1.9.2 sources and
-generates their Wayland protocol bindings below the target-specific build
-tree. `BUILD_ALL_USERLAND=yes` enables the
+Foot. `BUILD_FOOT=yes` cross-builds Foot 1.9.2 with the maintained ArmOS
+portability patch and generates its Wayland protocol bindings below the
+target-specific build tree. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
 

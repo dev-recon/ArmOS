@@ -58,6 +58,32 @@ Follow-up work includes USB hotplug, interrupt-driven transfers, more HID
 layouts, USB storage, dynamic class-driver binding, and eventually native VC4
 display management.
 
+## Wayland Compositor And Graphical Userland
+
+Status: usable software-rendered baseline.
+
+The current implementation is documented in
+[`WAYLAND_COMPOSITOR.md`](WAYLAND_COMPOSITOR.md). The common kernel provides
+IPC, SHM, input and framebuffer contracts; `/sbin/armos-wlcomp` owns Wayland
+protocol and window policy in userland. Foot, GNU nano and the interactive
+teapot demo now run as real Wayland clients on the shared ARM32/ARM64 stack.
+
+Immediate goals:
+
+- preserve bounded damage from client commits through framebuffer
+  presentation;
+- profile and optimize software copy/fill paths on Raspberry Pi 3;
+- keep QEMU VirtIO-GPU and Raspberry Pi HDMI behind the same renderer/backend
+  contract;
+- complete clipboard, resizing and shell interactions needed by a small
+  desktop;
+- retain UART/console recovery while Raspberry Pi graphics stabilizes.
+
+Later milestone:
+
+- add a VC4/V3D renderer backend without moving compositor policy into
+  Raspberry-specific kernel or platform code.
+
 ## 0.7 ARM64 Baseline
 
 The 0.7 baseline is:
