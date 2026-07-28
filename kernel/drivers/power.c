@@ -18,6 +18,7 @@
 
 #include <kernel/power.h>
 #include <kernel/kprintf.h>
+#include <kernel/memory.h>
 #include <kernel/types.h>
 #include <kernel/task.h>
 #include <kernel/process.h>
@@ -62,56 +63,43 @@ static bool shutdown_signal_target(task_t *task)
     return true;
 }
 
-static unsigned shutdown_collect_targets(task_t **targets, unsigned max_targets)
+static pid_t shutdown_caller_pid(void)
 {
-    task_t *task;
-    unsigned found = 0;
-    unsigned walked = 0;
-    unsigned long flags;
+    task_t *task = task_current_local();
 
-    if (!targets || max_targets == 0)
-        return 0;
-
-    spin_lock_irqsave(&task_lock, &flags);
-    task = task_list_head;
-    if (!task) {
-        spin_unlock_irqrestore(&task_lock, flags);
-        return 0;
-    }
-
-    do {
-        if (shutdown_signal_target(task) && found < max_targets)
-            targets[found++] = task;
-
-        task = task->next;
-        walked++;
-    } while (task && task != task_list_head && walked < MAX_TASKS);
-
-    spin_unlock_irqrestore(&task_lock, flags);
-    return found;
+    return task && task->type == TASK_TYPE_PROCESS && task->process ?
+        task->process->pid : -1;
 }
 
 static unsigned shutdown_count_live_targets(void)
 {
-    task_t *targets[MAX_TASKS];
-
-    return shutdown_collect_targets(targets, MAX_TASKS);
+    return (unsigned)process_snapshot_live_pids(
+        NULL, 0, shutdown_caller_pid(), false);
 }
 
 static unsigned shutdown_signal_targets(int sig)
 {
-    task_t *targets[MAX_TASKS];
+    pid_t *targets;
     unsigned target_count;
     unsigned delivered = 0;
     unsigned i;
 
-    target_count = shutdown_collect_targets(targets, MAX_TASKS);
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return 0;
+    target_count = (unsigned)process_snapshot_live_pids(
+        targets, MAX_TASKS, shutdown_caller_pid(), false);
+    if (target_count > MAX_TASKS)
+        target_count = MAX_TASKS;
 
     for (i = 0; i < target_count; i++) {
-        if (send_signal(targets[i], sig) == 0)
+        task_t *task = find_process_by_pid(targets[i]);
+
+        if (shutdown_signal_target(task) && send_signal(task, sig) == 0)
             delivered++;
     }
 
+    kfree(targets);
     return delivered;
 }
 
@@ -135,15 +123,22 @@ static void shutdown_wait_for_targets(const char *phase, uint32_t grace_ms)
 
 static unsigned shutdown_force_terminate_targets(void)
 {
-    task_t *targets[MAX_TASKS];
+    pid_t *targets;
     unsigned target_count;
     unsigned stopped = 0;
     unsigned i;
 
-    target_count = shutdown_collect_targets(targets, MAX_TASKS);
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return 0;
+    target_count = (unsigned)process_snapshot_live_pids(
+        targets, MAX_TASKS, shutdown_caller_pid(), false);
+    if (target_count > MAX_TASKS)
+        target_count = MAX_TASKS;
 
     for (i = 0; i < target_count; i++) {
-        task_t *task = targets[i];
+        task_t *task = find_process_by_pid(targets[i]);
+
         if (shutdown_signal_target(task)) {
             close_all_process_files(task);
             remove_from_ready_queue(task);
@@ -152,6 +147,7 @@ static unsigned shutdown_force_terminate_targets(void)
         }
     }
 
+    kfree(targets);
     return stopped;
 }
 

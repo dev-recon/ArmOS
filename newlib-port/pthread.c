@@ -23,10 +23,11 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
-#define ARMOS_PTHREAD_DEFAULT_STACK (64u * 1024u)
-#define ARMOS_PTHREAD_STACK_ALIGNMENT 16u
+#define ARMOS_PTHREAD_DEFAULT_STACK (1024u * 1024u)
+#define ARMOS_PTHREAD_GUARD_SIZE (4u * 1024u)
 #define ARMOS_KEY_INDEX_BITS 8u
 #define ARMOS_KEY_INDEX_MASK ((1u << ARMOS_KEY_INDEX_BITS) - 1u)
 
@@ -118,7 +119,8 @@ static void thread_control_destroy(armos_pthread_control_t *control)
         return;
     armos_thread_reent_destroy(control->tls);
     if (control->owns_stack)
-        free(control->stack_allocation);
+        (void)munmap(control->stack_allocation,
+                     control->stack_allocation_size);
     free(control);
 }
 
@@ -470,6 +472,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     armos_clone_args_t args;
     uintptr_t raw;
     uintptr_t stack_base;
+    size_t mapping_size;
     size_t stack_size = ARMOS_PTHREAD_DEFAULT_STACK;
     int detached = 0;
     int result;
@@ -499,18 +502,29 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     if (attr && attr->stackaddr) {
         control->stack_base = attr->stackaddr;
     } else {
+        stack_size = (stack_size + ARMOS_PTHREAD_GUARD_SIZE - 1u) &
+                     ~(ARMOS_PTHREAD_GUARD_SIZE - 1u);
+        mapping_size = stack_size + ARMOS_PTHREAD_GUARD_SIZE;
         control->stack_allocation =
-            malloc(stack_size + ARMOS_PTHREAD_STACK_ALIGNMENT);
-        if (!control->stack_allocation) {
+            mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (control->stack_allocation == MAP_FAILED) {
+            control->stack_allocation = NULL;
             free(control);
             return EAGAIN;
         }
         raw = (uintptr_t)control->stack_allocation;
-        stack_base =
-            (raw + ARMOS_PTHREAD_STACK_ALIGNMENT - 1u) &
-            ~(uintptr_t)(ARMOS_PTHREAD_STACK_ALIGNMENT - 1u);
+        if (munmap((void *)raw, ARMOS_PTHREAD_GUARD_SIZE) != 0) {
+            (void)munmap((void *)raw, mapping_size);
+            free(control);
+            return EAGAIN;
+        }
+        stack_base = raw + ARMOS_PTHREAD_GUARD_SIZE;
+        control->stack_allocation = (void *)stack_base;
+        control->stack_allocation_size = stack_size;
         control->stack_base = (void *)stack_base;
         control->owns_stack = 1;
+        control->stack_size = stack_size;
     }
 
     control->tls = armos_thread_reent_create();
@@ -903,6 +917,12 @@ int pthread_getconcurrency(void)
 void pthread_yield(void)
 {
     (void)sched_yield();
+}
+
+int pthread_setname_np(pthread_t thread, const char *name)
+{
+    (void)thread;
+    return name ? 0 : EINVAL;
 }
 
 int pthread_atfork(void (*prepare)(void), void (*parent)(void),

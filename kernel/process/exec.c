@@ -153,8 +153,9 @@ static bool exec_tls_layout_valid(const exec_image_layout_t *layout)
         offset = (uint64_t)(layout->tls_image - segment->virtual_address);
         if (offset <= segment->memory_size &&
             layout->tls_memory_size <= segment->memory_size - offset &&
-            offset <= segment->file_size &&
-            layout->tls_file_size <= segment->file_size - offset)
+            (!layout->tls_file_size ||
+             (offset <= segment->file_size &&
+              layout->tls_file_size <= segment->file_size - offset)))
             return true;
     }
     return false;

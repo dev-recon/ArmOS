@@ -45,6 +45,8 @@
 # endif
 #endif
     #define __SIZEOF_INT__ 4
+    #define __SCHAR_MAX__ 0x7f
+    #define __SHRT_MAX__ 0x7fff
     #define __INT_MAX__ 0x7fffffff
 #if __SIZEOF_LONG__ == 4
     #define __LONG_MAX__ 0x7fffffffL
@@ -134,11 +136,17 @@
 #endif
 
     /* Some derived integer types needed to get stdint.h to compile correctly on some platforms */
+    #define __INT8_TYPE__ signed char
+    #define __UINT8_TYPE__ unsigned char
+    #define __INT16_TYPE__ short
+    #define __UINT16_TYPE__ unsigned short
 #ifndef __NetBSD__
     #define __UINTPTR_TYPE__ unsigned __PTRDIFF_TYPE__
     #define __INTPTR_TYPE__ __PTRDIFF_TYPE__
 #endif
     #define __INT32_TYPE__ int
+    #define __UINT32_TYPE__ unsigned int
+    #define __UINT64_TYPE__ unsigned __INT64_TYPE__
 
 #if !defined _WIN32
     /* glibc defines. We do not support __USER_NAME_PREFIX__ */

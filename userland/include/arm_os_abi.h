@@ -16,15 +16,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
-
-#define SHM_O_CREAT 0x01
-#define SHM_O_EXCL  0x02
-#define SHM_RDONLY  0x01
-#define SHM_RDWR    0x02
 
 #ifndef SIGTTIN
 #define SIGTTIN 21
@@ -105,9 +101,7 @@ int statfs(const char *path, struct statfs *buf);
 int getdents(int fd, void *dirp, size_t count);
 int tcsetpgrp(int fd, pid_t pgrp);
 pid_t tcgetpgrp(int fd);
-int shm_open(const char *name, size_t size, int flags);
-int shm_unlink(const char *name);
-void *shm_map(int id, void *addr, int flags);
+void *shm_map(int fd, void *addr, int flags);
 int shm_unmap(void *addr, size_t size);
 int nanosleep(const struct timespec *req, struct timespec *rem);
 unsigned int sleep(unsigned int seconds);

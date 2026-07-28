@@ -1132,10 +1132,15 @@ static const char* proc_syscall_name(uint32_t nr)
 
 static void proc_fill_sched_trace(char* buf, size_t cap, size_t* len)
 {
-    sched_trace_event_t events[SCHED_TRACE_SIZE];
+    sched_trace_event_t *events;
     uint32_t total = 0;
     uint32_t written = 0;
 
+    events = kmalloc(sizeof(*events) * SCHED_TRACE_SIZE);
+    if (!events) {
+        proc_append(buf, cap, len, "sched trace unavailable: out of memory\n");
+        return;
+    }
     sched_trace_snapshot(events, SCHED_TRACE_SIZE, &total, &written);
     proc_append(buf, cap, len,
                 "seq tick event pid tid state wake syscall current_pid current_tid current_syscall name current\n");
@@ -1164,6 +1169,7 @@ static void proc_fill_sched_trace(char* buf, size_t cap, size_t* len)
                     e->current_name);
     }
     proc_append(buf, cap, len, "total %u shown %u\n", total, written);
+    kfree(events);
 }
 
 static const char* proc_sched_pick_reason(uint32_t reason)
@@ -1332,6 +1338,7 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
     uint32_t tty_input_depth = 0;
     uint32_t tty_input_capacity = 0;
     uint32_t tty_eof_pending = 0;
+    uint32_t tty_input_dropped = 0;
     uint32_t tty_iflag = 0;
     uint32_t tty_oflag = 0;
     uint32_t tty_lflag = 0;
@@ -1377,6 +1384,7 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
 
     spin_lock_irqsave(&tty->lock, &flags);
     input_chars = tty->input_chars;
+    tty_input_dropped = tty->input_dropped;
     ctrl_c_seen = tty->ctrl_c_seen;
     sigint_delivered = tty->sigint_delivered;
     sigint_missed = tty->sigint_missed;
@@ -1399,8 +1407,10 @@ static void proc_fill_tty_one(char* buf, size_t cap, size_t* len,
                 "virtio-keyboard" : "platform-input");
     proc_append(buf, cap, len, "winsize rows %u cols %u xpixel %u ypixel %u\n",
                 rows, cols, xpixel, ypixel);
-    proc_append(buf, cap, len, "input depth %u capacity %u chars %u eof %u\n",
-                tty_input_depth, tty_input_capacity, input_chars, tty_eof_pending);
+    proc_append(buf, cap, len,
+                "input depth %u capacity %u chars %u dropped %u eof %u\n",
+                tty_input_depth, tty_input_capacity, input_chars,
+                tty_input_dropped, tty_eof_pending);
     proc_append(buf, cap, len, "wake char %u line %u eof %u\n",
                 tty_char_wakeups, tty_line_wakeups, tty_eof_wakeups);
     proc_append(buf, cap, len, "output enq %u drain %u full %u drain_calls %u\n",

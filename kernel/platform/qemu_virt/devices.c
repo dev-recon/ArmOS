@@ -13,6 +13,7 @@
  *   bring-up.
  * - Keep VirtIO GPU/input/net details out of kernel/main.c.
  * - Register UART as tty0 and optional VirtIO display/input as tty1.
+ * - Mark the dedicated VirtIO framebuffer as available to the compositor.
  *
  * Notes:
  * - The implementation is shared by ARM32 and ARM64 QEMU virt. Architecture
@@ -71,6 +72,7 @@ platform_devices_state_t platform_devices_init(void)
         KBOOT_OKF("GPU: virtio-gpu %ux%ux%u", FB_WIDTH, FB_HEIGHT, FB_BPP);
         if (framebuffer_attach_tty_backend(TTY_GRAPHICS_ID) == 0) {
             state.display_ready = true;
+            state.compositor_allowed = true;
             tty_set_active(TTY_GRAPHICS_ID);
             KBOOT_OKF("TTY: console tty1 on virtio-gpu");
             if (virtio_input_init(TTY_GRAPHICS_ID)) {

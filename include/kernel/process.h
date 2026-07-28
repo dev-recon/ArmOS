@@ -46,6 +46,8 @@ extern task_t* init_process;        /* Deja defini dans votre task.h */
 task_t* create_process(const char* name);
 void destroy_process(task_t* process);
 task_t* find_process_by_pid(pid_t pid);
+size_t process_snapshot_live_pids(pid_t* pids, size_t capacity,
+                                  pid_t exclude_pid, bool include_init);
 process_t* get_current_process(void);
 task_t* get_current_task(void);
 void add_to_ready_queue(task_t* task);

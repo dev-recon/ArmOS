@@ -41,6 +41,7 @@ static ext2_fs_t ext2_fs;
 static int ext2_read_disk_inode(uint32_t ino, ext2_inode_t* out);
 static int ext2_write_disk_inode(uint32_t ino, const ext2_inode_t* in);
 static int ext2_read_group_desc(uint32_t group, ext2_group_desc_t* out);
+static int ext2_flush_pending_inodes(void);
 
 /* Forward declarations */
 static inode_t* ext2_inode_lookup(inode_t* dir, const char* name);
@@ -136,6 +137,19 @@ static volatile bool ext2_dirty;
 static ext2_stats_t ext2_stats;
 static bool ext2_defer_allocation_writes;
 
+#define EXT2_PENDING_INODE_COUNT 128u
+
+typedef struct ext2_pending_inode {
+    bool valid;
+    uint32_t ino;
+    ext2_inode_t inode;
+} ext2_pending_inode_t;
+
+static ext2_pending_inode_t ext2_pending_inodes[EXT2_PENDING_INODE_COUNT];
+static uint32_t ext2_pending_inode_count;
+static uint32_t ext2_alloc_group_hint;
+static uint32_t ext2_alloc_bit_hint;
+
 typedef struct ext2_wait_queue {
     spinlock_t lock;
     task_t* waiters[MAX_TASKS];
@@ -207,10 +221,13 @@ static void ext2_wait_finish(ext2_wait_queue_t* queue, task_t* task)
 static void ext2_wait_wake_all(ext2_wait_queue_t* queue)
 {
     unsigned long flags;
-    task_t* wake[MAX_TASKS];
+    task_t** wake;
     uint32_t wake_count = 0;
 
     if (!queue)
+        return;
+    wake = kmalloc(sizeof(*wake) * MAX_TASKS);
+    if (!wake)
         return;
 
     spin_lock_irqsave(&queue->lock, &flags);
@@ -230,6 +247,7 @@ static void ext2_wait_wake_all(ext2_wait_queue_t* queue)
     for (uint32_t i = 0; i < wake_count; i++) {
         task_wake(wake[i]);
     }
+    kfree(wake);
 }
 
 static bool ext2_op_try_acquire(void)
@@ -536,6 +554,74 @@ static int ext2_read_block(uint32_t block, void* buf)
     return 0;
 }
 
+#define EXT2_IO_MAX_BLOCKS 16u
+
+static int ext2_read_contiguous_blocks(uint32_t first_block,
+                                       uint32_t block_count,
+                                       void* buf)
+{
+    uint8_t* dst = (uint8_t*)buf;
+    bool all_cached = true;
+    int ret;
+
+    if (!buf || block_count == 0 || block_count > EXT2_IO_MAX_BLOCKS ||
+        ext2_fs.block_size == 0)
+        return -EINVAL;
+
+    ext2_cache_acquire();
+    for (uint32_t i = 0; i < block_count; i++) {
+        ext2_block_cache_entry_t* entry =
+            ext2_block_cache_find(first_block + i);
+
+        if (entry && entry->data) {
+            ext2_stats.cache_hits++;
+            memcpy(dst + i * ext2_fs.block_size, entry->data,
+                   ext2_fs.block_size);
+        } else {
+            ext2_stats.cache_misses++;
+            all_cached = false;
+        }
+    }
+    ext2_cache_release();
+
+    if (all_cached)
+        return 0;
+
+    ret = blk_read_sectors(ext2_fs.lba_start +
+                           (uint64_t)first_block * ext2_fs.sectors_per_block,
+                           block_count * ext2_fs.sectors_per_block, buf);
+    if (ret < 0)
+        return ret;
+    ext2_stats.read_blocks += block_count;
+
+    ext2_cache_acquire();
+    for (uint32_t i = 0; i < block_count; i++) {
+        ext2_block_cache_entry_t* entry =
+            ext2_block_cache_find(first_block + i);
+        uint8_t* block_buf = dst + i * ext2_fs.block_size;
+
+        /*
+         * A dirty cache entry is newer than the disk copy. Preserve it in the
+         * caller's buffer instead of exposing stale data from the grouped I/O.
+         */
+        if (entry && entry->data) {
+            if (entry->dirty)
+                memcpy(block_buf, entry->data, ext2_fs.block_size);
+            continue;
+        }
+
+        entry = ext2_block_cache_pick(first_block + i);
+        if (entry && ext2_block_cache_data(entry)) {
+            memcpy(entry->data, block_buf, ext2_fs.block_size);
+            entry->block = first_block + i;
+            entry->valid = true;
+            entry->dirty = false;
+        }
+    }
+    ext2_cache_release();
+    return 0;
+}
+
 static int ext2_write_block(uint32_t block, void* buf)
 {
     uint64_t lba = ext2_fs.lba_start + (uint64_t)block * ext2_fs.sectors_per_block;
@@ -776,7 +862,7 @@ int ext2_sync(void)
         return -EIO;
     }
 
-    /* Write the pinned superblock before asking the device to flush. */
+    /* Persist allocation counters with the data/allocation transaction. */
     if (ext2_sb_cache_dirty) {
         if (ext2_write_superblock_disk(&ext2_sb_cache) < 0) {
             ext2_stats.sync_errors++;
@@ -784,6 +870,19 @@ int ext2_sync(void)
             return -EIO;
         }
         ext2_sb_cache_dirty = false;
+    }
+
+    /*
+     * File-size updates must not reach disk before newly allocated data and
+     * allocation metadata. The first flush establishes that ordering; inode
+     * table updates are then written as the transaction's commit record.
+     */
+    if (ext2_pending_inode_count > 0) {
+        if (blk_flush() < 0 || ext2_flush_pending_inodes() < 0) {
+            ext2_stats.sync_errors++;
+            ext2_op_release();
+            return -EIO;
+        }
     }
 
     if (ext2_dirty) {
@@ -1084,12 +1183,20 @@ static uint32_t ext2_max_supported_file_blocks(void)
 static int ext2_alloc_block(uint32_t* out_block)
 {
     ext2_superblock_t sb;
+    uint32_t start_group;
 
     if (!out_block) return -1;
     if (ext2_read_superblock(&sb) < 0) return -EIO;
     if (sb.s_free_blocks_count == 0) return -ENOSPC;
 
-    for (uint32_t group = 0; group < ext2_fs.groups_count; group++) {
+    start_group = ext2_alloc_group_hint < ext2_fs.groups_count ?
+                  ext2_alloc_group_hint : 0;
+
+    for (uint32_t group_offset = 0;
+         group_offset < ext2_fs.groups_count;
+         group_offset++) {
+        uint32_t group = (start_group + group_offset) %
+                         ext2_fs.groups_count;
         ext2_group_desc_t gd;
 
         if (ext2_read_group_desc(group, &gd) < 0)
@@ -1112,50 +1219,72 @@ static int ext2_alloc_block(uint32_t* out_block)
             return -EIO;
         }
 
-        for (uint32_t bit = 0; bit < group_blocks; bit++) {
-            uint32_t block = group_first + bit;
-            if (block == 0 || block >= ext2_fs.blocks_count)
-                continue;
-            if (ext2_bitmap_test(bitmap, bit))
+        uint32_t first_bit = group == start_group ?
+                             ext2_alloc_bit_hint : 0;
+        if (first_bit >= group_blocks)
+            first_bit = 0;
+
+        for (uint32_t pass = 0; pass < 2; pass++) {
+            uint32_t begin = pass == 0 ? first_bit : 0;
+            uint32_t end = pass == 0 ? group_blocks : first_bit;
+
+            if (begin >= end)
                 continue;
 
-            uint8_t* zero = kmalloc(ext2_fs.block_size);
-            if (!zero) {
-                kfree(bitmap);
-                return -ENOMEM;
-            }
-            memset(zero, 0, ext2_fs.block_size);
-            if (ext2_write_allocation_block(block, zero) < 0) {
+            for (uint32_t bit = begin; bit < end; bit++) {
+                uint32_t block = group_first + bit;
+                if (block == 0 || block >= ext2_fs.blocks_count)
+                    continue;
+                if (ext2_bitmap_test(bitmap, bit))
+                    continue;
+
+                uint8_t* zero = kmalloc(ext2_fs.block_size);
+                if (!zero) {
+                    kfree(bitmap);
+                    return -ENOMEM;
+                }
+                memset(zero, 0, ext2_fs.block_size);
+                if (ext2_write_allocation_block(block, zero) < 0) {
+                    kfree(zero);
+                    kfree(bitmap);
+                    return -EIO;
+                }
                 kfree(zero);
-                kfree(bitmap);
-                return -EIO;
-            }
-            kfree(zero);
 
-            ext2_bitmap_set(bitmap, bit);
-            if (ext2_write_allocation_block(gd.bg_block_bitmap, bitmap) < 0) {
-                kfree(bitmap);
-                return -EIO;
-            }
+                ext2_bitmap_set(bitmap, bit);
+                if (ext2_write_allocation_block(gd.bg_block_bitmap,
+                                                bitmap) < 0) {
+                    kfree(bitmap);
+                    return -EIO;
+                }
 
-            if (gd.bg_free_blocks_count > 0)
-                gd.bg_free_blocks_count--;
-            if (ext2_write_group_desc(group, &gd) < 0) {
-                kfree(bitmap);
-                return -EIO;
-            }
+                if (gd.bg_free_blocks_count > 0)
+                    gd.bg_free_blocks_count--;
+                if (ext2_write_group_desc(group, &gd) < 0) {
+                    kfree(bitmap);
+                    return -EIO;
+                }
 
-            if (sb.s_free_blocks_count > 0)
-                sb.s_free_blocks_count--;
-            sb.s_wtime = get_current_time();
-            if (ext2_write_superblock(&sb) < 0) {
-                kfree(bitmap);
-                return -EIO;
-            }
+                if (sb.s_free_blocks_count > 0)
+                    sb.s_free_blocks_count--;
+                sb.s_wtime = get_current_time();
+                if (ext2_write_superblock(&sb) < 0) {
+                    kfree(bitmap);
+                    return -EIO;
+                }
 
-            kfree(bitmap);
-            *out_block = block;
-            return 0;
+                ext2_alloc_group_hint = group;
+                ext2_alloc_bit_hint = bit + 1;
+                if (ext2_alloc_bit_hint >= group_blocks) {
+                    ext2_alloc_group_hint =
+                        (group + 1) % ext2_fs.groups_count;
+                    ext2_alloc_bit_hint = 0;
+                }
+
+                kfree(bitmap);
+                *out_block = block;
+                return 0;
+            }
         }
 
         kfree(bitmap);
@@ -1404,6 +1533,44 @@ static int ext2_adjust_used_dirs(uint32_t ino, int delta)
 
 /* ---------- inode table ---------- */
 
+static ext2_pending_inode_t* ext2_find_pending_inode(uint32_t ino)
+{
+    for (uint32_t i = 0; i < EXT2_PENDING_INODE_COUNT; i++) {
+        if (ext2_pending_inodes[i].valid &&
+            ext2_pending_inodes[i].ino == ino)
+            return &ext2_pending_inodes[i];
+    }
+
+    return NULL;
+}
+
+static int ext2_queue_pending_inode(uint32_t ino, const ext2_inode_t* inode)
+{
+    ext2_pending_inode_t* entry;
+
+    if (ino == 0 || !inode)
+        return -EINVAL;
+
+    entry = ext2_find_pending_inode(ino);
+    if (!entry) {
+        for (uint32_t i = 0; i < EXT2_PENDING_INODE_COUNT; i++) {
+            if (!ext2_pending_inodes[i].valid) {
+                entry = &ext2_pending_inodes[i];
+                entry->valid = true;
+                entry->ino = ino;
+                ext2_pending_inode_count++;
+                break;
+            }
+        }
+    }
+    if (!entry)
+        return -ENOSPC;
+
+    entry->inode = *inode;
+    ext2_mark_dirty();
+    return 0;
+}
+
 static int ext2_inode_location(uint32_t ino, uint32_t* block, uint32_t* offset)
 {
     if (ino == 0) return -1;
@@ -1436,10 +1603,16 @@ static int ext2_inode_location(uint32_t ino, uint32_t* block, uint32_t* offset)
 
 static int ext2_read_disk_inode(uint32_t ino, ext2_inode_t* out)
 {
+    ext2_pending_inode_t* pending;
     uint32_t inode_block;
     uint32_t inode_off;
 
     if (!out) return -1;
+    pending = ext2_find_pending_inode(ino);
+    if (pending) {
+        *out = pending->inode;
+        return 0;
+    }
     if (ext2_inode_location(ino, &inode_block, &inode_off) < 0) return -1;
 
     uint8_t* blkbuf = kmalloc(ext2_fs.block_size);
@@ -1457,6 +1630,7 @@ static int ext2_read_disk_inode(uint32_t ino, ext2_inode_t* out)
 
 static int ext2_write_disk_inode(uint32_t ino, const ext2_inode_t* in)
 {
+    ext2_pending_inode_t* pending;
     uint32_t inode_block;
     uint32_t inode_off;
 
@@ -1478,7 +1652,27 @@ static int ext2_write_disk_inode(uint32_t ino, const ext2_inode_t* in)
         return -1;
     }
 
+    pending = ext2_find_pending_inode(ino);
+    if (pending) {
+        pending->valid = false;
+        if (ext2_pending_inode_count > 0)
+            ext2_pending_inode_count--;
+    }
+
     kfree(blkbuf);
+    return 0;
+}
+
+static int ext2_flush_pending_inodes(void)
+{
+    for (uint32_t i = 0; i < EXT2_PENDING_INODE_COUNT; i++) {
+        if (!ext2_pending_inodes[i].valid)
+            continue;
+        if (ext2_write_disk_inode(ext2_pending_inodes[i].ino,
+                                  &ext2_pending_inodes[i].inode) < 0)
+            return -EIO;
+    }
+
     return 0;
 }
 
@@ -2728,13 +2922,18 @@ out:
 
 static int ext2_file_close(file_t* file)
 {
+    int ret = 0;
+
     if (!file) return -EBADF;
+
+    if ((file->flags & O_ACCMODE) != O_RDONLY && ext2_dirty)
+        ret = ext2_sync();
 
     if (file->private_data && ext2_valid_disk_inode_ptr((ext2_inode_t*)file->private_data)) {
         kfree(file->private_data);
     }
     file->private_data = NULL;
-    return 0;
+    return ret;
 }
 
 static int ext2_truncate_inode_data(inode_t* inode, bool allow_dir)
@@ -3244,6 +3443,41 @@ static ssize_t ext2_file_read_unlocked(file_t* file, void* buffer, size_t count)
         if (blk == 0) {
             memset(dst, 0, chunk);
         } else {
+            if (blk_off == 0 && chunk == ext2_fs.block_size) {
+                uint32_t max_run = (uint32_t)(count / ext2_fs.block_size);
+                uint32_t run = 1;
+
+                if (max_run > EXT2_IO_MAX_BLOCKS)
+                    max_run = EXT2_IO_MAX_BLOCKS;
+
+                while (run < max_run) {
+                    uint32_t next = 0;
+
+                    if (ext2_map_block_cursor(di, blk_idx + run, &next,
+                                              &cur) < 0) {
+                        total = total ? total : -EIO;
+                        goto out;
+                    }
+                    if (next != blk + run)
+                        break;
+                    run++;
+                }
+
+                if (run > 1) {
+                    uint32_t bytes = run * ext2_fs.block_size;
+
+                    if (ext2_read_contiguous_blocks(blk, run, dst) < 0) {
+                        total = total ? total : -EIO;
+                        break;
+                    }
+                    dst += bytes;
+                    file->offset += bytes;
+                    total += bytes;
+                    count -= bytes;
+                    continue;
+                }
+            }
+
             if (ext2_read_block(blk, blkbuf) < 0) {
                 total = total ? total : -EIO;
                 break;
@@ -3257,6 +3491,7 @@ static ssize_t ext2_file_read_unlocked(file_t* file, void* buffer, size_t count)
         count        -= chunk;
     }
 
+out:
     ext2_map_cursor_release(&cur);
     kfree(blkbuf);
     return total;
@@ -3326,13 +3561,6 @@ static ssize_t ext2_file_write(file_t* file, const void* buffer, size_t count)
         count -= chunk;
     }
 
-    ext2_defer_allocation_writes = false;
-    /* Persist allocation metadata and data before publishing inode size. */
-    if (ext2_flush_dirty_blocks() < 0) {
-        kfree(blkbuf);
-        return -EIO;
-    }
-
     if (total > 0) {
         if (file->offset > old_size)
             di->i_size = file->offset;
@@ -3344,10 +3572,11 @@ static ssize_t ext2_file_write(file_t* file, const void* buffer, size_t count)
             file->inode->ctime = di->i_ctime;
             file->inode->blocks = di->i_blocks;
         }
-        if (ext2_write_disk_inode(file->inode->first_cluster, di) < 0)
+        if (ext2_queue_pending_inode(file->inode->first_cluster, di) < 0)
             total = -EIO;
     }
 
+    ext2_defer_allocation_writes = false;
     kfree(blkbuf);
     return total;
 }
@@ -3503,9 +3732,15 @@ static int ext2_inode_readlink_op(inode_t* inode, char* buf, size_t bufsiz)
 static ssize_t ext2_file_write_op(file_t* file, const void* buffer, size_t count)
 {
     ssize_t ret;
+    bool sync_requested;
+
+    sync_requested = file &&
+                     (file->flags & (O_SYNC | O_DSYNC)) != 0;
     ext2_op_acquire();
     ret = ext2_file_write(file, buffer, count);
     ext2_op_release();
+    if (ret > 0 && sync_requested && ext2_sync() < 0)
+        return -EIO;
     return ret;
 }
 
@@ -3539,6 +3774,10 @@ inode_t* ext2_mount(uint64_t lba_start)
     ext2_fs.blocks_per_group  = sb->s_blocks_per_group;
     ext2_fs.groups_count      = (sb->s_blocks_count - sb->s_first_data_block +
                                  sb->s_blocks_per_group - 1) / sb->s_blocks_per_group;
+    memset(ext2_pending_inodes, 0, sizeof(ext2_pending_inodes));
+    ext2_pending_inode_count  = 0;
+    ext2_alloc_group_hint     = 0;
+    ext2_alloc_bit_hint       = 0;
     ext2_fs.inode_size        = (sb->s_rev_level >= 1) ? sb->s_inode_size : 128;
     /* Group descriptor table starts right after the superblock's block */
     ext2_fs.gdesc_block       = sb->s_first_data_block + 1;

@@ -10,6 +10,7 @@ else
 ARCH ?= arm-none-eabi-
 endif
 CC := $(ARCH)gcc
+AR := $(ARCH)ar
 STRIP := $(ARCH)strip
 ARMOS_SOURCE_ROOT := $(abspath ..)
 ARMOS_REPRODUCIBLE_ROOT ?= /usr/src/armos
@@ -17,36 +18,57 @@ REPRO_FLAGS := -ffile-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT)
                -fmacro-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT) \
                -fdebug-prefix-map=$(ARMOS_SOURCE_ROOT)=$(ARMOS_REPRODUCIBLE_ROOT)
 
-BUILD_DIR := ../build/userland-$(TARGET_ARCH)
+TARGET_PLATFORM ?= qemu-virt
+TARGET_BUILD_ROOT ?= ../build/$(TARGET_ARCH)/$(TARGET_PLATFORM)
+BUILD_DIR := $(TARGET_BUILD_ROOT)/userland
 OUT_DIR := $(BUILD_DIR)/out
 OUT_BIN := $(OUT_DIR)/bin
 OUT_SBIN := $(OUT_DIR)/sbin
 OUT_USR_BIN := $(OUT_DIR)/usr/bin
+OUT_USR_LIB := $(OUT_DIR)/usr/lib
 OUT_OPT := $(OUT_DIR)/opt
 NEWLIB_PORT := ../newlib-port
-USERFS_ROOT := ../userfs
+USERFS_ROOT ?= $(TARGET_BUILD_ROOT)/userfs
 USERFS_BIN := $(USERFS_ROOT)/bin
 USERFS_SBIN := $(USERFS_ROOT)/sbin
 USERFS_USR_BIN := $(USERFS_ROOT)/usr/bin
+USERFS_USR_LIB := $(USERFS_ROOT)/usr/lib
 USERFS_OPT := $(USERFS_ROOT)/opt
 
 ifeq ($(TARGET_ARCH),arm64)
 ARCH_FLAGS := -mcpu=cortex-a53
 USER_TEXT_ADDRESS := 0x100000000
-PORT_BUILD_DIR := build/arm64
 else
 ARCH_FLAGS := -mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft
 USER_TEXT_ADDRESS := 0x8000
-PORT_BUILD_DIR := build
 endif
+NEWLIB_RUNTIME_DIR ?= $(TARGET_BUILD_ROOT)/newlib-port
 NEWLIB_SYSROOT ?= $(shell $(CC) -print-sysroot 2>/dev/null)
 NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
+NEWLIB_LIBM ?= $(NEWLIB_SYSROOT)/lib/libm.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
+KEYBOARD_LAYOUT ?= us
+
+ifeq ($(KEYBOARD_LAYOUT),us)
+KEYBOARD_LAYOUT_ID := 0
+else ifeq ($(KEYBOARD_LAYOUT),us-mac)
+KEYBOARD_LAYOUT_ID := 1
+else ifeq ($(KEYBOARD_LAYOUT),fr)
+KEYBOARD_LAYOUT_ID := 2
+else ifeq ($(KEYBOARD_LAYOUT),fr-mac)
+KEYBOARD_LAYOUT_ID := 3
+else ifeq ($(KEYBOARD_LAYOUT),fr-legacy)
+KEYBOARD_LAYOUT_ID := 4
+else
+$(error Unsupported KEYBOARD_LAYOUT '$(KEYBOARD_LAYOUT)')
+endif
 
 CFLAGS := $(ARCH_FLAGS) -std=gnu99 -Os -ffreestanding -fno-builtin \
           $(REPRO_FLAGS) \
+          -MMD -MP \
           -ffunction-sections -fdata-sections \
           -fno-stack-protector -DARM_OS_NEWLIB \
+          -DARMOS_DEFAULT_KEYBOARD_LAYOUT=$(KEYBOARD_LAYOUT_ID) \
           -D__DYNAMIC_REENT__ \
           -DARMOS_USER_TEXT_ADDRESS=$(USER_TEXT_ADDRESS) \
           -Iinclude -I../include -I$(NEWLIB_SYSROOT)/include
@@ -54,11 +76,17 @@ LDFLAGS := $(ARCH_FLAGS) -nostdlib -nostartfiles -static \
            -Wl,-Ttext=$(USER_TEXT_ADDRESS) -Wl,-e,_start -Wl,--gc-sections \
            -Wl,--allow-multiple-definition
 
-PORT_OBJECTS := $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/crt0_newlib.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscall_raw.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/syscalls.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread.o \
-                $(NEWLIB_PORT)/$(PORT_BUILD_DIR)/pthread_sync.o
+PORT_OBJECTS := $(NEWLIB_RUNTIME_DIR)/crt0_newlib.o \
+                $(NEWLIB_RUNTIME_DIR)/syscall_raw.o \
+                $(NEWLIB_RUNTIME_DIR)/syscalls.o \
+                $(NEWLIB_RUNTIME_DIR)/stdio_lock.o \
+                $(NEWLIB_RUNTIME_DIR)/pthread.o \
+                $(NEWLIB_RUNTIME_DIR)/pthread_sync.o
+NEWLIB_PORT_STAMP := $(NEWLIB_RUNTIME_DIR)/.armos-incremental.stamp
+NEWLIB_PORT_INPUTS := $(shell find $(NEWLIB_PORT) -type f \( \
+                      -name '*.c' -o -name '*.h' -o -name '*.S' -o \
+                      -name 'Makefile' \) 2>/dev/null)
+LINK_DEPS := $(PORT_OBJECTS) $(NEWLIB_LIBC) $(LIBGCC)
 
 COREUTIL_SRCS := $(wildcard coreutils/src/*.c)
 COREUTILS := $(sort $(patsubst coreutils/src/%.c,%,$(COREUTIL_SRCS)))
@@ -76,13 +104,22 @@ PROGRAMS := $(patsubst programs/%/,%,$(PROGRAM_DIRS))
 # ARM64 userfs path set.
 PROGRAMS := $(filter-out hello64,$(PROGRAMS))
 
+# armos-wlcomp is a privileged system service installed in /sbin.
+PROGRAMS := $(filter-out armos-wlcomp,$(PROGRAMS))
+
+# Linked explicitly against both native Wayland libraries below.
+PROGRAMS := $(filter-out wayland-lib-test,$(PROGRAMS))
+
+# Linked explicitly against the native Wayland client and math libraries.
+PROGRAMS := $(filter-out teapot-demo,$(PROGRAMS))
+
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
 
 # These tools have their own configure/build flow and are staged by dedicated
 # top-level build switches.  The generic "one directory -> one binary" rule is
 # intentionally too small for them.
-EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs tcc zlib libjpeg libpng libtiff,$(EXTERNALS))
+EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs epoll-shim tcc zlib libjpeg libpng libtiff,$(EXTERNALS))
 
 ifneq ($(ENABLE_TCC),1)
 PROGRAMS := $(filter-out tcc,$(PROGRAMS))
@@ -93,10 +130,12 @@ endif
 PROGRAMS := $(filter-out fbview,$(PROGRAMS))
 
 PROGRAM_TARGETS := $(PROGRAMS:%=$(OUT_USR_BIN)/%)
+ARMOS_WLCOMP_TARGET := $(OUT_SBIN)/armos-wlcomp
 EXTERNAL_TARGETS := $(foreach name,$(EXTERNALS),$(OUT_OPT)/$(name)/bin/$(name))
 
 SYSTEM_TARGETS := $(OUT_SBIN)/init $(OUT_SBIN)/mash $(SYSTEM_TOOL_TARGETS)
-TARGETS := $(SYSTEM_TARGETS) $(COREUTIL_TARGETS) $(PROGRAM_TARGETS) $(EXTERNAL_TARGETS)
+TARGETS := $(SYSTEM_TARGETS) $(ARMOS_WLCOMP_TARGET) $(COREUTIL_TARGETS) \
+           $(PROGRAM_TARGETS) $(EXTERNAL_TARGETS)
 
 MASH_SRCS := $(wildcard system/mash/src/*.c)
 MASH_OBJECTS := $(patsubst system/mash/src/%.c,$(BUILD_DIR)/system/mash/%.o,$(MASH_SRCS))
@@ -104,9 +143,44 @@ INIT_SRCS := $(wildcard system/init/*.c)
 INIT_OBJECTS := $(patsubst system/init/%.c,$(BUILD_DIR)/system/init/%.o,$(INIT_SRCS))
 HELLO64_SRCS := $(wildcard programs/hello64/*.c)
 HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64/%.o,$(HELLO64_SRCS))
+ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
+ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
+$(ARMOS_WLCOMP_OBJECTS): programs/armos-wlcomp/armos_wlcomp.h
+# Software composition is a per-pixel hot path on Raspberry Pi.
+$(ARMOS_WLCOMP_OBJECTS): CFLAGS += -O3
+WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
+WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
+WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
+XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
+THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
+SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
+WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
+WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
+WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
+XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
+THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
+SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
+WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
+                     $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
+WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
+WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
+TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
+TEAPOT_DEMO_TARGET := $(OUT_USR_BIN)/teapot-demo
 
-.PHONY: all clean install check-newlib newlib-port list init mash hello64
+TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
+           $(WAYLAND_API_TEST_TARGET) \
+           $(TEAPOT_DEMO_TARGET)
+
+$(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
+# The demo is deliberately CPU-rendered and benefits substantially over -Os.
+$(TEAPOT_DEMO_OBJECT): CFLAGS += -O3
+
+.PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
+
+# Pattern-generated program objects are final cache entries, not disposable
+# intermediates. Keeping them is required for true incremental builds.
+.SECONDARY:
 
 all: check-newlib $(TARGETS)
 
@@ -119,8 +193,18 @@ check-newlib:
 		exit 1; \
 	fi
 
-newlib-port:
-	$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" ARCH="$(ARCH)" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"
+newlib-port: $(NEWLIB_PORT_STAMP)
+
+$(NEWLIB_PORT_STAMP): $(NEWLIB_PORT_INPUTS) $(NEWLIB_LIBC)
+	$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" ARCH="$(ARCH)" BUILD_DIR="$(abspath $(NEWLIB_RUNTIME_DIR))" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"
+	touch $@
+
+$(PORT_OBJECTS): $(NEWLIB_PORT_STAMP)
+	@test -f $@ || { \
+		$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" ARCH="$(ARCH)" BUILD_DIR="$(abspath $(NEWLIB_RUNTIME_DIR))" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"; \
+		touch $(NEWLIB_PORT_STAMP); \
+		test -f $@; \
+	}
 
 list:
 	@printf '%s\n' $(TARGETS)
@@ -128,6 +212,7 @@ list:
 init: $(OUT_SBIN)/init
 mash: $(OUT_SBIN)/mash
 hello64: $(OUT_USR_BIN)/hello64
+armos-wlcomp: $(ARMOS_WLCOMP_TARGET)
 $(SYSTEM_TOOLS): %: $(OUT_SBIN)/%
 $(COREUTILS): %: $(OUT_BIN)/%
 $(PROGRAMS): %: $(OUT_USR_BIN)/%
@@ -151,6 +236,59 @@ $(BUILD_DIR)/opt/%.o: opt/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/wayland/%.o: lib/wayland/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/xkbcommon/%.o: lib/xkbcommon/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/threads/%.o: lib/threads/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/syslog/%.o: lib/syslog/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_SERVER_LIBRARY): $(WAYLAND_SERVER_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_CURSOR_LIBRARY): $(WAYLAND_CURSOR_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(XKBCOMMON_LIBRARY): $(XKBCOMMON_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(THREADS_LIBRARY): $(THREADS_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
+		$(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
+		$(WAYLAND_SERVER_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
+		$(WAYLAND_CLIENT_LIBRARY) "$(NEWLIB_LIBM)" \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -163,22 +301,27 @@ define PROGRAM_RULE
 $(1)_SRCS := $$(wildcard programs/$(1)/*.c)
 $(1)_OBJECTS := $$(patsubst programs/$(1)/%.c,$$(BUILD_DIR)/programs/$(1)/%.o,$$($(1)_SRCS))
 
-$(OUT_USR_BIN)/$(1): newlib-port $$($(1)_OBJECTS)
+$(OUT_USR_BIN)/$(1): $$(LINK_DEPS) $$($(1)_OBJECTS)
 	mkdir -p $$(@D)
 	$$(CC) $$(LDFLAGS) -o $$@ $$(PORT_OBJECTS) $$($(1)_OBJECTS) "$$(NEWLIB_LIBC)" "$$(LIBGCC)"
 endef
 
 $(foreach prog,$(PROGRAMS),$(eval $(call PROGRAM_RULE,$(prog))))
 
-$(OUT_USR_BIN)/hello64: newlib-port $(HELLO64_OBJECTS)
+$(OUT_USR_BIN)/hello64: $(LINK_DEPS) $(HELLO64_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(HELLO64_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(ARMOS_WLCOMP_TARGET): $(LINK_DEPS) $(ARMOS_WLCOMP_OBJECTS) $(WAYLAND_SERVER_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMOS_WLCOMP_OBJECTS) \
+		$(WAYLAND_SERVER_LIBRARY) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 define EXTERNAL_RULE
 $(1)_EXTERNAL_SRCS := $$(wildcard opt/$(1)/src/*.c)
 $(1)_EXTERNAL_OBJECTS := $$(patsubst opt/%.c,$$(BUILD_DIR)/opt/%.o,$$($(1)_EXTERNAL_SRCS))
 
-$(OUT_OPT)/$(1)/bin/$(1): newlib-port $$($(1)_EXTERNAL_OBJECTS)
+$(OUT_OPT)/$(1)/bin/$(1): $$(LINK_DEPS) $$($(1)_EXTERNAL_OBJECTS)
 	mkdir -p $$(@D)
 	$$(CC) $$(LDFLAGS) -o $$@ $$(PORT_OBJECTS) $$($(1)_EXTERNAL_OBJECTS) "$$(NEWLIB_LIBC)" "$$(LIBGCC)"
 
@@ -187,24 +330,24 @@ endef
 
 $(foreach prog,$(EXTERNALS),$(eval $(call EXTERNAL_RULE,$(prog))))
 
-$(OUT_SBIN)/init: newlib-port $(INIT_OBJECTS)
+$(OUT_SBIN)/init: $(LINK_DEPS) $(INIT_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(INIT_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_SBIN)/mash: newlib-port $(MASH_OBJECTS)
+$(OUT_SBIN)/mash: $(LINK_DEPS) $(MASH_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(MASH_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_SBIN)/%: newlib-port $(BUILD_DIR)/system/tools/%.o
+$(OUT_SBIN)/%: $(LINK_DEPS) $(BUILD_DIR)/system/tools/%.o
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(BUILD_DIR)/system/tools/$*.o "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_BIN)/%: newlib-port $(BUILD_DIR)/coreutils/%.o
+$(OUT_BIN)/%: $(LINK_DEPS) $(BUILD_DIR)/coreutils/%.o
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(BUILD_DIR)/coreutils/$*.o "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 install: $(TARGETS)
-	mkdir -p $(USERFS_BIN) $(USERFS_SBIN) $(USERFS_USR_BIN) $(USERFS_OPT)
+	mkdir -p $(USERFS_BIN) $(USERFS_SBIN) $(USERFS_USR_BIN) $(USERFS_USR_LIB) $(USERFS_OPT)
 	rm -rf $(USERFS_ROOT)/opt/newlib
 	rm -f $(USERFS_USR_BIN)/hello64
 	# xvprobe is an optional local-only binary; never retain one from another target.
@@ -215,6 +358,11 @@ install: $(TARGETS)
 		rm -f $(USERFS_BIN)/$$name $(USERFS_USR_BIN)/$$name; \
 		$(STRIP) --strip-all $(USERFS_SBIN)/$$name; \
 	done
+	rm -f $(USERFS_SBIN)/windowserverd
+	rm -f $(USERFS_SBIN)/armos-wlcomp
+	cp $(ARMOS_WLCOMP_TARGET) $(USERFS_SBIN)/armos-wlcomp
+	rm -f $(USERFS_BIN)/armos-wlcomp $(USERFS_USR_BIN)/armos-wlcomp
+	$(STRIP) --strip-all $(USERFS_SBIN)/armos-wlcomp
 	@for name in $(SYSTEM_TOOLS); do \
 		rm -f $(USERFS_SBIN)/$$name; \
 		cp $(OUT_SBIN)/$$name $(USERFS_SBIN)/$$name; \
@@ -243,6 +391,21 @@ install: $(TARGETS)
 		rm -f $(USERFS_BIN)/$$name $(USERFS_SBIN)/$$name $(USERFS_USR_BIN)/$$name; \
 		$(STRIP) --strip-all $(USERFS_OPT)/$$name/bin/$$name; \
 	done
+	cp $(WAYLAND_CLIENT_LIBRARY) $(USERFS_USR_LIB)/libwayland-client.a
+	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
+	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
+	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
+	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
+	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
+	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
+	cp $(TEAPOT_DEMO_TARGET) $(USERFS_USR_BIN)/teapot-demo
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/teapot-demo
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Compiler-generated dependency files make header changes rebuild precisely the
+# affected objects without requiring a global userland clean.
+DEPFILES := $(shell if [ -d "$(BUILD_DIR)" ]; then find "$(BUILD_DIR)" -name '*.d' -type f; fi)
+-include $(DEPFILES)

@@ -10,7 +10,7 @@
 # Layer: Host tooling / userfs validation
 #
 # Responsibilities:
-# - Inspect every ELF file installed in the shared ArmOS userfs.
+# - Inspect every ELF file installed in a target ArmOS userfs.
 # - Reject binaries for an architecture other than the requested target.
 
 set -euo pipefail
@@ -19,6 +19,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${ARCH:-aarch64-elf-}"
 ALLOW_EMPTY=0
 QUIET=0
+USERFS_ROOT="${USERFS_ROOT:-}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -28,8 +29,16 @@ while [ "$#" -gt 0 ]; do
         --quiet)
             QUIET=1
             ;;
+        --root)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "error: --root requires a directory" >&2
+                exit 2
+            fi
+            USERFS_ROOT="$1"
+            ;;
         *)
-            echo "usage: $0 [--allow-empty] [--quiet]" >&2
+            echo "usage: $0 [--root DIR] [--allow-empty] [--quiet]" >&2
             exit 2
             ;;
     esac
@@ -64,7 +73,7 @@ while IFS= read -r file; do
         fi
         failed=$((failed + 1))
     fi
-done < <(find "$ROOT_DIR/userfs" -path "$ROOT_DIR/userfs/legacy" -prune -o -type f -print | sort)
+done < <(find "$USERFS_ROOT" -path "$USERFS_ROOT/legacy" -prune -o -type f -print | sort)
 
 if [ "$checked" -eq 0 ]; then
     if [ "$ALLOW_EMPTY" -eq 1 ]; then

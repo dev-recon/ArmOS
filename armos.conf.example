@@ -4,6 +4,7 @@
 TARGET_ARCH=arm32
 TARGET_PLATFORM=qemu-virt
 SMP_CPUS=1
+KEYBOARD_LAYOUT=us
 
 # QEMU launch features. Both may be enabled together.
 ENABLE_NET=no

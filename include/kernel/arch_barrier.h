@@ -64,6 +64,12 @@ static inline void arch_clean_dcache_by_mva(const void *addr, size_t size)
     asm_clean_dcache_by_mva(addr, size);
 }
 
+static inline void arch_clean_dcache_2d_by_mva(
+    const void *addr, size_t stride, size_t row_size, size_t rows)
+{
+    asm_clean_dcache_2d_by_mva(addr, stride, row_size, rows);
+}
+
 static inline void arch_invalidate_dcache_by_mva(const void *addr, size_t size)
 {
     asm_invalidate_dcache_by_mva(addr, size);

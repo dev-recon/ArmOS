@@ -41,6 +41,9 @@ extern paddr_t framebuffer_phys;   /* Physical/DMA address of framebuffer_base *
 #define ARMOS_FBIOGET_ORIENTATION 0x4601u
 #define ARMOS_FBIOSET_ORIENTATION 0x4602u
 #define ARMOS_FBIOSET_MODE      0x4603u
+#define ARMOS_FBIOACQUIRE       0x4604u
+#define ARMOS_FBIORELEASE       0x4605u
+#define ARMOS_FBIOBLIT          0x4606u
 #define ARMOS_FB_FORMAT_ARGB8888 1u
 
 struct armos_fb_info {
@@ -59,6 +62,15 @@ struct armos_fb_orientation {
 struct armos_fb_mode {
     uint32_t width;
     uint32_t height;
+};
+
+struct armos_fb_blit {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t source_pitch;
+    uint64_t source;
 };
 
 typedef struct {
@@ -138,6 +150,9 @@ int framebuffer_get_orientation(file_t *file,
 int framebuffer_set_orientation(file_t *file,
                                 const struct armos_fb_orientation *orientation);
 int framebuffer_set_mode(file_t *file, const struct armos_fb_mode *mode);
+int framebuffer_acquire(file_t *file);
+int framebuffer_release(file_t *file);
+int framebuffer_blit(file_t *file, const struct armos_fb_blit *blit);
 file_t* create_framebuffer_device_file(const char* name, int flags);
 
 #endif

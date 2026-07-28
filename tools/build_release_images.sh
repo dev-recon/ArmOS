@@ -16,12 +16,12 @@
 #
 # Notes:
 # - Archives preserve the build/images layout expected by boot.sh.
-# - The shared userfs is architecture-specific, so targets are built and
-#   packaged sequentially.
+# - Target work trees are independent and may be built concurrently.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
 OUTPUT_DIR="$ROOT_DIR/images"
 SKIP_BUILD=0
 REQUESTED_VERSION=""

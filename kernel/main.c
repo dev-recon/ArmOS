@@ -38,6 +38,7 @@
 #include <kernel/stdarg.h>
 #include <kernel/disk_layout.h>
 #include <kernel/device_service.h>
+#include <kernel/windowserver.h>
 
 #include <kernel/task.h>
 #include <kernel/kernel_tasks.h>
@@ -305,6 +306,14 @@ void kernel_main(void)
 
     if (rootfs_ready)
         process_release_init();
+
+    if (rootfs_ready && platform_devices.display_ready &&
+        platform_devices.compositor_allowed) {
+        if (windowserverd_start() == 0)
+            KBOOT_OK("WindowServer: userland compositor");
+        else
+            KBOOT_WARN("WindowServer: userland compositor unavailable");
+    }
 
     /* Main scheduler loop */
     sched_start();

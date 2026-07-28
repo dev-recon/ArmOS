@@ -45,6 +45,7 @@ ST_FUNC int code_reloc (int reloc_type)
         case R_AARCH64_LDST8_ABS_LO12_NC:
         case R_AARCH64_TLSLE_ADD_TPREL_HI12:
         case R_AARCH64_TLSLE_ADD_TPREL_LO12:
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12_NC:
         case R_AARCH64_GLOB_DAT:
         case R_AARCH64_COPY:
             return 0;
@@ -84,6 +85,7 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
         case R_AARCH64_TSTBR14:
         case R_AARCH64_TLSLE_ADD_TPREL_HI12:
         case R_AARCH64_TLSLE_ADD_TPREL_LO12:
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12_NC:
             return NO_GOTPLT_ENTRY;
 
         case R_AARCH64_ABS32:
@@ -370,7 +372,8 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
             write64le(ptr, val - rel->r_addend);
             return;
         case R_AARCH64_TLSLE_ADD_TPREL_HI12:
-        case R_AARCH64_TLSLE_ADD_TPREL_LO12: {
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12:
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12_NC: {
             addr_t tls_start = 0;
             int64_t tp_offset;
             int64_t imm;

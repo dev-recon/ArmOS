@@ -5,14 +5,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT_DIR/userland/programs/fbview/fbview.c"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/fbview}"
+WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/fbview}"
 BUILD_DIR="$WORK_DIR/build"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_USR_BIN="$BUNDLE_ROOT/usr/bin"
-ZLIB_PREFIX="${ZLIB_PREFIX:-$ROOT_DIR/build/zlib/bundle/opt/zlib}"
-JPEG_PREFIX="${JPEG_PREFIX:-$ROOT_DIR/build/libjpeg/bundle/opt/libjpeg}"
-PNG_PREFIX="${PNG_PREFIX:-$ROOT_DIR/build/libpng/bundle/opt/libpng}"
-TIFF_PREFIX="${TIFF_PREFIX:-$ROOT_DIR/build/libtiff/bundle/opt/libtiff}"
+ZLIB_PREFIX="${ZLIB_PREFIX:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/zlib/bundle/opt/zlib}"
+JPEG_PREFIX="${JPEG_PREFIX:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/libjpeg/bundle/opt/libjpeg}"
+PNG_PREFIX="${PNG_PREFIX:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/libpng/bundle/opt/libpng}"
+TIFF_PREFIX="${TIFF_PREFIX:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/libtiff/bundle/opt/libtiff}"
 
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
@@ -96,4 +96,4 @@ echo "ArmOS fbview bundle built:"
 echo "  $BUNDLE_ROOT"
 echo
 echo "Stage with:"
-echo "  rsync -a $BUNDLE_ROOT/ $ROOT_DIR/userfs/"
+echo "  rsync -a $BUNDLE_ROOT/ $USERFS_ROOT/"

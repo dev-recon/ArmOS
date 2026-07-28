@@ -15,6 +15,7 @@ _ARMOS_ENV_TARGET_ARCH := $(if $(filter environment environment\ override,$(orig
 _ARMOS_ENV_TARGET_PLATFORM := $(if $(filter environment environment\ override,$(origin TARGET_PLATFORM)),$(TARGET_PLATFORM))
 _ARMOS_ENV_CROSS_COMPILE := $(if $(filter environment environment\ override,$(origin CROSS_COMPILE)),$(CROSS_COMPILE))
 _ARMOS_ENV_SMP_CPUS := $(if $(filter environment environment\ override,$(origin SMP_CPUS)),$(SMP_CPUS))
+_ARMOS_ENV_KEYBOARD_LAYOUT := $(if $(filter environment environment\ override,$(origin KEYBOARD_LAYOUT)),$(KEYBOARD_LAYOUT))
 -include $(ARMOS_CONFIG)
 ifneq ($(_ARMOS_ENV_TARGET_ARCH),)
 TARGET_ARCH := $(_ARMOS_ENV_TARGET_ARCH)
@@ -27,6 +28,9 @@ CROSS_COMPILE := $(_ARMOS_ENV_CROSS_COMPILE)
 endif
 ifneq ($(_ARMOS_ENV_SMP_CPUS),)
 SMP_CPUS := $(_ARMOS_ENV_SMP_CPUS)
+endif
+ifneq ($(_ARMOS_ENV_KEYBOARD_LAYOUT),)
+KEYBOARD_LAYOUT := $(_ARMOS_ENV_KEYBOARD_LAYOUT)
 endif
 
 TARGET_ARCH ?= arm32
@@ -57,12 +61,18 @@ QEMU ?= qemu-system-arm
 SMP_CPUS ?= 1
 BUILD_DIR = build
 IMAGE_DIR ?= $(BUILD_DIR)/images
+TARGET_BUILD_DIR = $(BUILD_DIR)/targets/$(TARGET_ARCH)-$(TARGET_PLATFORM)
+TARGET_WORK_DIR = $(BUILD_DIR)/$(TARGET_ARCH)/$(TARGET_PLATFORM)
+KERNEL_BUILD_DIR = $(TARGET_BUILD_DIR)/kernel
+KERNEL_WORK_DIR = $(TARGET_WORK_DIR)/kernel
+KERNEL_OBJECT_DIR = $(KERNEL_WORK_DIR)/objects
+DISK_BUILD_DIR = $(TARGET_BUILD_DIR)/disk
 ARCH_DIR = arch/$(TARGET_ARCH)
 ARCH_INCLUDE = $(ARCH_DIR)/include
 ASM_OFFSETS_SRC = $(ARCH_DIR)/asm-offsets.c
-ASM_OFFSETS_S = $(BUILD_DIR)/asm-offsets.s
-ASM_OFFSETS_H = $(BUILD_DIR)/generated/asm-offsets.h
-BUILD_CONFIG_STAMP = $(BUILD_DIR)/active-build-config.stamp
+ASM_OFFSETS_S = $(KERNEL_WORK_DIR)/asm-offsets.s
+ASM_OFFSETS_H = $(KERNEL_WORK_DIR)/generated/asm-offsets.h
+BUILD_CONFIG_STAMP = $(KERNEL_WORK_DIR)/active-build-config.stamp
 TARGET_ARCH_DISPLAY = $(TARGET_ARCH)/$(TARGET_PLATFORM)
 TARGET_PLATFORM_DIR = $(subst -,_,$(TARGET_PLATFORM))
 PLATFORM_DIR = $(ARCH_DIR)/platform/$(TARGET_PLATFORM_DIR)
@@ -92,15 +102,32 @@ include $(PLATFORM_MK)
 MATH_FLAGS = -fno-builtin-div -fno-builtin-mod
 STACK_PROTECTOR_FLAG ?= -fstack-protector
 LINKER_SCRIPT ?= linker.ld
+KEYBOARD_LAYOUT ?= us
+
+ifeq ($(KEYBOARD_LAYOUT),us)
+KEYBOARD_LAYOUT_ID = 0
+else ifeq ($(KEYBOARD_LAYOUT),us-mac)
+KEYBOARD_LAYOUT_ID = 1
+else ifeq ($(KEYBOARD_LAYOUT),fr)
+KEYBOARD_LAYOUT_ID = 2
+else ifeq ($(KEYBOARD_LAYOUT),fr-mac)
+KEYBOARD_LAYOUT_ID = 3
+else ifeq ($(KEYBOARD_LAYOUT),fr-legacy)
+KEYBOARD_LAYOUT_ID = 4
+else
+$(error Unsupported KEYBOARD_LAYOUT '$(KEYBOARD_LAYOUT)')
+endif
 
 # Flags de compilation
-ASFLAGS = -g -I$(ARCH_INCLUDE) -Iinclude -I$(BUILD_DIR)/generated $(PLATFORM_ASFLAGS)
+ASFLAGS = -g -I$(ARCH_INCLUDE) -Iinclude -I$(KERNEL_WORK_DIR)/generated $(PLATFORM_ASFLAGS)
 
 CFLAGS = -std=gnu99 $(ARCH_CFLAGS) $(PLATFORM_CFLAGS) $(MATH_FLAGS) \
          $(REPRO_FLAGS) \
          -DARMOS_VERSION=\"$(ARMOS_VERSION)\" \
+         -DARMOS_DEFAULT_KEYBOARD_LAYOUT=$(KEYBOARD_LAYOUT_ID) \
          -ffreestanding -nostdlib -nostartfiles -fno-inline \
          -Wall -Wextra -Werror -g -O0 -fno-omit-frame-pointer -Wformat -Wformat-security \
+         -Wframe-larger-than=8192 \
          -fno-builtin $(STACK_PROTECTOR_FLAG) -Wno-unused-function \
          -MMD -MP \
          -fno-pic -fno-pie \
@@ -108,7 +135,7 @@ CFLAGS = -std=gnu99 $(ARCH_CFLAGS) $(PLATFORM_CFLAGS) $(MATH_FLAGS) \
          -Iinclude
 # Flags du linker. Platform --defsym values must precede -T so linker.ld sees
 # them while evaluating parametric addresses.
-LDFLAGS = $(PLATFORM_LDFLAGS) -T $(LINKER_SCRIPT) -nostdlib -Map=kernel.map
+LDFLAGS = $(PLATFORM_LDFLAGS) -T $(LINKER_SCRIPT) -nostdlib
 
 COMMON_TASK_OBJS = \
 	kernel/task/current.o \
@@ -146,9 +173,11 @@ COMMON_KERNEL_OBJS = \
 	kernel/process/signal.o \
 	kernel/core/coredump.o \
 	kernel/core/device_service.o \
+	kernel/core/windowserver.o \
 	kernel/net/device.o \
 	kernel/net/stack.o \
 	kernel/net/socket.o \
+	kernel/net/armos_socket.o \
 	kernel/net/control.o \
 	kernel/net/wifi.o \
 	kernel/fs/vfs.o \
@@ -162,7 +191,10 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/block_device.o \
 	kernel/drivers/uart.o \
 	kernel/drivers/tty.o \
+	kernel/drivers/pty.o \
+	kernel/drivers/event_timer.o \
 	kernel/drivers/null.o \
+	kernel/drivers/input.o \
 	kernel/drivers/power.o \
 	kernel/drivers/usb/core.o \
 	kernel/timer/timer.o \
@@ -215,13 +247,15 @@ endif
 KERNEL_OBJS = $(COMMON_KERNEL_OBJS) $(ARCH_KERNEL_OBJS) $(PLATFORM_OBJS)
 TASK_OBJS = $(COMMON_TASK_OBJS) $(ARCH_TASK_OBJS)
 LIB_OBJ = $(COMMON_LIB_OBJS)
-ALL_OBJS = $(KERNEL_OBJS) $(LIB_OBJ) $(TASK_OBJS)
+ALL_OBJ_NAMES = $(KERNEL_OBJS) $(LIB_OBJ) $(TASK_OBJS)
+ALL_OBJS = $(addprefix $(KERNEL_OBJECT_DIR)/,$(ALL_OBJ_NAMES))
 DEPFILES = $(ALL_OBJS:.o=.d)
 
 # Configuration du disque
-DISK_IMG     = disk.img
-FAT32_IMG    = fat32.img
-EXT2_IMG     = ext2.img
+DISK_IMG     = $(DISK_BUILD_DIR)/disk.img
+FAT32_IMG    = $(DISK_BUILD_DIR)/fat32.img
+EXT2_IMG     = $(DISK_BUILD_DIR)/ext2.img
+BOOT_DISK_IMG = $(DISK_BUILD_DIR)/boot-disk.img
 IMAGE_SUFFIX ?= $(TARGET_ARCH)-$(TARGET_PLATFORM)
 PLATFORM_KERNEL_ELF = $(IMAGE_DIR)/kernel-$(IMAGE_SUFFIX).elf
 PLATFORM_KERNEL_BIN = $(IMAGE_DIR)/kernel-$(IMAGE_SUFFIX).bin
@@ -252,7 +286,9 @@ DISK_FAT32_SECTORS = $(shell echo $$(($(FAT32_SIZE_MB) * $(DISK_MB_SECTORS))))
 PLATFORM_DISK_LAYOUT ?= ext2-first
 PLATFORM_DISK_HIDDEN_BOOT ?= 0
 HIDDEN_FAT32_FLAG = $(if $(filter 1 yes true,$(PLATFORM_DISK_HIDDEN_BOOT)),--hidden-fat32,)
-USERFS_DIR   = userfs
+USERFS_SOURCE_DIR ?= userfs
+USERFS_DIR   ?= $(TARGET_WORK_DIR)/userfs
+USERFS_READY_STAMP = $(TARGET_WORK_DIR)/.armos-userfs-seed-v1
 USERFS_OS_CONF = $(USERFS_DIR)/etc/os.conf
 USERLAND_DIR = userland
 EXT2_STAGING = /tmp/ext2_staging
@@ -265,10 +301,12 @@ USERFS_BIN_FILES := $(shell find $(USERFS_DIR)/bin -type f 2>/dev/null)
 
 # Cibles
 TARGET = kernel
-KERNEL_ELF = $(TARGET).elf
-KERNEL_BIN = $(TARGET).bin
+KERNEL_ELF = $(KERNEL_BUILD_DIR)/$(TARGET).elf
+KERNEL_BIN = $(KERNEL_BUILD_DIR)/$(TARGET).bin
+KERNEL_MAP = $(KERNEL_BUILD_DIR)/$(TARGET).map
+KERNEL_DIS = $(KERNEL_BUILD_DIR)/$(TARGET).dis
 
-.PHONY: FORCE config platform-kernel platform-disk
+.PHONY: FORCE config platform-kernel platform-disk platform-disk-locked
 
 all: platform-kernel platform-disk
 
@@ -279,6 +317,7 @@ config:
 	@echo "  TARGET_PLATFORM: $(TARGET_PLATFORM)"
 	@echo "  CROSS_COMPILE:   $(CROSS_COMPILE)"
 	@echo "  SMP_CPUS:        $(SMP_CPUS)"
+	@echo "  KEYBOARD_LAYOUT: $(KEYBOARD_LAYOUT)"
 	@echo "  ENABLE_NET:      $(if $(ENABLE_NET),$(ENABLE_NET),no)"
 	@echo "  ENABLE_WIFI:     $(if $(ENABLE_WIFI),$(ENABLE_WIFI),no)"
 	@echo "  ENABLE_GPU:      $(if $(ENABLE_GPU),$(ENABLE_GPU),no)"
@@ -290,25 +329,26 @@ config:
 
 # Linkage
 $(KERNEL_ELF): $(ALL_OBJS) $(LINKER_SCRIPT)
-	$(LD) $(LDFLAGS) $(ALL_OBJS) -o $@
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -Map=$(KERNEL_MAP) $(ALL_OBJS) -o $@
 
 # Conversion en binaire
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
-	$(OBJDUMP) -d $(KERNEL_ELF) > kernel.dis
+	$(OBJDUMP) -d $(KERNEL_ELF) > $(KERNEL_DIS)
 
 $(PLATFORM_KERNEL_BIN): $(KERNEL_BIN)
 	@mkdir -p $(IMAGE_DIR)
 	cp $(KERNEL_ELF) $(PLATFORM_KERNEL_ELF)
 	cp $(KERNEL_BIN) $(PLATFORM_KERNEL_BIN)
-	cp kernel.map $(PLATFORM_KERNEL_MAP)
-	cp kernel.dis $(PLATFORM_KERNEL_DIS)
+	cp $(KERNEL_MAP) $(PLATFORM_KERNEL_MAP)
+	cp $(KERNEL_DIS) $(PLATFORM_KERNEL_DIS)
 	@echo "Platform kernel image: $(PLATFORM_KERNEL_BIN)"
 
 platform-kernel: $(PLATFORM_KERNEL_BIN)
 
 $(BUILD_CONFIG_STAMP): FORCE
-	@mkdir -p $(BUILD_DIR)
+	@mkdir -p $(dir $@)
 	@tmp="$@.tmp"; \
 	{ \
 		echo "TARGET_ARCH=$(TARGET_ARCH)"; \
@@ -324,7 +364,7 @@ $(BUILD_CONFIG_STAMP): FORCE
 	fi
 
 $(ASM_OFFSETS_H): $(ASM_OFFSETS_SRC) $(ASM_OFFSETS_DEPS) $(BUILD_CONFIG_STAMP)
-	@mkdir -p $(BUILD_DIR) $(dir $@)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -S $(ASM_OFFSETS_SRC) -o $(ASM_OFFSETS_S)
 	@awk '/->/ { \
 		line=$$0; \
@@ -336,16 +376,19 @@ $(ASM_OFFSETS_H): $(ASM_OFFSETS_SRC) $(ASM_OFFSETS_DEPS) $(BUILD_CONFIG_STAMP)
 		printf ".equ %-24s %s\n", f[1] ",", value; \
 	}' $(ASM_OFFSETS_S) > $@
 
-%.o: %.c $(BUILD_CONFIG_STAMP)
+$(KERNEL_OBJECT_DIR)/%.o: %.c $(BUILD_CONFIG_STAMP)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-%.o: %.S $(ASM_OFFSETS_H) $(BUILD_CONFIG_STAMP)
+$(KERNEL_OBJECT_DIR)/%.o: %.S $(ASM_OFFSETS_H) $(BUILD_CONFIG_STAMP)
+	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
 # Partition FAT32 de boot. Elle reste volontairement vide au build generique :
 # les firmwares Raspberry Pi, le kernel et config.txt sont stages ensuite par
 # tools/build_pi2_sd.sh. Le root systeme complet vit dans ext2.
 $(FAT32_IMG): Makefile
+	@mkdir -p $(dir $@)
 	@echo "=== Creating FAT32 image ($(FAT32_SIZE_MB) MB) ==="
 	dd if=/dev/zero of=$(FAT32_IMG) bs=1048576 count=$(FAT32_SIZE_MB) 2>/dev/null
 	mkfs.fat -F 32 -n "$(FAT32_LABEL)" $(FAT32_IMG)
@@ -369,7 +412,8 @@ ifeq ($(strip $(DEBUGFS)),)
 DEBUGFS := $(if $(E2FSPROGS_PREFIX),$(E2FSPROGS_PREFIX)/sbin/debugfs,debugfs)
 endif
 
-$(EXT2_IMG): Makefile $(USERFS_DIR) $(USERFS_OS_CONF) $(USERFS_FILES) $(USERFS_DIRS) $(USERFS_LINKS)
+$(EXT2_IMG): validate-userfs-arch Makefile $(USERFS_READY_STAMP) $(USERFS_OS_CONF) $(USERFS_FILES) $(USERFS_DIRS) $(USERFS_LINKS)
+	@mkdir -p $(dir $@)
 	@echo "=== Creating ext2 image ($(EXT2_SIZE_MB) MB) ==="
 	@if ! command -v "$(MKE2FS)" >/dev/null 2>&1 || \
 	    ! command -v "$(DEBUGFS)" >/dev/null 2>&1; then \
@@ -466,6 +510,7 @@ $(EXT2_IMG): Makefile $(USERFS_DIR) $(USERFS_OS_CONF) $(USERFS_FILES) $(USERFS_D
 # Disque final = MBR + partitions alignees. La premiere partition commence a
 # 1 MiB (LBA 2048), comme sur un disque Linux classique.
 $(DISK_IMG): $(FAT32_IMG) $(EXT2_IMG) $(MBR_TOOL)
+	@mkdir -p $(dir $@)
 	@echo "=== Assembling $(DISK_IMG) (MBR + ext2 + FAT32) ==="
 	dd if=/dev/zero of=$(DISK_IMG) bs=1048576 count=$(DISK_SIZE_MB) 2>/dev/null
 	$(PYTHON) $(MBR_TOOL) $(DISK_IMG) \
@@ -519,33 +564,20 @@ $(PLATFORM_DISK_IMG): $(DISK_IMG) Makefile $(PLATFORM_MK)
 	@echo "Platform disk image: $(PLATFORM_DISK_IMG)"
 endif
 
-platform-disk: $(PLATFORM_DISK_IMG)
+platform-disk:
+	ARMOS_BUILD_LOCK_DIR="$(CURDIR)/$(TARGET_WORK_DIR)/.build.lock" \
+		./tools/with_build_lock.sh $(MAKE) platform-disk-locked
 
-# Creer le repertoire userfs avec des fichiers de test
-$(USERFS_DIR):
-	@echo "Creating $(USERFS_DIR) directory with test files..."
-	mkdir -p $(USERFS_DIR)
-	echo "Hello from ArmOS ($(TARGET_ARCH_DISPLAY))!" > $(USERFS_DIR)/hello.txt
-	echo "This is a test file for the kernel" > $(USERFS_DIR)/test.txt
-	echo "ArmOS kernel ($(TARGET_ARCH_DISPLAY))" > $(USERFS_DIR)/readme.txt
-	echo "#!/bin/sh" > $(USERFS_DIR)/init.sh
-	echo "echo 'System initialization...'" >> $(USERFS_DIR)/init.sh
-	echo "echo 'Welcome to ArmOS ($(TARGET_ARCH_DISPLAY))'" >> $(USERFS_DIR)/init.sh
-	chmod +x $(USERFS_DIR)/init.sh
-	
-	# Creer des sous-repertoires
-	mkdir -p $(USERFS_DIR)/bin $(USERFS_DIR)/usr/bin
-	echo "echo 'Test program running'" > $(USERFS_DIR)/bin/test.sh
-	chmod +x $(USERFS_DIR)/bin/test.sh
-	echo "Binary placeholder" > $(USERFS_DIR)/usr/bin/hello
-	
-	mkdir -p $(USERFS_DIR)/tmp
-	echo "Temporary files directory" > $(USERFS_DIR)/tmp/README
-	
-	mkdir -p $(USERFS_DIR)/dev
-	touch $(USERFS_DIR)/dev/tty0 $(USERFS_DIR)/dev/tty1 $(USERFS_DIR)/dev/console $(USERFS_DIR)/dev/fb0 $(USERFS_DIR)/dev/fb1
-	
-	@echo "$(USERFS_DIR) directory created with test files"
+platform-disk-locked: $(PLATFORM_DISK_IMG)
+
+$(USERFS_READY_STAMP): tools/prepare_target_userfs.sh
+	TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" \
+		USERFS_SOURCE_ROOT="$(CURDIR)/$(USERFS_SOURCE_DIR)" \
+		USERFS_ROOT="$(CURDIR)/$(USERFS_DIR)" \
+		USERFS_STAMP="$(CURDIR)/$(USERFS_READY_STAMP)" \
+		./tools/prepare_target_userfs.sh
+
+$(USERFS_DIR): $(USERFS_READY_STAMP)
 
 $(USERFS_OS_CONF): $(BUILD_CONFIG_STAMP) | $(USERFS_DIR)
 	mkdir -p $(dir $@)
@@ -584,6 +616,7 @@ debug-run-userfs: $(KERNEL_BIN) userfs.bin
 # Version alternative plus simple (un seul niveau de fichiers)
 disk-simple: $(USERFS_DIR)
 	@echo "Creating simple disk image..."
+	@mkdir -p $(dir $(DISK_IMG))
 	dd if=/dev/zero of=$(DISK_IMG) bs=1048576 count=$(DISK_SIZE_MB) 2>/dev/null
 	mkfs.fat -F 32 -n "OSKERNEL" $(DISK_IMG)
 	
@@ -641,22 +674,23 @@ extract-disk: $(DISK_IMG)
 # Creer un disque de boot avec le kernel (optionnel)
 boot-disk: $(KERNEL_BIN) $(USERFS_DIR)
 	@echo "Creating bootable disk with kernel..."
-	dd if=/dev/zero of=boot_$(DISK_IMG) bs=1048576 count=$(DISK_SIZE_MB) 2>/dev/null
-	mkfs.fat -F 32 -n "ARMBOOT" boot_$(DISK_IMG)
-	mcopy -i boot_$(DISK_IMG) $(KERNEL_BIN) ::$(KERNEL_BIN)
+	@mkdir -p $(dir $(BOOT_DISK_IMG))
+	dd if=/dev/zero of=$(BOOT_DISK_IMG) bs=1048576 count=$(DISK_SIZE_MB) 2>/dev/null
+	mkfs.fat -F 32 -n "ARMBOOT" $(BOOT_DISK_IMG)
+	mcopy -i $(BOOT_DISK_IMG) $(KERNEL_BIN) ::kernel.bin
 	@if [ -d $(USERFS_DIR) ]; then \
 		find $(USERFS_DIR) -type f | while read file; do \
 			basename_file=$$(basename "$$file"); \
-			mcopy -i boot_$(DISK_IMG) "$$file" "::$$basename_file"; \
+			mcopy -i $(BOOT_DISK_IMG) "$$file" "::$$basename_file"; \
 		done; \
 	fi
-	@echo "Bootable disk created as boot_$(DISK_IMG)"
+	@echo "Bootable disk created as $(BOOT_DISK_IMG)"
 
 clean:
-	rm -f $(ALL_OBJS) $(DEPFILES) $(KERNEL_ELF) $(KERNEL_BIN) $(ASM_OFFSETS_S) $(ASM_OFFSETS_H)
+	rm -rf $(KERNEL_BUILD_DIR) $(KERNEL_WORK_DIR)
 
 clean-all: clean
-	rm -f $(DISK_IMG) boot_$(DISK_IMG)
+	rm -rf $(DISK_BUILD_DIR)
 	rm -rf $(USERFS_DIR) disk_contents
 
 # Essayez cette configuration alternative :
@@ -796,6 +830,10 @@ test-simple:
 	@rm -f test_simple.s test_simple.o test_simple.elf test_simple.bin
 
 # Mise a jour de la cible .PHONY
-.PHONY: all clean clean-all run debug check-disk disk-simple extract-disk boot-disk help test-kernel debug-verbose debug-monitor debug-trace info disasm symbols test-versatile test-simple
+.PHONY: all clean clean-all run debug check-disk disk-simple extract-disk boot-disk help test-kernel debug-verbose debug-monitor debug-trace info disasm symbols test-versatile test-simple validate-userfs-arch
+
+validate-userfs-arch:
+	TARGET_ARCH="$(TARGET_ARCH)" ARCH="$(CROSS_COMPILE)" \
+		./tools/validate_userfs_arch.sh --root "$(USERFS_DIR)" --allow-empty
 
 -include $(DEPFILES)

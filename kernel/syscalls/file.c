@@ -34,6 +34,8 @@
 #include <kernel/virtio_net.h>
 #include <kernel/net/control.h>
 #include <kernel/spinlock.h>
+#include <kernel/input.h>
+#include <kernel/pty.h>
 
 #define SYSCALL_IO_BOUNCE_SIZE     (64u * 1024u)
 #define SYSCALL_IO_BOUNCE_MIN_SIZE (4u * 1024u)
@@ -99,11 +101,6 @@ static int file_read_buffer(file_t* file, void* buf, size_t count)
      * prevents a partially unmapped user buffer from aborting the kernel
      * inside a filesystem or driver memcpy().
      */
-    if (is_kernel_pointer(buf)) {
-        result = file->f_op->read(file, buf, count);
-        return (int)result;
-    }
-
     read_count = count;
     if (read_count > SYSCALL_IO_BOUNCE_SIZE)
         read_count = SYSCALL_IO_BOUNCE_SIZE;
@@ -139,11 +136,6 @@ static int file_write_buffer(file_t* file, const void* buf, size_t count)
     if (!file) return -EBADF;
     if (!can_write(file)) return -EBADF;
     if (!file->f_op || !file->f_op->write) return -ENOSYS;
-
-    if (is_kernel_pointer(buf)) {
-        result = file->f_op->write(file, buf, count);
-        return (int)result;
-    }
 
     /*
      * Bound the user bounce buffer like sys_read(). A raw kmalloc(count) lets
@@ -223,12 +215,17 @@ int sys_write(int fd, const void* buf, size_t count)
 int kernel_write(int fd, const void* kernel_buf, size_t count)
 {
     task_t* task = task_current_local();
+    file_t* file;
 
     if (count == 0) return 0;
     if (!kernel_buf || !is_kernel_pointer(kernel_buf)) return -EFAULT;
     if (fd < 0 || fd >= MAX_FILES) return -EBADF;
     if (!task || !task->process) return -EBADF;
-    return file_write_buffer(task->process->files[fd], kernel_buf, count);
+    file = task->process->files[fd];
+    if (!file) return -EBADF;
+    if (!can_write(file)) return -EBADF;
+    if (!file->f_op || !file->f_op->write) return -ENOSYS;
+    return (int)file->f_op->write(file, kernel_buf, count);
 }
 
 static int positioned_file(int fd, const armos_offset_t* user_offset,
@@ -307,14 +304,11 @@ int sys_close(int fd)
 
     if (fd < 0 || fd >= MAX_FILES) return -EBADF;
     if (!task || !task->process) return -EBADF;
-    
-    file = task->process->files[fd];
+
+    file = vfs_take_file(task, fd);
     if (!file) return -EBADF;
-    
+
     close_file(file);
-    task->process->files[fd] = NULL;
-    task->process->fd_flags[fd] = 0;
-    
     return 0;
 }
 
@@ -1016,6 +1010,24 @@ static int sys_open_resolved(task_t *task, char *full_path,
         return search_ret;
     }
 
+    if (pty_is_master_path(full_path)) {
+        fd = allocate_fd(task);
+        if (fd < 0) {
+            kfree(full_path);
+            return fd;
+        }
+        tty_file = pty_create_master_file(flags & ~O_CLOEXEC);
+        if (!tty_file) {
+            free_fd(task, fd);
+            kfree(full_path);
+            return -ENOSPC;
+        }
+        task->process->files[fd] = tty_file;
+        task->process->fd_flags[fd] = flags & O_CLOEXEC;
+        kfree(full_path);
+        return fd;
+    }
+
     if (is_tty_device_path(full_path)) {
         int tty_id = tty_id_from_device_path(full_path);
 
@@ -1042,7 +1054,8 @@ static int sys_open_resolved(task_t *task, char *full_path,
             strcmp(full_path, "/dev/tty") == 0 ? "tty" :
             strcmp(full_path, "/dev/console") == 0 ? "console" :
             strcmp(full_path, "/dev/tty1") == 0 ? "tty1" :
-            strcmp(full_path, "/dev/ttyS0") == 0 ? "ttyS0" : "tty0",
+            strcmp(full_path, "/dev/ttyS0") == 0 ? "ttyS0" :
+            pty_is_slave_path(full_path) ? full_path + 5u : "tty0",
             flags & ~O_CLOEXEC);
         if (!tty_file) {
             free_fd(task, fd);
@@ -1103,6 +1116,36 @@ static int sys_open_resolved(task_t *task, char *full_path,
         }
 
         task->process->files[fd] = fb_file;
+        task->process->fd_flags[fd] = flags & O_CLOEXEC;
+        kfree(full_path);
+        return fd;
+    }
+
+    if (is_input_device_path(full_path)) {
+        file_t *input_file;
+        int input_error;
+
+        if (flags & O_DIRECTORY) {
+            kfree(full_path);
+            return -ENOTDIR;
+        }
+        if (current_uid() != 0) {
+            kfree(full_path);
+            return -EACCES;
+        }
+        fd = allocate_fd(task);
+        if (fd < 0) {
+            kfree(full_path);
+            return fd;
+        }
+        input_file = create_input_device_file(
+            "input0", flags & ~O_CLOEXEC, &input_error);
+        if (!input_file) {
+            free_fd(task, fd);
+            kfree(full_path);
+            return input_error;
+        }
+        task->process->files[fd] = input_file;
         task->process->fd_flags[fd] = flags & O_CLOEXEC;
         kfree(full_path);
         return fd;
@@ -1343,6 +1386,12 @@ static int stat_resolved_path(char *full_path, struct stat *kstat,
         return 0;
     }
 
+    if (is_input_device_path(full_path)) {
+        fill_input_device_stat(kstat);
+        kfree(full_path);
+        return 0;
+    }
+
     if (is_net_echo_device_path(full_path)) {
         fill_net_echo_device_stat(kstat);
         kfree(full_path);
@@ -1448,7 +1497,8 @@ file_t* create_file(void)
 
 bool file_is_tty(file_t* file)
 {
-    return file && file->type == FILE_TYPE_TTY;
+    return file && (file->type == FILE_TYPE_TTY ||
+                    file->type == FILE_TYPE_PTY_MASTER);
 }
 
 file_t* get_file(file_t* file)

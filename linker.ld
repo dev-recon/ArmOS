@@ -65,7 +65,7 @@ SECTIONS
     .stack : {
         . = ALIGN(4096);
         __stack_bottom = .;
-        . += 32768;  /* 16KB de pile */
+        . += 32768;  /* 32 KiB */
         __stack_top = .;
     } > RAM
 
@@ -73,7 +73,7 @@ SECTIONS
     .abtpile : {
         . = ALIGN(8);
         __abt_stack_bottom = .;
-        . += 1024;            /* 1KB */
+        . += 4096;            /* 4 KiB */
         __abt_stack_top = .;
     } > RAM
 
@@ -81,7 +81,7 @@ SECTIONS
     .irqpile : {
         . = ALIGN(8);
         __irq_stack_bottom = .;
-        . += 4096;            /* 2KB - augmente pour Cortex-A15 */
+        . += 4096;            /* 4 KiB */
         __irq_stack_top = .;
     } > RAM
 
@@ -89,7 +89,7 @@ SECTIONS
     .undpile : {
         . = ALIGN(8);
         __und_stack_bottom = .;
-        . += 1024;            /* 1KB */
+        . += 4096;            /* 4 KiB */
         __und_stack_top = .;
     } > RAM
 
@@ -97,7 +97,7 @@ SECTIONS
     .svcpile : {
         . = ALIGN(8);
         __svc_stack_bottom = .;
-        . += 8192;            /* 4KB pour SVC - mode principal du kernel */
+        . += 8192;            /* 8 KiB for the main SVC mode */
         __svc_stack_top = .;
     } > RAM
 
@@ -130,14 +130,14 @@ SECTIONS
     .smpabtstacks : {
         . = ALIGN(1024);
         __smp_abt_stack_bottom = .;
-        . += 1024 * 4;
+        . += 4096 * 4;
         __smp_abt_stack_top = .;
     } > RAM
 
     .smpundstacks : {
         . = ALIGN(1024);
         __smp_und_stack_bottom = .;
-        . += 1024 * 4;
+        . += 4096 * 4;
         __smp_und_stack_top = .;
     } > RAM
     

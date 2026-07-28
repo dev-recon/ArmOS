@@ -26,14 +26,14 @@ select_display() {
 
     case "$(uname -s)" in
         Darwin)
-            printf '%s\n' "cocoa,show-cursor=on"
+            printf '%s\n' "cocoa,show-cursor=off"
             ;;
         Linux)
             display_help="$("$QEMU" -display help 2>/dev/null || true)"
             if printf '%s\n' "$display_help" | grep -qx gtk; then
-                printf '%s\n' "gtk,show-cursor=on"
+                printf '%s\n' "gtk,show-cursor=off"
             elif printf '%s\n' "$display_help" | grep -qx sdl; then
-                printf '%s\n' "sdl,show-cursor=on"
+                printf '%s\n' "sdl,show-cursor=off"
             else
                 echo "Error: QEMU '$QEMU' has no GTK or SDL window display backend" >&2
                 echo "Install libgtk-3-dev and rebuild QEMU with:" >&2
@@ -162,5 +162,8 @@ QEMU_ARGS+=(
     "${QEMU_KERNEL_ARGS[@]}"
     -display "${QEMU_DISPLAY}"
 )
+if [ -n "${QEMU_POINTER_DEVICE}" ]; then
+    QEMU_ARGS+=(-device "${QEMU_POINTER_DEVICE}")
+fi
 
 "$QEMU" "${QEMU_ARGS[@]}"

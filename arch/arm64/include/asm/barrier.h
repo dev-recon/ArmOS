@@ -86,6 +86,26 @@ static inline void asm_clean_dcache_by_mva(const void *address, size_t size)
     asm_cache_range(address, size, 0);
 }
 
+static inline void asm_clean_dcache_2d_by_mva(
+    const void *address, size_t stride, size_t row_size, size_t rows)
+{
+    uintptr_t row = (uintptr_t)address;
+
+    if (row_size == 0u || rows == 0u)
+        return;
+    for (size_t index = 0u; index < rows; index++, row += stride) {
+        uintptr_t line =
+            row & ~(uintptr_t)(ARCH_CACHE_LINE_SIZE - 1u);
+        uintptr_t end = row + row_size;
+
+        while (line < end) {
+            __asm__ volatile("dc cvac, %0" :: "r"(line) : "memory");
+            line += ARCH_CACHE_LINE_SIZE;
+        }
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
 static inline void asm_invalidate_dcache_by_mva(const void *address,
                                                 size_t size)
 {

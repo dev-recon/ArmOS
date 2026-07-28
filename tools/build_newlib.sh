@@ -9,17 +9,8 @@ ARCH="${ARCH:-${TARGET}-}"
 NEWLIB_VERSION="${NEWLIB_VERSION:-4.4.0.20231231}"
 ARCHIVE="${NEWLIB_ARCHIVE:-$ROOT_DIR/newlib-$NEWLIB_VERSION.tar.gz}"
 NEWLIB_URL="${NEWLIB_URL:-https://sourceware.org/pub/newlib/newlib-$NEWLIB_VERSION.tar.gz}"
-BUILD_ROOT="${NEWLIB_BUILD_ROOT:-$ROOT_DIR/build/newlib-build}"
-INSTALL_ROOT="${NEWLIB_INSTALL_ROOT:-$ROOT_DIR/build/newlib-sysroot}"
-SYSROOT="$INSTALL_ROOT/$TARGET"
-SRC_DIR="$BUILD_ROOT/src/newlib-$NEWLIB_VERSION"
-OBJ_DIR="$BUILD_ROOT/obj-$TARGET"
 PATCH_DIR="${NEWLIB_PATCH_DIR:-$ROOT_DIR/patches/newlib-$NEWLIB_VERSION}"
-PATCH_SERIES="$PATCH_DIR/series"
-PATCH_STAMP="$SRC_DIR/.arm-os-patches-applied"
 REPRODUCIBLE_ROOT="${ARMOS_REPRODUCIBLE_ROOT:-/usr/src/armos}"
-REPRODUCIBLE_STAMP="$SYSROOT/.armos-reproducible-paths-v1"
-OBJECT_CONTRACT_STAMP="$OBJ_DIR/.armos-build-contract"
 REPRODUCIBLE_FLAGS="\
 -ffile-prefix-map=$ROOT_DIR=$REPRODUCIBLE_ROOT \
 -fmacro-prefix-map=$ROOT_DIR=$REPRODUCIBLE_ROOT \
@@ -29,9 +20,11 @@ export PATH="/opt/homebrew/Cellar/arm-none-eabi-gcc/15.1.0/bin:/opt/homebrew/bin
 
 case "$TARGET" in
     arm-none-eabi)
+        TARGET_ARCH="${TARGET_ARCH:-arm32}"
         TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     aarch64-elf)
+        TARGET_ARCH="${TARGET_ARCH:-arm64}"
         TARGET_CFLAGS="-mcpu=cortex-a53 -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     *)
@@ -40,35 +33,18 @@ case "$TARGET" in
         ;;
 esac
 
-if ! command -v "${ARCH}gcc" >/dev/null 2>&1; then
-    echo "Error: ${ARCH}gcc not found in PATH" >&2
-    exit 1
-fi
-
-if [ ! -f "$ARCHIVE" ]; then
-    if ! command -v curl >/dev/null 2>&1; then
-        echo "Error: newlib archive not found and curl is unavailable: $ARCHIVE" >&2
-        echo "Place newlib-$NEWLIB_VERSION.tar.gz at the repository root, set NEWLIB_ARCHIVE, or install curl." >&2
-        exit 1
-    fi
-
-    echo "=== Downloading newlib $NEWLIB_VERSION ==="
-    echo "Source: $NEWLIB_URL"
-    curl -L "$NEWLIB_URL" -o "$ARCHIVE"
-fi
-
-BUILD_CONTRACT="ArmOS Newlib reproducible paths v1
-target=$TARGET
-cflags=$TARGET_CFLAGS"
-
-mkdir -p "$BUILD_ROOT/src" "$INSTALL_ROOT"
-if [ -d "$OBJ_DIR" ] &&
-   { [ ! -f "$OBJECT_CONTRACT_STAMP" ] ||
-     [ "$(cat "$OBJECT_CONTRACT_STAMP")" != "$BUILD_CONTRACT" ]; }; then
-    echo "=== Newlib build contract changed; recreating target objects ==="
-    rm -rf "$OBJ_DIR"
-fi
-mkdir -p "$OBJ_DIR"
+TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+TARGET_BUILD_ROOT="${TARGET_BUILD_ROOT:-$ROOT_DIR/build/$TARGET_ARCH/$TARGET_PLATFORM}"
+BUILD_ROOT="${NEWLIB_BUILD_ROOT:-$TARGET_BUILD_ROOT/newlib-build}"
+INSTALL_ROOT="${NEWLIB_INSTALL_ROOT:-$TARGET_BUILD_ROOT/newlib-sysroot}"
+SYSROOT="$INSTALL_ROOT/$TARGET"
+SRC_DIR="$BUILD_ROOT/src/newlib-$NEWLIB_VERSION"
+OBJ_DIR="$BUILD_ROOT/obj-$TARGET"
+PATCH_SERIES="$PATCH_DIR/series"
+PATCH_STAMP="$SRC_DIR/.arm-os-patches-applied"
+REPRODUCIBLE_STAMP="$SYSROOT/.armos-reproducible-paths-v1"
+OBJECT_CONTRACT_STAMP="$OBJ_DIR/.armos-build-contract"
+SYSROOT_CONTRACT_STAMP="$SYSROOT/.armos-build-contract"
 
 patch_state()
 {
@@ -91,6 +67,55 @@ patch_state()
 }
 
 EXPECTED_PATCH_STATE="$(patch_state || true)"
+RECIPE_STATE="$(shasum -a 256 "$0" | awk '{print $1}')"
+BUILD_CONTRACT="ArmOS Newlib build contract v2
+target=$TARGET
+cflags=$TARGET_CFLAGS
+multibyte=yes
+multithread=yes
+retargetable_locking=yes
+reent_small=yes
+recipe=$RECIPE_STATE
+patches=$EXPECTED_PATCH_STATE"
+
+if [ "${1:-}" = "--check-contract" ]; then
+    [ -f "$SYSROOT/include/stdio.h" ] &&
+        [ -f "$SYSROOT/lib/libc.a" ] &&
+        [ -f "$REPRODUCIBLE_STAMP" ] &&
+        [ -f "$SYSROOT_CONTRACT_STAMP" ] &&
+        [ "$(cat "$SYSROOT_CONTRACT_STAMP")" = "$BUILD_CONTRACT" ]
+    exit
+fi
+
+if ! command -v "${ARCH}gcc" >/dev/null 2>&1; then
+    echo "Error: ${ARCH}gcc not found in PATH" >&2
+    exit 1
+fi
+
+if [ ! -f "$ARCHIVE" ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "Error: newlib archive not found and curl is unavailable: $ARCHIVE" >&2
+        echo "Place newlib-$NEWLIB_VERSION.tar.gz at the repository root, set NEWLIB_ARCHIVE, or install curl." >&2
+        exit 1
+    fi
+
+    echo "=== Downloading newlib $NEWLIB_VERSION ==="
+    echo "Source: $NEWLIB_URL"
+    curl -L "$NEWLIB_URL" -o "$ARCHIVE"
+fi
+
+mkdir -p "$BUILD_ROOT/src" "$INSTALL_ROOT"
+if [ "${ARMOS_FORCE_RECONFIGURE:-0}" = "1" ] && [ -d "$OBJ_DIR" ]; then
+    echo "=== Newlib configure rebuild forced ==="
+    rm -rf "$OBJ_DIR"
+fi
+if [ -d "$OBJ_DIR" ] &&
+   { [ ! -f "$OBJECT_CONTRACT_STAMP" ] ||
+     [ "$(cat "$OBJECT_CONTRACT_STAMP")" != "$BUILD_CONTRACT" ]; }; then
+    echo "=== Newlib build contract changed; recreating target objects ==="
+    rm -rf "$OBJ_DIR"
+fi
+mkdir -p "$OBJ_DIR"
 
 if [ -n "$EXPECTED_PATCH_STATE" ] &&
    [ -d "$SRC_DIR" ] &&
@@ -129,18 +154,24 @@ if [ -f "$PATCH_SERIES" ]; then
     fi
 fi
 
-echo "=== Configuring newlib for $TARGET ==="
-(
-    cd "$OBJ_DIR"
-    "$SRC_DIR/configure" \
+if [ ! -f "$OBJ_DIR/Makefile" ]; then
+    echo "=== Configuring newlib for $TARGET ==="
+    (
+        cd "$OBJ_DIR"
+        "$SRC_DIR/configure" \
         --target="$TARGET" \
         --prefix="$INSTALL_ROOT" \
         --disable-multilib \
         --disable-newlib-supplied-syscalls \
+        --enable-newlib-mb \
         --enable-newlib-multithread \
+        --enable-newlib-retargetable-locking \
         --enable-newlib-reent-small \
         CFLAGS_FOR_TARGET="$TARGET_CFLAGS"
-)
+    )
+else
+    echo "=== Configure cache: reusing $OBJ_DIR/Makefile ==="
+fi
 
 echo "=== Building newlib ==="
 make -C "$OBJ_DIR" all-target-newlib
@@ -148,6 +179,9 @@ make -C "$OBJ_DIR" all-target-newlib
 echo "=== Installing newlib into $SYSROOT ==="
 make -C "$OBJ_DIR" install-target-newlib
 cp "$ROOT_DIR/userland/include/semaphore.h" "$SYSROOT/include/semaphore.h"
+mkdir -p "$SYSROOT/include/uapi/armos"
+cp "$ROOT_DIR/include/uapi/armos/input.h" \
+    "$SYSROOT/include/uapi/armos/input.h"
 
 if [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: expected newlib sysroot files were not produced." >&2
@@ -158,6 +192,7 @@ if [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 
 printf '%s\n' "$BUILD_CONTRACT" > "$OBJECT_CONTRACT_STAMP"
+printf '%s\n' "$BUILD_CONTRACT" > "$SYSROOT_CONTRACT_STAMP"
 printf '%s\n' "ArmOS reproducible paths v1: $REPRODUCIBLE_ROOT" \
     > "$REPRODUCIBLE_STAMP"
 

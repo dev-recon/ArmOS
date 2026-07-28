@@ -113,6 +113,7 @@ static bool dispatch_user_page_fault(arm64_exception_frame_t *frame,
                                      uint64_t ec, uint64_t iss)
 {
     task_t *task = task_current_local();
+    process_t *process = task_get_process(task);
     uint32_t status = (uint32_t)(iss & 0x3fu);
     bool translation = status >= 4u && status <= 7u;
     bool permission = status >= 12u && status <= 15u;
@@ -135,7 +136,7 @@ static bool dispatch_user_page_fault(arm64_exception_frame_t *frame,
             return true;
         }
         KERROR("ARM64 COW fault unresolved: pid=%d address=0x%lX result=%d\n",
-               task && task->process ? task->process->pid : -1,
+               process ? process->pid : -1,
                (unsigned long)frame->far, result);
     }
     return false;

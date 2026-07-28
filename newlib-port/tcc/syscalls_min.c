@@ -27,6 +27,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pwd.h>
+#include <reent.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -37,17 +38,24 @@
 #include <termios.h>
 #include <time.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
+#include <uapi/armos/shm.h>
 #include <uapi/armos/statvfs.h>
+#include <uapi/armos/thread.h>
 #include <uapi/armos/time.h>
+#include <uapi/armos/tls.h>
 #include <sys/mman.h>
+#include <sys/eventfd.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/times.h>
+#include <sys/timerfd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
@@ -113,6 +121,14 @@ extern long sys_fstat(int fd, void *st);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
 extern long sys_sysinfo(void *resp);
 extern long sys_gettimeofday(struct timeval *tv, void *tz);
+extern long sys_gettid(void);
+extern void sys_thread_exit(int status);
+extern long sys_futex(volatile uint32_t *address, int operation,
+                      uint32_t value, const armos_timespec_t *timeout);
+extern long sys_clone(const armos_clone_args_t *args, size_t args_size);
+extern long sys_sched_yield(void);
+extern long sys_set_tls(unsigned long tls_base);
+extern long sys_get_tls_info(armos_tls_info_t *info);
 extern long sys_getrusage(int who, void *usage);
 extern long sys_getrlimit(int resource, armos_rlimit_t *limit);
 extern long sys_setrlimit(int resource, const armos_rlimit_t *limit);
@@ -139,18 +155,28 @@ extern long sys_clock_getres(int clock_id, armos_timespec_t *res);
 extern long sys_clock_nanosleep(int clock_id, int flags,
                                 const armos_timespec_t *req,
                                 armos_timespec_t *rem);
+extern long sys_eventfd2(unsigned int initial_value, int flags);
+extern long sys_timerfd_create(int clock_id, int flags);
+extern long sys_timerfd_settime(int fd, int flags,
+                                const struct armos_itimerspec *new_value,
+                                struct armos_itimerspec *old_value);
+extern long sys_timerfd_gettime(int fd,
+                                struct armos_itimerspec *current_value);
 extern long sys_utimensat(int dirfd, const char *pathname,
                           const armos_timespec_t *times, int flags);
 extern long sys_futimens(int fd, const armos_timespec_t *times);
 extern long sys_getcwd(char *buf, unsigned long size);
 extern long sys_shm_open(const char *name, unsigned long size, int flags);
 extern long sys_shm_unlink(const char *name);
-extern long sys_shm_map(int id, void *addr, int flags);
+extern long sys_shm_map(int fd, void *addr, int flags);
 extern long sys_shm_unmap(void *addr, unsigned long size);
 extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int fd);
 extern long sys_munmap(void *addr, unsigned long length);
 extern long sys_mprotect(void *addr, unsigned long length, int prot);
 extern long sys_socket(int domain, int type, int protocol);
+extern long sys_socketpair(int domain, int type, int protocol, int sockets[2]);
+extern long sys_sendmsg(int sockfd, const struct msghdr *message, int flags);
+extern long sys_recvmsg(int sockfd, struct msghdr *message, int flags);
 extern long sys_bind(int sockfd, const void *addr, unsigned long addrlen);
 extern long sys_listen(int sockfd, int backlog);
 extern long sys_accept(int sockfd, void *addr, unsigned long *addrlen);
@@ -205,6 +231,49 @@ extern void __signal_return_trampoline(void);
 
 static const char *program_name = "program";
 extern char **environ;
+
+typedef void (*armos_runtime_array_fn)(void);
+
+extern armos_runtime_array_fn __preinit_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __preinit_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __init_array_end[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_start[]
+    __attribute__((weak));
+extern armos_runtime_array_fn __fini_array_end[]
+    __attribute__((weak));
+
+static void armos_runtime_run_fini_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    if (!__fini_array_start || !__fini_array_end)
+        return;
+    for (fn = __fini_array_end; fn != __fini_array_start; )
+        (*--fn)();
+}
+
+void __armos_runtime_run_init_array(void)
+{
+    armos_runtime_array_fn *fn;
+
+    if (__fini_array_start && __fini_array_end &&
+        __fini_array_start != __fini_array_end)
+        (void)atexit(armos_runtime_run_fini_array);
+
+    if (__preinit_array_start && __preinit_array_end) {
+        for (fn = __preinit_array_start; fn != __preinit_array_end; ++fn)
+            (*fn)();
+    }
+    if (__init_array_start && __init_array_end) {
+        for (fn = __init_array_start; fn != __init_array_end; ++fn)
+            (*fn)();
+    }
+}
 
 struct os_stat {
     uint32_t st_dev;
@@ -907,6 +976,20 @@ int futimens(int fd, const struct timespec times[2])
     return ret_errno(sys_futimens(fd, copy_utimens_times(times, os_times)));
 }
 
+int utimes(const char *pathname, const struct timeval times[2])
+{
+    struct timespec converted[2];
+    int i;
+
+    if (!times)
+        return utimensat(AT_FDCWD, pathname, NULL, 0);
+    for (i = 0; i < 2; i++) {
+        converted[i].tv_sec = times[i].tv_sec;
+        converted[i].tv_nsec = times[i].tv_usec * 1000L;
+    }
+    return utimensat(AT_FDCWD, pathname, converted, 0);
+}
+
 int fstatvfs(int fd, struct statvfs *buf)
 {
     armos_statvfs_t os_st;
@@ -976,6 +1059,33 @@ int dup2(int oldfd, int newfd)
 int socket(int domain, int type, int protocol)
 {
     return ret_errno(sys_socket(domain, type, protocol));
+}
+
+int socketpair(int domain, int type, int protocol, int sockets[2])
+{
+    return ret_errno(sys_socketpair(domain, type, protocol, sockets));
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *message, int flags)
+{
+    long ret = sys_sendmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *message, int flags)
+{
+    long ret = sys_recvmsg(sockfd, message, flags);
+
+    if (ret < 0) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return (ssize_t)ret;
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
@@ -1672,6 +1782,159 @@ int getsysinfo(struct sysinfo_response *resp)
     return ret_errno(sys_sysinfo(resp));
 }
 
+int armos_gettid(void)
+{
+    return (int)sys_gettid();
+}
+
+int armos_futex_wait(volatile uint32_t *address, uint32_t expected,
+                     const armos_timespec_t *timeout)
+{
+    long result =
+        sys_futex(address, ARMOS_FUTEX_WAIT, expected, timeout);
+
+    if (result == ARMOS_FUTEX_RESULT_TIMEDOUT) {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    return ret_errno(result);
+}
+
+int armos_futex_wake(volatile uint32_t *address, uint32_t count)
+{
+    return ret_errno(sys_futex(address, ARMOS_FUTEX_WAKE, count, NULL));
+}
+
+void armos_thread_exit(int status)
+{
+    sys_thread_exit(status);
+    for (;;)
+        ;
+}
+
+int sched_yield(void)
+{
+    return ret_errno(sys_sched_yield());
+}
+
+int armos_clone(const armos_clone_args_t *args)
+{
+    return ret_errno(sys_clone(args, sizeof(*args)));
+}
+
+int armos_set_tls(void *tls_base)
+{
+    return ret_errno(sys_set_tls((unsigned long)(uintptr_t)tls_base));
+}
+
+int armos_get_tls_info(armos_tls_info_t *info)
+{
+    return ret_errno(sys_get_tls_info(info));
+}
+
+static struct _reent *armos_current_reent(void)
+{
+    uintptr_t pointer;
+    uintptr_t *tcb;
+
+#if defined(__aarch64__)
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(pointer));
+#elif defined(__arm__)
+    __asm__ volatile("mrc p15, 0, %0, c13, c0, 3" : "=r"(pointer));
+#else
+    pointer = 0;
+#endif
+    tcb = (uintptr_t *)pointer;
+    return tcb && tcb[1] ? (struct _reent *)tcb[1] : _impure_ptr;
+}
+
+struct _reent *__getreent(void)
+{
+    return armos_current_reent();
+}
+
+void *armos_thread_reent_create(void)
+{
+    armos_tls_info_t info;
+    struct _reent *reent;
+    uintptr_t alignment;
+    uintptr_t tls_offset;
+    uintptr_t raw_address;
+    uintptr_t tcb_address;
+    uintptr_t *tcb;
+    void *raw;
+    size_t total;
+
+    memset(&info, 0, sizeof(info));
+    if (armos_get_tls_info(&info) < 0)
+        return NULL;
+    alignment = info.alignment;
+    if (alignment < sizeof(uintptr_t) * 2u)
+        alignment = sizeof(uintptr_t) * 2u;
+    if ((alignment & (alignment - 1u)) != 0)
+        return NULL;
+    tls_offset =
+        (sizeof(uintptr_t) * 2u + alignment - 1u) & ~(alignment - 1u);
+    if (info.memory_size > SIZE_MAX - tls_offset - alignment)
+        return NULL;
+    total = (size_t)(tls_offset + info.memory_size + alignment - 1u);
+    raw = calloc(1, total);
+    reent = calloc(1, sizeof(*reent));
+    if (!raw || !reent) {
+        free(reent);
+        free(raw);
+        return NULL;
+    }
+    raw_address = (uintptr_t)raw;
+    tcb_address = (raw_address + alignment - 1u) & ~(alignment - 1u);
+    tcb = (uintptr_t *)tcb_address;
+    tcb[0] = raw_address;
+    tcb[1] = (uintptr_t)reent;
+    if (info.file_size) {
+        memcpy((void *)(tcb_address + tls_offset),
+               (const void *)(uintptr_t)info.image,
+               (size_t)info.file_size);
+    }
+    _REENT_INIT_PTR(reent);
+    return tcb;
+}
+
+void armos_thread_reent_destroy(void *opaque)
+{
+    uintptr_t *tcb = (uintptr_t *)opaque;
+    struct _reent *reent;
+    void *raw;
+
+    if (!tcb)
+        return;
+    raw = (void *)tcb[0];
+    reent = (struct _reent *)tcb[1];
+    _reclaim_reent(reent);
+    free(reent);
+    free(raw);
+}
+
+void __armos_pthread_runtime_init(void *tcb) __attribute__((weak));
+
+void __armos_runtime_init(void)
+{
+    void *tcb = armos_thread_reent_create();
+
+    if (!tcb)
+        return;
+    if (armos_set_tls(tcb) < 0) {
+        armos_thread_reent_destroy(tcb);
+        return;
+    }
+    if (__armos_pthread_runtime_init)
+        __armos_pthread_runtime_init(tcb);
+}
+
+#if defined(__arm__)
+const unsigned char __exidx_start[1] __attribute__((weak)) = {0};
+const unsigned char __exidx_end[1] __attribute__((weak)) = {0};
+#endif
+
 static int clock_id_to_armos(clockid_t clock_id)
 {
     if (clock_id == CLOCK_REALTIME)
@@ -1722,6 +1985,89 @@ int clock_getres(clockid_t clock_id, struct timespec *res)
         res->tv_sec = (time_t)value.sec;
         res->tv_nsec = (long)value.nsec;
     }
+    return 0;
+}
+
+int eventfd(unsigned int initial_value, int flags)
+{
+    return ret_errno(sys_eventfd2(initial_value, flags));
+}
+
+int eventfd_read(int fd, eventfd_t *value)
+{
+    ssize_t count = read(fd, value, sizeof(*value));
+
+    return count == (ssize_t)sizeof(*value) ? 0 : -1;
+}
+
+int eventfd_write(int fd, eventfd_t value)
+{
+    ssize_t count = write(fd, &value, sizeof(value));
+
+    return count == (ssize_t)sizeof(value) ? 0 : -1;
+}
+
+int timerfd_create(clockid_t clock_id, int flags)
+{
+    if (clock_id != CLOCK_MONOTONIC) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ret_errno(sys_timerfd_create(ARMOS_CLOCK_MONOTONIC, flags));
+}
+
+static void timerfd_to_armos(const struct itimerspec *source,
+                             struct armos_itimerspec *destination)
+{
+    destination->interval.sec = source->it_interval.tv_sec;
+    destination->interval.nsec = source->it_interval.tv_nsec;
+    destination->value.sec = source->it_value.tv_sec;
+    destination->value.nsec = source->it_value.tv_nsec;
+}
+
+static void timerfd_from_armos(const struct armos_itimerspec *source,
+                               struct itimerspec *destination)
+{
+    destination->it_interval.tv_sec = (time_t)source->interval.sec;
+    destination->it_interval.tv_nsec = (long)source->interval.nsec;
+    destination->it_value.tv_sec = (time_t)source->value.sec;
+    destination->it_value.tv_nsec = (long)source->value.nsec;
+}
+
+int timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
+                    struct itimerspec *old_value)
+{
+    struct armos_itimerspec requested;
+    struct armos_itimerspec previous;
+    long ret;
+
+    if (!new_value) {
+        errno = EFAULT;
+        return -1;
+    }
+    timerfd_to_armos(new_value, &requested);
+    ret = sys_timerfd_settime(fd, flags, &requested,
+                              old_value ? &previous : NULL);
+    if (ret < 0)
+        return ret_errno(ret);
+    if (old_value)
+        timerfd_from_armos(&previous, old_value);
+    return 0;
+}
+
+int timerfd_gettime(int fd, struct itimerspec *current_value)
+{
+    struct armos_itimerspec value;
+    long ret;
+
+    if (!current_value) {
+        errno = EFAULT;
+        return -1;
+    }
+    ret = sys_timerfd_gettime(fd, &value);
+    if (ret < 0)
+        return ret_errno(ret);
+    timerfd_from_armos(&value, current_value);
     return 0;
 }
 
@@ -1966,9 +2312,36 @@ int mprotect(void *addr, size_t length, int prot)
     return ret_errno(sys_mprotect(addr, length, prot));
 }
 
-int shm_open(const char *name, size_t size, int flags)
+int shm_open(const char *name, int oflag, mode_t mode)
 {
-    return ret_errno(sys_shm_open(name, size, flags));
+    int access_mode = oflag & O_ACCMODE;
+    int armos_flags = 0;
+
+    (void)mode;
+    if (access_mode != O_RDONLY && access_mode != O_RDWR) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((oflag & ~(O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC |
+                   O_CLOEXEC)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if ((oflag & O_EXCL) != 0 && (oflag & O_CREAT) == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (access_mode == O_RDONLY)
+        armos_flags |= ARMOS_SHM_OPEN_READONLY;
+    if ((oflag & O_CREAT) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_CREATE;
+    if ((oflag & O_EXCL) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_EXCLUSIVE;
+    if ((oflag & O_CLOEXEC) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_CLOEXEC;
+    if ((oflag & O_TRUNC) != 0)
+        armos_flags |= ARMOS_SHM_OPEN_TRUNCATE;
+    return ret_errno(sys_shm_open(name, 0, armos_flags));
 }
 
 int shm_unlink(const char *name)
@@ -1976,9 +2349,9 @@ int shm_unlink(const char *name)
     return ret_errno(sys_shm_unlink(name));
 }
 
-void *shm_map(int id, void *addr, int flags)
+void *shm_map(int fd, void *addr, int flags)
 {
-    long ret = sys_shm_map(id, addr, flags);
+    long ret = sys_shm_map(fd, addr, flags);
     if (ret < 0) {
         errno = (int)-ret;
         return NULL;

@@ -16,13 +16,16 @@
 #include <signal.h>
 #include <poll.h>
 #include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/eventfd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/timerfd.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <sys/uio.h>
@@ -555,6 +558,7 @@ static void test_open_permission_enforcement(void)
 static void test_pipe_dup2(void)
 {
     int pipefd[2];
+    int cloexec_fd;
     char buf[32];
     int n;
     int saved_stdout;
@@ -573,6 +577,28 @@ static void test_pipe_dup2(void)
     expect(n == 7 && strcmp(buf, "pipe-ok") == 0, "pipe read", n);
     close(pipefd[0]);
     close(pipefd[1]);
+
+    if (expect(pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) == 0,
+               "pipe2 create", errno) == 0) {
+        expect((fcntl(pipefd[0], F_GETFD) & FD_CLOEXEC) != 0 &&
+               (fcntl(pipefd[1], F_GETFD) & FD_CLOEXEC) != 0,
+               "pipe2 close-on-exec", 0);
+        expect((fcntl(pipefd[0], F_GETFL) & O_NONBLOCK) != 0 &&
+               (fcntl(pipefd[1], F_GETFL) & O_NONBLOCK) != 0,
+               "pipe2 non-blocking", 0);
+        errno = 0;
+        expect(read(pipefd[0], buf, sizeof(buf)) < 0 && errno == EAGAIN,
+               "pipe2 empty non-blocking read", errno);
+        cloexec_fd = fcntl(pipefd[0], F_DUPFD_CLOEXEC, 8);
+        if (expect(cloexec_fd >= 8, "fcntl duplicate close-on-exec",
+                   cloexec_fd) == 0) {
+            expect((fcntl(cloexec_fd, F_GETFD) & FD_CLOEXEC) != 0,
+                   "fcntl duplicate flag", 0);
+            close(cloexec_fd);
+        }
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
 
     saved_stdout = dup(STDOUT_FILENO);
     fd = open(tmp_path("dup2.txt"), O_CREAT | O_WRONLY | O_TRUNC, 0644);
@@ -725,6 +751,7 @@ static void test_dev_tty(void)
 {
     struct stat st;
     struct stat fst;
+    volatile uintptr_t invalid_address = UINTPTR_MAX & ~(uintptr_t)0xfffu;
     int fd;
 
     if (expect(stat("/dev/tty0", &st) == 0, "stat /dev/tty0", 0) == 0) {
@@ -754,6 +781,10 @@ static void test_dev_tty(void)
     if (expect(fd >= 0, "open /dev/tty write-only", fd) >= 0) {
         if (expect(fstat(fd, &fst) == 0, "fstat /dev/tty", 0) == 0)
             expect(S_ISCHR(fst.st_mode), "fstat /dev/tty is char device", fst.st_mode);
+        errno = 0;
+        expect(write(fd, (const void *)invalid_address, 1u) < 0 &&
+               errno == EFAULT,
+               "tty write rejects invalid user pointer", errno);
         close(fd);
     }
 
@@ -1804,6 +1835,89 @@ static void test_posix_clocks_and_capabilities(void)
            "sysconf rejects unknown selector", errno);
 }
 
+static void test_event_timer_descriptors(void)
+{
+    struct itimerspec requested;
+    struct itimerspec observed;
+    struct pollfd pfd;
+    eventfd_t value;
+    int fd;
+
+    fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (expect(fd >= 0, "eventfd create", errno) == 0) {
+        expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0,
+               "eventfd close-on-exec", errno);
+        errno = 0;
+        expect(eventfd_read(fd, &value) < 0 && errno == EAGAIN,
+               "eventfd empty non-blocking read", errno);
+        expect(eventfd_write(fd, 3) == 0, "eventfd write", errno);
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        expect(poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLIN),
+               "poll detects eventfd counter", pfd.revents);
+        expect(eventfd_read(fd, &value) == 0 && value == 3,
+               "eventfd read drains counter", (int)value);
+        close(fd);
+    }
+
+    fd = eventfd(2, EFD_SEMAPHORE | EFD_NONBLOCK);
+    if (expect(fd >= 0, "eventfd semaphore create", errno) == 0) {
+        expect(eventfd_read(fd, &value) == 0 && value == 1,
+               "eventfd semaphore first read", (int)value);
+        expect(eventfd_read(fd, &value) == 0 && value == 1,
+               "eventfd semaphore second read", (int)value);
+        errno = 0;
+        expect(eventfd_read(fd, &value) < 0 && errno == EAGAIN,
+               "eventfd semaphore drains counter", errno);
+        close(fd);
+    }
+
+    fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (expect(fd >= 0, "timerfd create", errno) < 0)
+        return;
+
+    memset(&observed, 0xff, sizeof(observed));
+    expect(timerfd_gettime(fd, &observed) == 0 &&
+           observed.it_value.tv_sec == 0 &&
+           observed.it_value.tv_nsec == 0,
+           "timerfd initially disarmed", errno);
+
+    memset(&requested, 0, sizeof(requested));
+    requested.it_value.tv_nsec = 20000000L;
+    expect(timerfd_settime(fd, 0, &requested, NULL) == 0,
+           "timerfd arm one-shot", errno);
+    errno = 0;
+    expect(read(fd, &value, sizeof(value)) < 0 && errno == EAGAIN,
+           "timerfd pending non-blocking read", errno);
+
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    expect(poll(&pfd, 1, 1000) == 1 && (pfd.revents & POLLIN),
+           "poll waits for timerfd", pfd.revents);
+    expect(read(fd, &value, sizeof(value)) == (ssize_t)sizeof(value) &&
+           value >= 1, "timerfd reports expiration", (int)value);
+
+    requested.it_interval.tv_nsec = 10000000L;
+    requested.it_value.tv_nsec = 10000000L;
+    expect(timerfd_settime(fd, 0, &requested, NULL) == 0,
+           "timerfd arm periodic", errno);
+    pfd.revents = 0;
+    expect(poll(&pfd, 1, 1000) == 1 && (pfd.revents & POLLIN),
+           "poll waits for periodic timerfd", pfd.revents);
+    expect(read(fd, &value, sizeof(value)) == (ssize_t)sizeof(value) &&
+           value >= 1, "timerfd periodic expiration", (int)value);
+    expect(timerfd_gettime(fd, &observed) == 0 &&
+           observed.it_interval.tv_nsec == 10000000L,
+           "timerfd keeps interval", errno);
+
+    memset(&requested, 0, sizeof(requested));
+    expect(timerfd_settime(fd, 0, &requested, NULL) == 0,
+           "timerfd disarm", errno);
+    close(fd);
+}
+
 static void test_nanosleep_signal_interrupt(void)
 {
     struct timespec req;
@@ -2005,17 +2119,25 @@ static void test_shared_memory(void)
     int waited;
     volatile int *shared;
 
-    snprintf(name, sizeof(name), "systest-shm-%d", getpid());
+    snprintf(name, sizeof(name), "/systest-shm-%d", getpid());
     shm_unlink(name);
-    id = shm_open(name, 4096, SHM_O_CREAT | SHM_O_EXCL);
+    id = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (expect(id >= 0, "shm create", id) < 0)
         return;
-
-    shared = (volatile int *)shm_map(id, NULL, SHM_RDWR);
-    if (expect(shared != NULL, "shm map parent", id) < 0) {
+    if (expect(ftruncate(id, 4096) == 0, "shm initial ftruncate", errno) < 0) {
+        close(id);
         shm_unlink(name);
         return;
     }
+
+    shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, id, 0);
+    if (expect(shared != MAP_FAILED, "shm map parent", id) < 0) {
+        close(id);
+        shm_unlink(name);
+        return;
+    }
+    expect(close(id) == 0, "shm descriptor close after map", id);
 
     shared[0] = 1234;
     shared[1] = 0;
@@ -2041,6 +2163,64 @@ static void test_shared_memory(void)
     expect(shared[0] == 5678 && shared[1] == 42, "shm parent sees child writes", shared[0]);
     expect(shm_unmap((void *)shared, 4096) == 0, "shm unmap parent", 0);
     expect(shm_unlink(name) == 0, "shm unlink", 0);
+}
+
+static void test_growable_shared_memory(void)
+{
+    const size_t initial_size = 16u * 1024u * 1024u;
+    const size_t grown_size = 32u * 1024u * 1024u;
+    const size_t prefix_size = 2u * 4096u;
+    unsigned char *mapping;
+    struct stat st;
+    char name[40];
+    int fd;
+
+    snprintf(name, sizeof(name), "/systest-shm-grow-%d", getpid());
+    shm_unlink(name);
+    memset(&st, 0, sizeof(st));
+    fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+    if (expect(fd >= 0, "shm create empty growable object", fd) < 0)
+        return;
+    expect((fcntl(fd, F_GETFD) & FD_CLOEXEC) != 0,
+           "POSIX shm_open close-on-exec", errno);
+
+    if (expect(ftruncate(fd, (off_t)initial_size) == 0,
+               "shm ftruncate grows object to 16 MiB", errno) < 0)
+        goto out;
+    expect(fstat(fd, &st) == 0 && st.st_size == (off_t)initial_size,
+           "shm fstat reports grown size", (int)st.st_size);
+
+    mapping = mmap(NULL, prefix_size, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, 0);
+    if (expect(mapping != MAP_FAILED, "shm maps prefix smaller than object",
+               errno) == 0) {
+        mapping[0] = 0x2a;
+        mapping[prefix_size - 1u] = 0x5c;
+        expect(ftruncate(fd, (off_t)grown_size) == 0,
+               "shm grows to 32 MiB while prefix is mapped", errno);
+        expect(mapping[0] == 0x2a && mapping[prefix_size - 1u] == 0x5c,
+               "shm growth preserves mapped prefix", mapping[0]);
+        expect(munmap(mapping, prefix_size) == 0,
+               "shm unmaps prefix", errno);
+    }
+
+    mapping = mmap(NULL, grown_size, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, 0);
+    if (expect(mapping != MAP_FAILED, "shm maps complete 32 MiB pool",
+               errno) == 0) {
+        mapping[grown_size - 1u] = 0x7d;
+        expect(mapping[grown_size - 1u] == 0x7d,
+               "shm final pool page is writable",
+               mapping[grown_size - 1u]);
+        expect(munmap(mapping, grown_size) == 0,
+               "shm unmaps complete pool", errno);
+    }
+
+    expect(ftruncate(fd, 0) == 0, "shm shrinks after mappings close", errno);
+
+out:
+    close(fd);
+    expect(shm_unlink(name) == 0, "shm growable object unlink", errno);
 }
 
 static int read_self_mem_kb(unsigned *heap_kb, unsigned *rss_kb,
@@ -2731,10 +2911,12 @@ int main(int argc, char **argv)
     test_waitpid_group_stop_reports_all();
     test_sleep_survives_stop_continue();
     test_posix_clocks_and_capabilities();
+    test_event_timer_descriptors();
     test_nanosleep_signal_interrupt();
     test_malloc_free_stress();
     test_cow_memory();
     test_shared_memory();
+    test_growable_shared_memory();
     test_cow_fork_stress();
     test_asid_churn();
     test_asid_live_saturation();

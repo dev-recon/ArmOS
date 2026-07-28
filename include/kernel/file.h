@@ -92,6 +92,7 @@
 #define F_GETLK     7
 #define F_SETLK     8
 #define F_SETLKW    9
+#define F_DUPFD_CLOEXEC 14
 
 #define F_RDLCK     1
 #define F_WRLCK     2
@@ -112,6 +113,8 @@ struct flock_kernel {
 #define TCFLSH      0x540B
 #define TIOCGWINSZ  0x5413
 #define TIOCSWINSZ  0x5414
+#define TIOCSCTTY   0x540E
+#include <uapi/armos/input.h>
 
 struct winsize {
     uint16_t ws_row;

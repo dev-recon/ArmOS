@@ -7,7 +7,13 @@
  *
  * File: userland/include/sys/mman.h
  * Layer: Userland / C library compatibility
- * Description: Minimal mmap(2) constants and prototypes.
+ *
+ * Responsibilities:
+ * - Declare POSIX memory mapping and named shared-memory interfaces.
+ * - Publish the protection and mapping flags supported by ArmOS.
+ *
+ * Notes:
+ * - Named shared-memory objects are resized with ftruncate().
  */
 
 #ifndef _ARMOS_SYS_MMAN_H
@@ -31,5 +37,7 @@
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 int munmap(void *addr, size_t length);
 int mprotect(void *addr, size_t length, int prot);
+int shm_open(const char *name, int oflag, mode_t mode);
+int shm_unlink(const char *name);
 
 #endif /* _ARMOS_SYS_MMAN_H */

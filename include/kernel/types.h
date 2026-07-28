@@ -149,19 +149,22 @@ typedef enum {
 #define ENOTEMPTY      39       /* Directory not empty */
 #define ELOOP          40       /* Too many symbolic links */
 #define EOVERFLOW      75       /* Value too large for defined data type */
-#define EDESTADDRREQ   89       /* Destination address required */
-#define EMSGSIZE       90       /* Message too long */
-#define EPROTONOSUPPORT 93      /* Protocol not supported */
-#define EAFNOSUPPORT   97       /* Address family not supported */
-#define EADDRINUSE     98       /* Address already in use */
-#define EADDRNOTAVAIL  99       /* Cannot assign requested address */
-#define ENETDOWN      100       /* Network is down */
-#define ENETUNREACH   101       /* Network is unreachable */
-#define ECONNABORTED  103       /* Software caused connection abort */
+#define ENOTSOCK      108       /* Socket operation on non-socket */
+#define EDESTADDRREQ  121       /* Destination address required */
+#define EMSGSIZE      122       /* Message too long */
+#define EPROTONOSUPPORT 123     /* Protocol not supported */
+#define EAFNOSUPPORT  106       /* Address family not supported */
+#define EADDRINUSE    112       /* Address already in use */
+#define EADDRNOTAVAIL 125       /* Cannot assign requested address */
+#define ENETDOWN      115       /* Network is down */
+#define ENETUNREACH   114       /* Network is unreachable */
+#define ECONNABORTED  113       /* Software caused connection abort */
 #define ECONNRESET    104       /* Connection reset by peer */
-#define ENOTCONN      107       /* Transport endpoint is not connected */
-#define ETIMEDOUT     110       /* Connection timed out */
-#define EINPROGRESS   115       /* Operation now in progress */
+#define EISCONN       127       /* Transport endpoint is already connected */
+#define ENOTCONN      128       /* Transport endpoint is not connected */
+#define ETIMEDOUT     116       /* Connection timed out */
+#define ECONNREFUSED  111       /* Connection refused */
+#define EINPROGRESS   119       /* Operation now in progress */
 #define ENOTSUP       134       /* Operation not supported */
 
 /* === TYPES DE SYNCHRONISATION === */

@@ -27,22 +27,30 @@
 #include <kernel/smp.h>
 #include <kernel/kprintf.h>
 #include <kernel/file.h>
+#include <kernel/pty.h>
 
 struct tty_struct tty0;
 struct tty_struct tty1;
 struct tty_struct ttyS0;
 
 #define TTY_TX_DRAIN_BUDGET 64
+#define TTY_VIRTUAL_BASE 16
+#define TTY_VIRTUAL_COUNT 8
 
 static int active_tty_id = TTY_CONSOLE_ID;
 static int kernel_console_tty_id = -1;
 static bool tty_initialized = false;
+static struct tty_struct *virtual_ttys[TTY_VIRTUAL_COUNT];
 
 static bool tty_output_empty_locked(struct tty_struct *tty);
 static void tty_wake_reader(task_t *reader);
+static void tty_init_one(struct tty_struct *tty, int id);
 
 static struct tty_struct *tty_by_id(int tty_id)
 {
+    if (tty_id >= TTY_VIRTUAL_BASE &&
+        tty_id < TTY_VIRTUAL_BASE + TTY_VIRTUAL_COUNT)
+        return virtual_ttys[tty_id - TTY_VIRTUAL_BASE];
     switch (tty_id) {
     case TTY_CONSOLE_ID:
         return &tty0;
@@ -53,6 +61,32 @@ static struct tty_struct *tty_by_id(int tty_id)
     default:
         return NULL;
     }
+}
+
+int tty_register_virtual(struct tty_struct *tty, int tty_id,
+                         bool (*putc)(void *context, char c),
+                         void *context)
+{
+    size_t index;
+
+    if (!tty || !putc || tty_id < TTY_VIRTUAL_BASE ||
+        tty_id >= TTY_VIRTUAL_BASE + TTY_VIRTUAL_COUNT)
+        return -EINVAL;
+    index = (size_t)(tty_id - TTY_VIRTUAL_BASE);
+    if (virtual_ttys[index])
+        return -EBUSY;
+    tty_init_one(tty, tty_id);
+    tty->virtual_putc = putc;
+    tty->virtual_context = context;
+    virtual_ttys[index] = tty;
+    return 0;
+}
+
+void tty_unregister_virtual(int tty_id)
+{
+    if (tty_id >= TTY_VIRTUAL_BASE &&
+        tty_id < TTY_VIRTUAL_BASE + TTY_VIRTUAL_COUNT)
+        virtual_ttys[tty_id - TTY_VIRTUAL_BASE] = NULL;
 }
 
 static int tty_attach_backend_mode_to(int tty_id,
@@ -117,7 +151,7 @@ bool tty_has_backend_for_id(int tty_id)
 {
     struct tty_struct *tty = tty_by_id(tty_id);
 
-    return tty && tty->backend != NULL;
+    return tty && (tty->backend != NULL || tty->virtual_putc != NULL);
 }
 
 bool tty_is_output_only_for_id(int tty_id)
@@ -131,7 +165,7 @@ int tty_check_open_for_id(int tty_id, int flags)
 {
     struct tty_struct *tty = tty_by_id(tty_id);
 
-    if (!tty || !tty->backend)
+    if (!tty || (!tty->backend && !tty->virtual_putc))
         return -ENODEV;
     if (tty->output_only && (flags & O_ACCMODE) != O_WRONLY)
         return -EACCES;
@@ -172,6 +206,8 @@ static bool tty_backend_try_putc_to(struct tty_struct *tty, char c)
 {
     const tty_backend_ops_t *backend = tty_backend_for(tty);
 
+    if (tty && tty->virtual_putc)
+        return tty->virtual_putc(tty->virtual_context, c);
     if (!backend || !backend->try_putc(c))
         return false;
 
@@ -269,6 +305,7 @@ void tty_init(void) {
     tty_init_one(&tty0, TTY_CONSOLE_ID);
     tty_init_one(&tty1, TTY_GRAPHICS_ID);
     tty_init_one(&ttyS0, TTY_SERIAL_ID);
+    memset(virtual_ttys, 0, sizeof(virtual_ttys));
     tty_initialized = true;
 }
 
@@ -343,7 +380,7 @@ void tty_console_output_unlock(unsigned long flags)
 static int tty_signal_process_group(pid_t pgid, int sig)
 {
     task_t* task;
-    task_t* targets[MAX_TASKS];
+    task_t** targets;
     uint32_t target_count = 0;
     uint32_t walked = 0;
     unsigned long flags;
@@ -352,11 +389,15 @@ static int tty_signal_process_group(pid_t pgid, int sig)
 
     if (pgid <= 0)
         return 0;
+    targets = kmalloc(sizeof(*targets) * MAX_TASKS);
+    if (!targets)
+        return -ENOMEM;
 
     spin_lock_irqsave(&task_lock, &flags);
     task = task_list_head;
     if (!task) {
         spin_unlock_irqrestore(&task_lock, flags);
+        kfree(targets);
         return 0;
     }
 
@@ -380,6 +421,7 @@ static int tty_signal_process_group(pid_t pgid, int sig)
             delivered++;
     }
 
+    kfree(targets);
     return delivered;
 }
 
@@ -956,8 +998,10 @@ static task_t *tty_enqueue_input_char_locked(struct tty_struct *tty,
         tty_backend_putc_to(tty, c);
 
     next_head = (tty->input_head + 1) % TTY_INPUT_BUF_SIZE;
-    if (next_head == tty->input_tail)
+    if (next_head == tty->input_tail) {
+        tty->input_dropped++;
         return NULL;
+    }
 
     tty->input_buf[tty->input_head] = c;
     tty->input_head = next_head;
@@ -1391,6 +1435,11 @@ void tty_drain_output(void)
     tty_drain_output_limited(TTY_TX_DRAIN_BUDGET);
 }
 
+void tty_drain_output_for_id(int tty_id)
+{
+    tty_drain_output_limited_to(tty_by_id(tty_id), TTY_TX_DRAIN_BUDGET);
+}
+
 static ssize_t tty_file_read(file_t* file, void* buf, size_t count) {
     int tty_id = file ? (int)(uintptr_t)file->private_data : TTY_CONSOLE_ID;
     struct tty_struct *tty = tty_by_id(tty_id);
@@ -1422,7 +1471,8 @@ bool is_tty_device_path(const char* path)
                     strcmp(path, "/dev/tty0") == 0 ||
                     strcmp(path, "/dev/tty1") == 0 ||
                     strcmp(path, "/dev/ttyS0") == 0 ||
-                    strcmp(path, "/dev/console") == 0);
+                    strcmp(path, "/dev/console") == 0 ||
+                    pty_is_slave_path(path));
 }
 
 int tty_current_controlling_id(void)
@@ -1453,6 +1503,8 @@ int tty_id_from_device_path(const char* path)
     if (strcmp(path, "/dev/tty0") == 0 ||
         strcmp(path, "/dev/console") == 0)
         return TTY_CONSOLE_ID;
+    if (pty_is_slave_path(path))
+        return pty_slave_tty_id(path);
     return -ENODEV;
 }
 
@@ -1460,7 +1512,11 @@ int tty_id_from_file(file_t* file)
 {
     int tty_id;
 
-    if (!file || file->type != FILE_TYPE_TTY)
+    if (!file)
+        return -ENOTTY;
+    if (file->type == FILE_TYPE_PTY_MASTER)
+        return pty_master_tty_id(file);
+    if (file->type != FILE_TYPE_TTY)
         return -ENOTTY;
 
     tty_id = (int)(uintptr_t)file->private_data;
@@ -1490,6 +1546,13 @@ static int tty_id_from_name(const char* name)
         return TTY_GRAPHICS_ID;
     if (strcmp(name, "ttyS0") == 0)
         return TTY_SERIAL_ID;
+    if (strncmp(name, "pts/", 4u) == 0) {
+        char path[16] = "/dev/";
+
+        strncpy(path + 5u, name, sizeof(path) - 6u);
+        path[sizeof(path) - 1u] = '\0';
+        return pty_slave_tty_id(path);
+    }
     return TTY_CONSOLE_ID;
 }
 

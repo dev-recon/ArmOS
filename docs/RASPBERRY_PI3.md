@@ -101,9 +101,8 @@ a warning instead of using an unsafe layout.
 The USB driver brings up the BCM2837 DWC2 controller in host mode, enumerates
 the Pi 3 internal USB hub, and recognizes USB boot-protocol HID interfaces.
 Keyboard input is routed to display-backed `tty0`; a mouse wheel controls
-graphical console scrollback. The initial key
-map is French AZERTY, matching the Logitech 920-009795 keyboard/receiver used
-for hardware validation.
+graphical console scrollback. Raspberry Pi profiles select the French Standard
+AZERTY (KBDFRNA) keymap for ISO USB keyboards.
 
 Connect the HDMI monitor and USB receiver before powering the Pi. Expected
 boot lines with both devices present are:

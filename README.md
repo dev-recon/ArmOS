@@ -59,6 +59,19 @@ userland used by the QEMU targets.
 
 ### Graphical console
 
+<p align="center">
+  <img src="docs/images/armos-wayland-foot-nano-teapot.png" alt="ArmOS Wayland compositor running Foot, GNU nano and the interactive Utah teapot demo" width="100%">
+</p>
+
+<p align="center">
+  Native ArmOS Wayland compositor with server-side decorations, Foot,
+  GNU nano 8.7 and the software-rendered interactive Utah teapot demo.
+</p>
+
+The current architecture, protocol coverage, platform status and remaining
+renderer work are described in the
+[Wayland compositor documentation](docs/WAYLAND_COMPOSITOR.md).
+
 <table>
   <tr>
     <td width="50%"><img src="docs/images/armos-qemu-top.png" alt="ArmOS top running on the graphical tty1 console"></td>

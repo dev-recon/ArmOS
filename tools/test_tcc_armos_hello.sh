@@ -16,7 +16,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TCC_BUILD="${TCC_BUILD:-$ROOT_DIR/build/tcc-host-arm}"
+TARGET_BUILD_ROOT="${TARGET_BUILD_ROOT:-$ROOT_DIR/build/arm32/qemu-virt}"
+TCC_BUILD="${TCC_BUILD:-$TARGET_BUILD_ROOT/tools/tcc-host}"
 TCC="$TCC_BUILD/arm-eabi-tcc"
 OUT_DIR="${OUT_DIR:-/private/tmp}"
 MIN_OBJ="$OUT_DIR/armos-tcc-minimal_exit.o"
@@ -48,7 +49,7 @@ echo "== TinyCC minimal static ArmOS link =="
     -static -nostdlib -Wl,-Ttext=0x8000 -Wl,-e,_start \
     -o "$MIN_BIN" \
     "$MIN_OBJ" \
-    "$ROOT_DIR/newlib-port/build/syscall_raw.o"
+    "$TARGET_BUILD_ROOT/newlib-port/syscall_raw.o"
 
 file "$MIN_OBJ"
 file "$MIN_BIN"
@@ -61,7 +62,7 @@ echo "== TinyCC compile + stable GCC/newlib link =="
     -c "$ROOT_DIR/userland/programs/hello/main.c" \
     -o "$OBJ" \
     -I"$ROOT_DIR/userland/include" \
-    -I"$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/include" \
+    -I"$TARGET_BUILD_ROOT/newlib-sysroot/arm-none-eabi/include" \
     -I"$ROOT_DIR/userland/opt/tcc/src/include" \
     -DARM_OS_NEWLIB
 
@@ -71,11 +72,12 @@ echo "== TinyCC compile + stable GCC/newlib link =="
     -Wl,-Ttext=0x8000 -Wl,-e,_start -Wl,--gc-sections \
     -Wl,--allow-multiple-definition \
     -o "$BIN" \
-    "$ROOT_DIR/newlib-port/build/crt0_newlib.o" \
-    "$ROOT_DIR/newlib-port/build/syscall_raw.o" \
-    "$ROOT_DIR/newlib-port/build/syscalls.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/crt0_newlib.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/syscall_raw.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/syscalls.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/stdio_lock.o" \
     "$OBJ" \
-    "$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/lib/libc.a" \
+    "$TARGET_BUILD_ROOT/newlib-sysroot/arm-none-eabi/lib/libc.a" \
     "$STABLE_LIBGCC"
 
 file "$OBJ"
@@ -89,18 +91,19 @@ echo "== TinyCC + newlib link with root ARM/EABI libgcc =="
     -std=gnu99 -ffreestanding -nostdlib -fno-builtin -fno-stack-protector \
     -ffunction-sections -fdata-sections -Os \
     -I"$ROOT_DIR/include" \
-    -I"$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/include" \
+    -I"$TARGET_BUILD_ROOT/newlib-sysroot/arm-none-eabi/include" \
     -c "$ROOT_DIR/newlib-port/tcc/syscalls_min.c" \
     -o "$MIN_SYSCALLS"
 
 "$TCC" \
     -static -nostdlib -Wl,-Ttext=0x8000 -Wl,-e,_start \
     -o "$TCC_NEWLIB_BIN" \
-    "$ROOT_DIR/newlib-port/build/crt0_newlib.o" \
-    "$ROOT_DIR/newlib-port/build/syscall_raw.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/crt0_newlib.o" \
+    "$TARGET_BUILD_ROOT/newlib-port/syscall_raw.o" \
     "$MIN_SYSCALLS" \
+    "$TARGET_BUILD_ROOT/newlib-port/stdio_lock.o" \
     "$OBJ" \
-    "$ROOT_DIR/build/newlib-sysroot/arm-none-eabi/lib/libc.a" \
+    "$TARGET_BUILD_ROOT/newlib-sysroot/arm-none-eabi/lib/libc.a" \
     "$TCC_LIBGCC"
 
 file "$TCC_NEWLIB_BIN"

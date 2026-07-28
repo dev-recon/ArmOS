@@ -151,11 +151,19 @@ static int hdmi_flush_rect(const uint8_t *framebuffer, uint32_t pitch,
     if (y + height > hdmi.height)
         height = hdmi.height - y;
 
-    for (uint32_t row = 0; row < height; row++) {
-        const uint8_t *start = framebuffer + (y + row) * pitch + x * 4u;
-        arch_clean_dcache_by_mva(start, width * 4u);
+    if (x == 0u && width * 4u == pitch) {
+        const uint8_t *start = framebuffer + y * pitch;
+
+        arch_clean_dcache_by_mva(start, (size_t)height * pitch);
+    } else {
+        const uint8_t *start = framebuffer + y * pitch + x * 4u;
+
+        /*
+         * Keep narrow damage precise, but issue the completion barrier once
+         * for the rectangle rather than once per scanline.
+         */
+        arch_clean_dcache_2d_by_mva(start, pitch, width * 4u, height);
     }
-    arch_data_sync_barrier();
     return 0;
 }
 

@@ -10,13 +10,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$ROOT_DIR/userland/opt/tcc/src"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/tcc-native}"
+WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/tcc-native}"
 PATCHED_SRC="$WORK_DIR/src"
 BUILD_DIR="$WORK_DIR/build"
 BUNDLE_DIR="$WORK_DIR/bundle/opt/tcc"
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 CC="${ARCH}gcc"
 AR="${ARCH}ar"
 HOST_CC="${HOST_CC:-cc}"
@@ -51,16 +53,28 @@ if [ ! -f "$NEWLIB_SYSROOT/include/stdio.h" ] || [ ! -f "$NEWLIB_LIBC" ]; then
     exit 1
 fi
 
-rm -rf "$WORK_DIR"
+TCC_SOURCE_CONTRACT="$(
+    find "$SRC_DIR" -type f -print | LC_ALL=C sort |
+        while IFS= read -r source_file; do
+            shasum -a 256 "$source_file"
+        done |
+        shasum -a 256 | awk '{print $1}'
+)"
+if [ ! -f "$PATCHED_SRC/.armos-source.contract" ] ||
+   [ "$(cat "$PATCHED_SRC/.armos-source.contract")" != "$TCC_SOURCE_CONTRACT" ]; then
+    rm -rf "$PATCHED_SRC" "$BUILD_DIR"
+    mkdir -p "$PATCHED_SRC" "$BUILD_DIR"
+    cp -R "$SRC_DIR"/. "$PATCHED_SRC"/
+
+    # ArmOS/newlib typedefs uint32_t as unsigned long on this target.  Upstream
+    # TCC declares o() as unsigned int in tcc.h, so align the backend signature.
+    perl -0pi -e 's/void o\(uint32_t i\)/void o(unsigned int i)/' "$PATCHED_SRC/arm-gen.c"
+    printf '%s\n' "$TCC_SOURCE_CONTRACT" > "$PATCHED_SRC/.armos-source.contract"
+fi
+
+rm -rf "$WORK_DIR/bundle"
 mkdir -p "$PATCHED_SRC" "$BUILD_DIR/armos-include/sys" "$BUNDLE_DIR/bin" \
          "$BUNDLE_DIR/lib/tcc/include" "$BUNDLE_DIR/include/armos"
-
-cp -R "$SRC_DIR"/. "$PATCHED_SRC"/
-
-# ArmOS/newlib typedefs uint32_t as unsigned long on this target.  Upstream TCC
-# declares o() as unsigned int in tcc.h, so keep the ARM backend signature
-# exactly aligned with the public prototype.
-perl -0pi -e 's/void o\(uint32_t i\)/void o(unsigned int i)/' "$PATCHED_SRC/arm-gen.c"
 
 # The first native milestone does not support tcc -run.  A small mman header is
 # still needed because tccrun.c is part of libtcc even when runtime execution is
@@ -100,14 +114,23 @@ long sysconf(int name)
 }
 EOF
 
-"$CC" $ARM_FLAGS -std=gnu99 -Os -ffreestanding -fno-builtin \
-    -fno-stack-protector -I"$NEWLIB_SYSROOT/include" \
-    -c "$BUILD_DIR/armos_tcc_compat.c" \
-    -o "$BUILD_DIR/armos_tcc_compat.o"
-
 cd "$BUILD_DIR"
 
-"$PATCHED_SRC/configure" \
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/config.mak" <<EOF
+bundle=tcc-native
+source=$TCC_SOURCE_CONTRACT
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+host_cc=$HOST_CC
+arm_flags=$ARM_FLAGS
+cpu=$TCC_CPU
+args=--source-path=$PATCHED_SRC --prefix=/opt/tcc --cross-prefix=$ARCH --cc=gcc... --ar=ar --cpu=$TCC_CPU --targetos=Linux --triplet=$TARGET_TRIPLET --enable-static --disable-rpath
+EOF
+then
+    "$PATCHED_SRC/configure" \
     --source-path="$PATCHED_SRC" \
     --prefix=/opt/tcc \
     --cross-prefix="$ARCH" \
@@ -121,6 +144,13 @@ cd "$BUILD_DIR"
     --sysincludepaths=/opt/tcc/lib/tcc/include:/opt/tcc/include/armos:/opt/tcc/include \
     --libpaths=/opt/tcc/lib \
     --crtprefix=/opt/tcc/lib
+    armos_configure_commit "$BUILD_DIR"
+fi
+
+"$CC" $ARM_FLAGS -std=gnu99 -Os -ffreestanding -fno-builtin \
+    -fno-stack-protector -I"$NEWLIB_SYSROOT/include" \
+    -c "$BUILD_DIR/armos_tcc_compat.c" \
+    -o "$BUILD_DIR/armos_tcc_compat.o"
 
 # TCC's c2str generator is a build-host utility.  Keep it as a host executable
 # even though the compiler being produced is an ArmOS executable.
@@ -150,6 +180,9 @@ make "$TCC_MAKE_TARGET" LIBS='' CFLAGS="$TCC_CFLAGS" LDFLAGS="$NATIVE_LDFLAGS"
 cp "$BUILD_DIR/$TCC_OUTPUT" "$BUNDLE_DIR/bin/tcc"
 cp "$NEWLIB_RUNTIME_DIR/crt0_newlib.o" "$BUNDLE_DIR/lib/crt0_newlib.o"
 cp "$NEWLIB_RUNTIME_DIR/syscall_raw.o" "$BUNDLE_DIR/lib/syscall_raw.o"
+cp "$NEWLIB_RUNTIME_DIR/stdio_lock.o" "$BUNDLE_DIR/lib/stdio_lock.o"
+cp "$NEWLIB_RUNTIME_DIR/pthread.o" "$BUNDLE_DIR/lib/pthread.o"
+cp "$NEWLIB_RUNTIME_DIR/pthread_sync.o" "$BUNDLE_DIR/lib/pthread_sync.o"
 cp "$NEWLIB_LIBC" "$BUNDLE_DIR/lib/libc.a"
 cp "$NEWLIB_LIBM" "$BUNDLE_DIR/lib/libm.a"
 cp "$TCC_LIBGCC" "$BUNDLE_DIR/lib/libgcc.a"
@@ -172,7 +205,7 @@ file "$BUNDLE_DIR/bin/tcc"
 "${ARCH}objdump" -f "$BUNDLE_DIR/bin/tcc"
 echo
 echo "To stage it into the generated filesystem for testing:"
-echo "  rsync -a $BUNDLE_DIR/ $ROOT_DIR/userfs/opt/tcc/"
+echo "  rsync -a $BUNDLE_DIR/ $USERFS_ROOT/opt/tcc/"
 echo
 echo "Keep /opt/tcc/bin out of PATH: /usr/bin/tcc is the ArmOS wrapper that"
 echo "adds the startup objects and libraries needed for normal native builds."

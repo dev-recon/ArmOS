@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="${SRC_DIR:-$ROOT_DIR/userland/opt/zlib/src}"
-WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/zlib}"
+WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/${TARGET_ARCH:-arm32}/${TARGET_PLATFORM:-qemu-virt}/bundles/zlib}"
 BUILD_DIR="$WORK_DIR/build"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_PREFIX="$BUNDLE_ROOT/opt/zlib"
@@ -92,4 +92,4 @@ echo "ArmOS zlib bundle built:"
 echo "  $BUNDLE_ROOT"
 echo
 echo "Stage with:"
-echo "  rsync -a $BUNDLE_ROOT/ $ROOT_DIR/userfs/"
+echo "  rsync -a $BUNDLE_ROOT/ $USERFS_ROOT/"

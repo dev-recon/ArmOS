@@ -163,8 +163,9 @@ void irq_c_handler(void)
         tlb_handle_remote_ipi(cpu);
     } else if (irq == virtio_blk_get_irq()) {
         virtio_block_irq_handler();
-    } else if (irq == virtio_input_get_irq()) {
-        virtio_input_irq_handler();
+    } else if (irq == virtio_input_get_irq() ||
+               virtio_input_handles_irq(irq)) {
+        virtio_input_irq_handler(irq);
     } else if (irq == virtio_net_get_irq()) {
         virtio_net_irq_handler();
     } else if (irq == IRQ_TIMER) {

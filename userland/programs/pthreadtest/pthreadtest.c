@@ -27,6 +27,7 @@
 
 #define WORKER_COUNT 4
 #define ITERATIONS 1000
+#define EXPECTED_DEFAULT_STACK_SIZE (1024u * 1024u)
 
 static pthread_mutex_t gate_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_cond = PTHREAD_COND_INITIALIZER;
@@ -158,6 +159,7 @@ int main(void)
     pthread_attr_t attr;
     pthread_mutexattr_t mutex_attr;
     struct timespec deadline;
+    size_t default_stack_size = 0;
     int failures = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -249,6 +251,9 @@ int main(void)
     printf("pthreadtest: robust mutex ok\n");
 
     CHECK(pthread_attr_init(&attr) == 0, "pthread_attr_init failed");
+    CHECK(pthread_attr_getstacksize(&attr, &default_stack_size) == 0 &&
+          default_stack_size == EXPECTED_DEFAULT_STACK_SIZE,
+          "pthread default stack is not 1 MiB");
     CHECK(pthread_attr_setdetachstate(
               &attr, PTHREAD_CREATE_DETACHED) == 0,
           "pthread detach attribute failed");

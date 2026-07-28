@@ -30,7 +30,8 @@ struct signal_state_t;
 struct file;
 
 /* Configuration */
-#define KERNEL_TASK_STACK_SIZE  (16 * 1024)    /* 16KB par tache */
+#define KERNEL_TASK_STACK_SIZE        (32 * 1024) /* 32 KiB usable per task */
+#define KERNEL_TASK_STACK_GUARD_SIZE  (4 * 1024)  /* Canary guard below stack */
 #define MAX_TASKS               1024             /* Maximum de taches vivantes */
 #define TASK_NAME_MAX           32              /* Longueur max du nom */
 #define MAX_SIGNALS             32
@@ -180,8 +181,14 @@ typedef enum file_type {
     FILE_TYPE_PIPE,
     FILE_TYPE_NETECHO,
     FILE_TYPE_SOCKET,
+    FILE_TYPE_ARMOS_SOCKET,
+    FILE_TYPE_SHM,
     FILE_TYPE_FRAMEBUFFER,
     FILE_TYPE_NETCTL,
+    FILE_TYPE_INPUT,
+    FILE_TYPE_PTY_MASTER,
+    FILE_TYPE_EVENTFD,
+    FILE_TYPE_TIMERFD,
 } file_type_t;
 typedef struct inode_operations inode_operations_t;
 

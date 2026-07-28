@@ -232,6 +232,7 @@ uint32_t vm_page_table_count(vm_space_t *space)
 int handle_cow_fault(vaddr_t address)
 {
     task_t *task = task_current_local();
+    process_t *process = task_get_process(task);
     vm_space_t *space;
     vma_t *vma;
     vaddr_t page = address & PAGE_MASK;
@@ -240,10 +241,9 @@ int handle_cow_fault(vaddr_t address)
     uint16_t references;
     int result;
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process ||
-        !task->process->vm)
+    if (!process || !process->vm)
         return -EINVAL;
-    space = task->process->vm;
+    space = process->vm;
     vma = find_vma(space, address);
     if (!vma || !(vma->flags & VMA_WRITE) || (vma->flags & VMA_SHARED))
         return -EACCES;

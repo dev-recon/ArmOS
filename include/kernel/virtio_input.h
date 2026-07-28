@@ -22,8 +22,9 @@
 #include <kernel/types.h>
 
 bool virtio_input_init(int tty_id);
-void virtio_input_irq_handler(void);
+void virtio_input_irq_handler(uint32_t irq);
 uint32_t virtio_input_get_irq(void);
+bool virtio_input_handles_irq(uint32_t irq);
 bool virtio_input_is_initialized(void);
 void virtio_input_get_stats(uint32_t *irq_count, uint32_t *used_count,
                             uint32_t *key_events, uint32_t *emitted_chars,

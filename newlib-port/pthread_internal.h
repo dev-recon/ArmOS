@@ -43,6 +43,7 @@ typedef struct armos_pthread_control {
     volatile uint32_t cancel_address_changes;
     void *result;
     void *stack_allocation;
+    size_t stack_allocation_size;
     void *stack_base;
     size_t stack_size;
     int owns_stack;

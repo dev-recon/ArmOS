@@ -185,6 +185,8 @@ void init_process_main(void* arg)
         "PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin",
         "HOME=/home/user",
         "USER=user",
+        "LANG=C.UTF-8",
+        "SHELL=/sbin/mash",
         "PS1=mash$> ",
         NULL
     };
@@ -348,6 +350,37 @@ task_t* find_process_by_pid(pid_t pid)
     
     spin_unlock_irqrestore(&task_lock, flags);
     return NULL;
+}
+
+size_t process_snapshot_live_pids(pid_t* pids, size_t capacity,
+                                  pid_t exclude_pid, bool include_init)
+{
+    task_t* task;
+    size_t count = 0;
+    uint32_t walked = 0;
+    unsigned long flags;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    task = task_list_head;
+    if (task) {
+        do {
+            task_t* next = task->next;
+
+            if (task->type == TASK_TYPE_PROCESS && task->process &&
+                task->state != TASK_ZOMBIE &&
+                task->state != TASK_TERMINATED &&
+                task->process->pid != exclude_pid &&
+                (include_init || task->process->pid != 1)) {
+                if (pids && count < capacity)
+                    pids[count] = task->process->pid;
+                count++;
+            }
+            task = next;
+            walked++;
+        } while (task && task != task_list_head && walked < MAX_TASKS);
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
+    return count;
 }
 
 /**
