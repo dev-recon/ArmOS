@@ -32,6 +32,33 @@ Then use the normal entry points:
 Without a local file or environment overrides, the reference target remains
 `arm32/qemu-virt`.
 
+## Incremental Userland Builds
+
+`build.sh` preserves userland objects below `build/<arch>/<platform>/`.
+Compiler dependency files rebuild a source object when its C file or one of
+its included headers changes. Unchanged objects and executables are retained.
+
+Configured bundles cache a fingerprint containing the target, toolchain,
+flags, source version, dependencies and configure arguments. A matching
+generated configuration skips `configure`; a changed fingerprint invalidates
+the bundle objects before configuring again.
+
+Every complete third-party bundle also records its source and direct bundle
+dependency contracts plus a manifest of produced files. An unchanged bundle
+is not entered at all during a complete userland build. A changed public ABI
+or direct dependency invalidates only the affected bundle and its consumers.
+
+Use these explicit overrides when required:
+
+```sh
+./build.sh --reconfigure  # rerun configure, preserve common userland objects
+./build.sh --rebuild      # clean userland objects and rerun every configure
+ARMOS_FORCE_RECONFIGURE=1 ./tools/build_freetype.sh
+```
+
+Kernel output remains independent from these userland caches and is rebuilt
+from a target-local clean tree.
+
 ## Profiles
 
 Tracked profiles provide reproducible starting points without changing the
@@ -80,6 +107,7 @@ Target and launch options:
 TARGET_ARCH=arm32
 TARGET_PLATFORM=qemu-virt
 SMP_CPUS=1
+KEYBOARD_LAYOUT=us
 ENABLE_NET=no
 ENABLE_WIFI=no
 ENABLE_GPU=no
@@ -89,6 +117,28 @@ ENABLE_USB=no
 HDMI_WIDTH=1280
 HDMI_HEIGHT=720
 ```
+
+`KEYBOARD_LAYOUT` selects the initial seat-wide keyboard layout. The supported
+values are `us`, `us-mac`, `fr` (French Standard AZERTY / KBDFRNA),
+`fr-legacy` (traditional French AZERTY / KBDFR), and `fr-mac`. Tracked QEMU
+profiles use `fr-mac`; Raspberry Pi profiles use `fr-legacy` for the current
+USB keyboard. The selected profile must provide the build-time definition
+used by both the kernel and userland.
+
+The layout can be inspected or changed without rebooting:
+
+```sh
+keymap
+keymap us
+keymap us-mac
+keymap fr
+keymap fr-mac
+keymap fr-legacy
+```
+
+The change applies to the common input seat. The kernel immediately switches
+the console translation and notifies `armos-wlcomp`, which republishes the
+Wayland keymap to connected clients.
 
 `ENABLE_NET=yes` adds VirtIO-net and the configured host forwarding when QEMU
 starts. `ENABLE_GPU=yes` opens the VirtIO-GPU display and adds the keyboard

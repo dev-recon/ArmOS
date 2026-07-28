@@ -21,6 +21,7 @@
 #include "armos_wlcomp.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -978,6 +979,113 @@ static int wl_surface_add_callback(struct wl_server_client *client,
                             "frame callback limit reached");
 }
 
+static int wl_surface_add_damage(struct wl_server_client *client,
+                                 struct wl_server_object *object,
+                                 struct wl_server_surface *surface,
+                                 struct wl_request *request)
+{
+    uint32_t wire_x;
+    uint32_t wire_y;
+    uint32_t wire_width;
+    uint32_t wire_height;
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+    int64_t x1;
+    int64_t y1;
+    struct wl_renderer_rect incoming;
+
+    if (wl_request_u32(request, &wire_x) < 0 ||
+        wl_request_u32(request, &wire_y) < 0 ||
+        wl_request_u32(request, &wire_width) < 0 ||
+        wl_request_u32(request, &wire_height) < 0 ||
+        !wl_request_complete(request))
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "malformed wl_surface damage");
+    x = (int32_t)wire_x;
+    y = (int32_t)wire_y;
+    width = (int32_t)wire_width;
+    height = (int32_t)wire_height;
+    if (width < 0 || height < 0)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                "negative wl_surface damage");
+    if (width == 0 || height == 0)
+        return 0;
+    x1 = (int64_t)x + width;
+    y1 = (int64_t)y + height;
+    if (x1 > INT32_MAX)
+        x1 = INT32_MAX;
+    if (y1 > INT32_MAX)
+        y1 = INT32_MAX;
+    incoming.x0 = x;
+    incoming.y0 = y;
+    incoming.x1 = (int32_t)x1;
+    incoming.y1 = (int32_t)y1;
+    for (size_t index = 0u;
+         index < surface->pending_damage_count; index++) {
+        struct wl_renderer_rect *damage = &surface->pending_damage[index];
+
+        if (incoming.x0 > damage->x1 || incoming.x1 < damage->x0 ||
+            incoming.y0 > damage->y1 || incoming.y1 < damage->y0)
+            continue;
+        if (incoming.x0 < damage->x0)
+            damage->x0 = incoming.x0;
+        if (incoming.y0 < damage->y0)
+            damage->y0 = incoming.y0;
+        if (incoming.x1 > damage->x1)
+            damage->x1 = incoming.x1;
+        if (incoming.y1 > damage->y1)
+            damage->y1 = incoming.y1;
+        return 0;
+    }
+    if (surface->pending_damage_count < WL_SERVER_MAX_DAMAGE_RECTS) {
+        surface->pending_damage[surface->pending_damage_count++] = incoming;
+        return 0;
+    }
+    {
+        size_t best = 0u;
+        uint64_t best_growth = UINT64_MAX;
+
+        for (size_t index = 0u;
+             index < surface->pending_damage_count; index++) {
+            const struct wl_renderer_rect *damage =
+                &surface->pending_damage[index];
+            int32_t union_x0 = damage->x0 < incoming.x0 ?
+                damage->x0 : incoming.x0;
+            int32_t union_y0 = damage->y0 < incoming.y0 ?
+                damage->y0 : incoming.y0;
+            int32_t union_x1 = damage->x1 > incoming.x1 ?
+                damage->x1 : incoming.x1;
+            int32_t union_y1 = damage->y1 > incoming.y1 ?
+                damage->y1 : incoming.y1;
+            uint64_t old_area =
+                (uint64_t)(uint32_t)(damage->x1 - damage->x0) *
+                (uint32_t)(damage->y1 - damage->y0);
+            uint64_t union_area =
+                (uint64_t)(uint32_t)(union_x1 - union_x0) *
+                (uint32_t)(union_y1 - union_y0);
+            uint64_t growth = union_area - old_area;
+
+            if (growth < best_growth) {
+                best = index;
+                best_growth = growth;
+            }
+        }
+        if (incoming.x0 < surface->pending_damage[best].x0)
+            surface->pending_damage[best].x0 = incoming.x0;
+        if (incoming.y0 < surface->pending_damage[best].y0)
+            surface->pending_damage[best].y0 = incoming.y0;
+        if (incoming.x1 > surface->pending_damage[best].x1)
+            surface->pending_damage[best].x1 = incoming.x1;
+        if (incoming.y1 > surface->pending_damage[best].y1)
+            surface->pending_damage[best].y1 = incoming.y1;
+    }
+    return 0;
+}
+
 static int wl_dispatch_surface(struct wl_server *server,
                                struct wl_server_client *client,
                                struct wl_server_object *object,
@@ -1054,10 +1162,8 @@ static int wl_dispatch_surface(struct wl_server *server,
         surface->pending_attach = true;
         return 0;
     }
-    if (opcode == 2u && request->size == 16u) {
-        request->cursor = request->size;
-        return 0;
-    }
+    if (opcode == 2u)
+        return wl_surface_add_damage(client, object, surface, request);
     if (opcode == 3u)
         return wl_surface_add_callback(client, object, surface, request);
     if ((opcode == 4u || opcode == 5u) && request->size == 4u) {
@@ -1109,17 +1215,15 @@ static int wl_dispatch_surface(struct wl_server *server,
                                     "invalid buffer scale");
         return 0;
     }
-    if (opcode == 9u && object->version >= 4u &&
-        request->size == 16u) {
-        request->cursor = request->size;
-        return 0;
-    }
+    if (opcode == 9u && object->version >= 4u)
+        return wl_surface_add_damage(client, object, surface, request);
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_METHOD,
                             "unsupported wl_surface request");
 }
 
-static int wl_dispatch_seat(struct wl_server_client *client,
+static int wl_dispatch_seat(struct wl_server *server,
+                            struct wl_server_client *client,
                             struct wl_server_object *object,
                             uint16_t opcode, struct wl_request *request)
 {
@@ -1144,7 +1248,7 @@ static int wl_dispatch_seat(struct wl_server_client *client,
                                  WL_SERVER_OBJECT_KEYBOARD,
                                  object->version, NULL) < 0)
             return -1;
-        if (wl_server_send_keymap(client, new_id) < 0) {
+        if (wl_server_send_keymap(server, client, new_id) < 0) {
             perror("armos-wlcomp: keyboard keymap");
             wl_client_remove_object(client, new_id, false);
             return -1;
@@ -1671,7 +1775,7 @@ int wl_server_dispatch_message(struct wl_server *server,
     case WL_SERVER_OBJECT_SURFACE:
         return wl_dispatch_surface(server, client, object, opcode, &request);
     case WL_SERVER_OBJECT_SEAT:
-        return wl_dispatch_seat(client, object, opcode, &request);
+        return wl_dispatch_seat(server, client, object, opcode, &request);
     case WL_SERVER_OBJECT_POINTER:
     case WL_SERVER_OBJECT_KEYBOARD:
     case WL_SERVER_OBJECT_TOUCH:

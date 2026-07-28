@@ -30,6 +30,7 @@
 #include <kernel/arch_barrier.h>
 #include <kernel/arch_platform.h>
 #include <kernel/input.h>
+#include <kernel/keyboard.h>
 
 #define VIRTIO_ID_INPUT        18
 #define VIRTIO_INPUT_VQ_SIZE   32
@@ -248,77 +249,8 @@ static void input_emit_string(virtio_input_state_t *state, const char *s)
 
 static char input_translate_key(virtio_input_state_t *state, uint16_t code)
 {
-    /*
-     * Mac French / AZERTY layout, ASCII kernel subset.
-     *
-     * The real macOS layout emits non-ASCII characters for several keys
-     * (eacute, egrave, ccedilla, agrave, section, dead accents, etc.).
-     * TTY currently transports bytes, not UTF-8 composed characters, so these
-     * entries use readable ASCII fallbacks while keeping the physical layout
-     * correct for shell/programming use.
-     *
-     * QEMU/Cocoa does not currently forward the physical Mac @/# key to the
-     * guest virtio-keyboard device ("unmapped key: 0" on the host), so ArmOS
-     * exposes developer fallbacks on Option+A (@) and Option+D (#).
-     */
-    static const char normal[128] = {
-        [KEY_1] = '&', [KEY_2] = 'e', [KEY_3] = '"', [KEY_4] = '\'',
-        [KEY_5] = '(', [KEY_6] = 's', [KEY_7] = 'e', [KEY_8] = '!',
-        [KEY_9] = 'c', [KEY_0] = 'a', [KEY_MINUS] = ')', [KEY_EQUAL] = '-',
-        [KEY_Q] = 'a', [KEY_W] = 'z', [KEY_E] = 'e', [KEY_R] = 'r',
-        [KEY_T] = 't', [KEY_Y] = 'y', [KEY_U] = 'u', [KEY_I] = 'i',
-        [KEY_O] = 'o', [KEY_P] = 'p', [KEY_LEFTBRACE] = '^',
-        [KEY_RIGHTBRACE] = '$', [KEY_A] = 'q', [KEY_S] = 's',
-        [KEY_D] = 'd', [KEY_F] = 'f', [KEY_G] = 'g', [KEY_H] = 'h',
-        [KEY_J] = 'j', [KEY_K] = 'k', [KEY_L] = 'l',
-        [KEY_SEMICOLON] = 'm', [KEY_APOSTROPHE] = 'u',
-        [KEY_GRAVE] = '<', [KEY_BACKSLASH] = '`', [KEY_Z] = 'w',
-        [KEY_X] = 'x', [KEY_C] = 'c', [KEY_V] = 'v', [KEY_B] = 'b',
-        [KEY_N] = 'n', [KEY_M] = ',', [KEY_COMMA] = ';',
-        [KEY_DOT] = ':', [KEY_SLASH] = '=', [KEY_SPACE] = ' ',
-    };
-    static const char shifted[128] = {
-        [KEY_1] = '1', [KEY_2] = '2', [KEY_3] = '3', [KEY_4] = '4',
-        [KEY_5] = '5', [KEY_6] = '6', [KEY_7] = '7', [KEY_8] = '8',
-        [KEY_9] = '9', [KEY_0] = '0', [KEY_MINUS] = 0, [KEY_EQUAL] = '_',
-        [KEY_Q] = 'A', [KEY_W] = 'Z', [KEY_E] = 'E', [KEY_R] = 'R',
-        [KEY_T] = 'T', [KEY_Y] = 'Y', [KEY_U] = 'U', [KEY_I] = 'I',
-        [KEY_O] = 'O', [KEY_P] = 'P', [KEY_LEFTBRACE] = '^',
-        [KEY_RIGHTBRACE] = '*', [KEY_A] = 'Q', [KEY_S] = 'S',
-        [KEY_D] = 'D', [KEY_F] = 'F', [KEY_G] = 'G', [KEY_H] = 'H',
-        [KEY_J] = 'J', [KEY_K] = 'K', [KEY_L] = 'L',
-        [KEY_SEMICOLON] = 'M', [KEY_APOSTROPHE] = '%',
-        [KEY_GRAVE] = '>', [KEY_BACKSLASH] = 0, [KEY_Z] = 'W',
-        [KEY_X] = 'X', [KEY_C] = 'C', [KEY_V] = 'V', [KEY_B] = 'B',
-        [KEY_N] = 'N', [KEY_M] = '?', [KEY_COMMA] = '.',
-        [KEY_DOT] = '/', [KEY_SLASH] = '+', [KEY_SPACE] = ' ',
-    };
-    static const char option[128] = {
-        [KEY_5] = '{', [KEY_MINUS] = '}',
-        [KEY_Q] = '@',
-        [KEY_D] = '#',
-        [KEY_N] = '~',
-    };
-    static const char option_shift[128] = {
-        [KEY_5] = '[', [KEY_MINUS] = ']',
-        [KEY_L] = '|', [KEY_DOT] = '\\',
-    };
-    bool use_shift = state->shift;
-    char ascii;
-
-    if (code >= 128)
-        return 0;
-
-    if (state->opt) {
-        ascii = state->shift ? option_shift[code] : option[code];
-        if (ascii)
-            return ascii;
-    }
-
-    if (state->caps_lock && normal[code] >= 'a' && normal[code] <= 'z')
-        use_shift = !use_shift;
-
-    return use_shift ? shifted[code] : normal[code];
+    return keyboard_translate_key(code, state->shift, state->caps_lock,
+                                  state->opt);
 }
 
 static void input_handle_key(virtio_input_state_t *state, uint16_t code,

@@ -1362,16 +1362,18 @@ static uint16_t hid_usage_to_key(uint8_t usage)
     case 0x2fu: return 26u;
     case 0x30u: return 27u;
     case 0x31u: return 43u;
+    case 0x32u: return 43u;
     case 0x33u: return 39u;
     case 0x34u: return 40u;
     case 0x36u: return 51u;
     case 0x37u: return 52u;
     case 0x38u: return 53u;
+    case 0x39u: return 58u;
     case 0x4fu: return 106u;
     case 0x50u: return 105u;
     case 0x51u: return 108u;
     case 0x52u: return 103u;
-    case 0x64u: return 41u;
+    case 0x64u: return 86u;
     default: return 0u;
     }
 }
@@ -1436,6 +1438,7 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
 {
     uint64_t now = get_timer_count();
     bool selected_repeat = false;
+    bool emitted = false;
     static const uint16_t modifier_keys[8] = {
         29u, 42u, 56u, 125u, 97u, 54u, 100u, 126u
     };
@@ -1443,9 +1446,11 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
     for (uint32_t bit = 0; bit < 8u; bit++) {
         uint8_t mask = (uint8_t)(1u << bit);
 
-        if ((hid->report[0] & mask) != (hid->previous[0] & mask))
+        if ((hid->report[0] & mask) != (hid->previous[0] & mask)) {
             armos_input_emit(ARMOS_INPUT_EVENT_KEY, modifier_keys[bit],
                              (hid->report[0] & mask) ? 1 : 0);
+            emitted = true;
+        }
     }
 
     for (uint32_t i = 2; i < 8u; i++) {
@@ -1455,9 +1460,12 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
         if (!usage || key_already_pressed(hid->previous, usage))
             continue;
         key = hid_usage_to_key(usage);
-        if (key)
+        if (key) {
             armos_input_emit(ARMOS_INPUT_EVENT_KEY, key, 1);
-        if (emit_keyboard_usage(usage, hid->report[0])) {
+            emitted = true;
+        }
+        if (emit_keyboard_usage(usage, hid->report[0]) &&
+            armos_input_tty_routing_enabled()) {
             hid->repeat_usage = usage;
             hid->repeat_next_tick = now +
                 timer_ticks_from_ms(USB_KEY_REPEAT_DELAY_MS);
@@ -1471,10 +1479,13 @@ static void process_keyboard(usb_hid_endpoint_t *hid)
         if (!usage || key_already_pressed(hid->report, usage))
             continue;
         key = hid_usage_to_key(usage);
-        if (key)
+        if (key) {
             armos_input_emit(ARMOS_INPUT_EVENT_KEY, key, 0);
+            emitted = true;
+        }
     }
-    armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
+    if (emitted)
+        armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
 
     if (!selected_repeat && hid->repeat_usage != 0u &&
         !key_already_pressed(hid->report, hid->repeat_usage)) {
@@ -1490,6 +1501,16 @@ static void process_keyboard_repeat(usb_hid_endpoint_t *hid, uint64_t now)
         now < hid->repeat_next_tick)
         return;
     if (!key_already_pressed(hid->previous, hid->repeat_usage)) {
+        hid->repeat_usage = 0u;
+        hid->repeat_next_tick = 0u;
+        return;
+    }
+    if (!armos_input_tty_routing_enabled()) {
+        /*
+         * Wayland clients implement repeat from wl_keyboard.repeat_info.
+         * A platform driver must not inject a second repeat stream while
+         * the compositor owns the common input device.
+         */
         hid->repeat_usage = 0u;
         hid->repeat_next_tick = 0u;
         return;
@@ -1513,26 +1534,40 @@ static void process_mouse(usb_hid_endpoint_t *hid)
     int8_t delta_x = (int8_t)hid->report[1];
     int8_t delta_y = (int8_t)hid->report[2];
     int8_t wheel = (int8_t)hid->report[3];
+    bool emitted = false;
 
-    if ((buttons & 1u) != (previous_buttons & 1u))
+    if ((buttons & 1u) != (previous_buttons & 1u)) {
         armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_LEFT,
                          (buttons & 1u) != 0u);
-    if ((buttons & 2u) != (previous_buttons & 2u))
+        emitted = true;
+    }
+    if ((buttons & 2u) != (previous_buttons & 2u)) {
         armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_RIGHT,
                          (buttons & 2u) != 0u);
-    if ((buttons & 4u) != (previous_buttons & 4u))
+        emitted = true;
+    }
+    if ((buttons & 4u) != (previous_buttons & 4u)) {
         armos_input_emit(ARMOS_INPUT_EVENT_KEY, ARMOS_INPUT_BUTTON_MIDDLE,
                          (buttons & 4u) != 0u);
-    if (delta_x)
+        emitted = true;
+    }
+    if (delta_x) {
         armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_X,
                          delta_x);
-    if (delta_y)
+        emitted = true;
+    }
+    if (delta_y) {
         armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_Y,
                          delta_y);
-    if (wheel)
+        emitted = true;
+    }
+    if (wheel) {
         armos_input_emit(ARMOS_INPUT_EVENT_RELATIVE, ARMOS_INPUT_AXIS_WHEEL,
                          wheel);
-    armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
+        emitted = true;
+    }
+    if (emitted)
+        armos_input_emit(ARMOS_INPUT_EVENT_SYNC, 0u, 0);
     if (wheel > 0)
         display_scrollback_up((uint32_t)wheel * 3u);
     else if (wheel < 0)

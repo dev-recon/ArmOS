@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 CC="${ARCH}gcc"
 AR="${ARCH}ar"
 RANLIB="${ARCH}ranlib"
@@ -57,27 +59,54 @@ if [ ! -f "$SRC_ARCHIVE" ]; then
     curl -L --fail "$NCURSES_URL" -o "$SRC_ARCHIVE"
 fi
 
-rm -rf "$SRC_DIR" "$BUILD_DIR" "$BUNDLE_ROOT"
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$BUNDLE_PREFIX" "$BUNDLE_USR_BIN"
+SOURCE_CONTRACT="ncurses-$NCURSES_VERSION:$(shasum -a 256 "$SRC_ARCHIVE" "$TERMINFO_SRC" | shasum -a 256 | awk '{print $1}')"
+if [ ! -f "$SRC_DIR/.armos-source.contract" ] ||
+   [ "$(cat "$SRC_DIR/.armos-source.contract")" != "$SOURCE_CONTRACT" ]; then
+    rm -rf "$SRC_DIR" "$BUILD_DIR"
+    mkdir -p "$SRC_DIR" "$BUILD_DIR"
+    tar -xzf "$SRC_ARCHIVE" -C "$SRC_DIR" --strip-components=1
+    # Make the ArmOS entry visible to ncurses' fallback generator.
+    cat "$TERMINFO_SRC" >> "$SRC_DIR/misc/terminfo.src"
+    printf '%s\n' "$SOURCE_CONTRACT" > "$SRC_DIR/.armos-source.contract"
+fi
 
-tar -xzf "$SRC_ARCHIVE" -C "$SRC_DIR" --strip-components=1
-
-# Make the ArmOS entry visible to ncurses' fallback generator.
-cat "$TERMINFO_SRC" >> "$SRC_DIR/misc/terminfo.src"
+rm -rf "$BUNDLE_ROOT"
+mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX" "$BUNDLE_USR_BIN"
 
 cd "$BUILD_DIR"
 
 BUILD_TRIPLET="$("$SRC_DIR/config.guess" 2>/dev/null || echo unknown)"
 
-CC="$CC" \
-AR="$AR" \
-RANLIB="$RANLIB" \
-BUILD_CC="$HOST_CC" \
-CFLAGS="$ARM_FLAGS -Os -ffreestanding -fno-builtin -fno-stack-protector -DARM_OS_NEWLIB -I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include" \
-CPPFLAGS="-I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include" \
-LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS" \
-LIBS="$NEWLIB_LIBC $LIBGCC" \
-"$SRC_DIR/configure" \
+NCURSES_CFLAGS="$ARM_FLAGS -Os -ffreestanding -fno-builtin -fno-stack-protector -DARM_OS_NEWLIB -I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include"
+NCURSES_CPPFLAGS="-I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include"
+NCURSES_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS"
+NCURSES_LIBS="$NEWLIB_LIBC $LIBGCC"
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile" <<EOF
+bundle=ncurses
+source=$SOURCE_CONTRACT
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+host_cc=$HOST_CC
+host_tic=$TIC_PATH
+cflags=$NCURSES_CFLAGS
+cppflags=$NCURSES_CPPFLAGS
+ldflags=$NCURSES_LDFLAGS
+libs=$NCURSES_LIBS
+args=--build=$BUILD_TRIPLET --host=$TARGET_TRIPLET --target=$TARGET_TRIPLET --prefix=/opt/ncurses --with-build-cc=$HOST_CC --with-normal --without-shared --without-debug --without-profile --without-cxx --without-cxx-binding --without-ada --without-manpages --without-tests --without-progs --disable-widec --disable-database --disable-db-install --with-fallbacks=armos,ansi --with-tic-path=$TIC_PATH --without-hashed-db --without-gpm --without-dlsym
+EOF
+then
+    CC="$CC" \
+    AR="$AR" \
+    RANLIB="$RANLIB" \
+    BUILD_CC="$HOST_CC" \
+    CFLAGS="$NCURSES_CFLAGS" \
+    CPPFLAGS="$NCURSES_CPPFLAGS" \
+    LDFLAGS="$NCURSES_LDFLAGS" \
+    LIBS="$NCURSES_LIBS" \
+    "$SRC_DIR/configure" \
     --build="$BUILD_TRIPLET" \
     --host="$TARGET_TRIPLET" \
     --target="$TARGET_TRIPLET" \
@@ -101,6 +130,8 @@ LIBS="$NEWLIB_LIBC $LIBGCC" \
     --without-hashed-db \
     --without-gpm \
     --without-dlsym
+    armos_configure_commit "$BUILD_DIR"
+fi
 
 make -j"${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}" libs
 make DESTDIR="$BUNDLE_ROOT" install.libs install.includes

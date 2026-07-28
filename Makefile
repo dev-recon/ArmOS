@@ -15,6 +15,7 @@ _ARMOS_ENV_TARGET_ARCH := $(if $(filter environment environment\ override,$(orig
 _ARMOS_ENV_TARGET_PLATFORM := $(if $(filter environment environment\ override,$(origin TARGET_PLATFORM)),$(TARGET_PLATFORM))
 _ARMOS_ENV_CROSS_COMPILE := $(if $(filter environment environment\ override,$(origin CROSS_COMPILE)),$(CROSS_COMPILE))
 _ARMOS_ENV_SMP_CPUS := $(if $(filter environment environment\ override,$(origin SMP_CPUS)),$(SMP_CPUS))
+_ARMOS_ENV_KEYBOARD_LAYOUT := $(if $(filter environment environment\ override,$(origin KEYBOARD_LAYOUT)),$(KEYBOARD_LAYOUT))
 -include $(ARMOS_CONFIG)
 ifneq ($(_ARMOS_ENV_TARGET_ARCH),)
 TARGET_ARCH := $(_ARMOS_ENV_TARGET_ARCH)
@@ -27,6 +28,9 @@ CROSS_COMPILE := $(_ARMOS_ENV_CROSS_COMPILE)
 endif
 ifneq ($(_ARMOS_ENV_SMP_CPUS),)
 SMP_CPUS := $(_ARMOS_ENV_SMP_CPUS)
+endif
+ifneq ($(_ARMOS_ENV_KEYBOARD_LAYOUT),)
+KEYBOARD_LAYOUT := $(_ARMOS_ENV_KEYBOARD_LAYOUT)
 endif
 
 TARGET_ARCH ?= arm32
@@ -98,6 +102,21 @@ include $(PLATFORM_MK)
 MATH_FLAGS = -fno-builtin-div -fno-builtin-mod
 STACK_PROTECTOR_FLAG ?= -fstack-protector
 LINKER_SCRIPT ?= linker.ld
+KEYBOARD_LAYOUT ?= us
+
+ifeq ($(KEYBOARD_LAYOUT),us)
+KEYBOARD_LAYOUT_ID = 0
+else ifeq ($(KEYBOARD_LAYOUT),us-mac)
+KEYBOARD_LAYOUT_ID = 1
+else ifeq ($(KEYBOARD_LAYOUT),fr)
+KEYBOARD_LAYOUT_ID = 2
+else ifeq ($(KEYBOARD_LAYOUT),fr-mac)
+KEYBOARD_LAYOUT_ID = 3
+else ifeq ($(KEYBOARD_LAYOUT),fr-legacy)
+KEYBOARD_LAYOUT_ID = 4
+else
+$(error Unsupported KEYBOARD_LAYOUT '$(KEYBOARD_LAYOUT)')
+endif
 
 # Flags de compilation
 ASFLAGS = -g -I$(ARCH_INCLUDE) -Iinclude -I$(KERNEL_WORK_DIR)/generated $(PLATFORM_ASFLAGS)
@@ -105,6 +124,7 @@ ASFLAGS = -g -I$(ARCH_INCLUDE) -Iinclude -I$(KERNEL_WORK_DIR)/generated $(PLATFO
 CFLAGS = -std=gnu99 $(ARCH_CFLAGS) $(PLATFORM_CFLAGS) $(MATH_FLAGS) \
          $(REPRO_FLAGS) \
          -DARMOS_VERSION=\"$(ARMOS_VERSION)\" \
+         -DARMOS_DEFAULT_KEYBOARD_LAYOUT=$(KEYBOARD_LAYOUT_ID) \
          -ffreestanding -nostdlib -nostartfiles -fno-inline \
          -Wall -Wextra -Werror -g -O0 -fno-omit-frame-pointer -Wformat -Wformat-security \
          -Wframe-larger-than=8192 \
@@ -297,6 +317,7 @@ config:
 	@echo "  TARGET_PLATFORM: $(TARGET_PLATFORM)"
 	@echo "  CROSS_COMPILE:   $(CROSS_COMPILE)"
 	@echo "  SMP_CPUS:        $(SMP_CPUS)"
+	@echo "  KEYBOARD_LAYOUT: $(KEYBOARD_LAYOUT)"
 	@echo "  ENABLE_NET:      $(if $(ENABLE_NET),$(ENABLE_NET),no)"
 	@echo "  ENABLE_WIFI:     $(if $(ENABLE_WIFI),$(ENABLE_WIFI),no)"
 	@echo "  ENABLE_GPU:      $(if $(ENABLE_GPU),$(ENABLE_GPU),no)"

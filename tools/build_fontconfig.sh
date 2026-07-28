@@ -30,6 +30,8 @@ FONTCONFIG_SHA256="${FONTCONFIG_SHA256:-cf8e6576ef0484c15079bdaf77cd9c51c464df53
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 
 WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/fontconfig}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$ROOT_DIR/build/downloads}"
@@ -83,7 +85,7 @@ if [ ! -f "$FREETYPE_PREFIX/lib/libfreetype.a" ] ||
     exit 1
 fi
 
-rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
+rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/fontconfig" \
     "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" \
     "$BUNDLE_ROOT/etc/fonts/conf.d" \
@@ -100,9 +102,26 @@ TEST_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static \
 -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections \
 -Wl,--allow-multiple-definition"
 
-(
-    cd "$BUILD_DIR"
-    env \
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile" <<EOF
+bundle=fontconfig
+version=$FONTCONFIG_VERSION
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+cflags=$CFLAGS
+cppflags=$CPPFLAGS
+ldflags=$CONFIGURE_LDFLAGS
+freetype=$FREETYPE_PREFIX
+expat=$EXPAT_PREFIX
+source_configure=$(shasum -a 256 "$SRC_DIR/configure" | awk '{print $1}')
+args=--host=$TARGET_TRIPLET --prefix=/opt/fontconfig --disable-shared --enable-static --disable-nls --disable-docs --disable-docbook --disable-cache-build --with-default-fonts=/usr/share/fonts/armos --with-cache-dir=/tmp/fontconfig-cache --with-baseconfigdir=/etc/fonts --with-configdir=/etc/fonts/conf.d
+EOF
+then
+    (
+        cd "$BUILD_DIR"
+        env \
         CC="$CC" \
         AR="${ARCH}ar" \
         RANLIB="${ARCH}ranlib" \
@@ -148,6 +167,11 @@ TEST_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static \
             --with-cache-dir=/tmp/fontconfig-cache \
             --with-baseconfigdir=/etc/fonts \
             --with-configdir=/etc/fonts/conf.d
+    )
+    armos_configure_commit "$BUILD_DIR"
+fi
+(
+    cd "$BUILD_DIR"
     make -C fc-genericfamily fcgenericfamily.h
     make -C fc-const fcconst.h
     make -C fc-case fccase.h

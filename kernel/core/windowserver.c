@@ -11,7 +11,7 @@
  * Responsibilities:
  * - Run the kernel thread which starts the privileged userland compositor.
  * - Establish the minimal environment and credentials needed by the service.
- * - Report an exec failure without embedding compositor policy in the kernel.
+ * - Return input ownership to the console when the graphical session ends.
  *
  * Notes:
  * - Display drivers and architecture code do not depend on this launcher.
@@ -70,35 +70,40 @@ static int windowserverd_launch_compositor(void)
 
 static void windowserverd_main(void *argument)
 {
+    bool launched = false;
+
     (void)argument;
 
     for (;;) {
         task_t *exited = NULL;
         unsigned long flags;
 
-        if (!compositor_task) {
+        if (!launched) {
+            launched = true;
             if (windowserverd_launch_compositor() < 0)
                 KERROR("WindowServer: cannot create userland compositor\n");
             task_sleep_ms(1000);
             continue;
         }
 
-        spin_lock_irqsave(&task_lock, &flags);
-        if (compositor_task->state == TASK_ZOMBIE &&
-            compositor_task->process &&
-            compositor_task->process->state == (proc_state_t)PROC_ZOMBIE &&
-            compositor_task->running_cpu == TASK_CPU_NONE &&
-            compositor_task->wakeup_time == 0) {
-            exited = compositor_task;
-            compositor_task = NULL;
+        if (compositor_task) {
+            spin_lock_irqsave(&task_lock, &flags);
+            if (compositor_task->state == TASK_ZOMBIE &&
+                compositor_task->process &&
+                compositor_task->process->state == (proc_state_t)PROC_ZOMBIE &&
+                compositor_task->running_cpu == TASK_CPU_NONE &&
+                compositor_task->wakeup_time == 0) {
+                exited = compositor_task;
+                compositor_task = NULL;
+            }
+            spin_unlock_irqrestore(&task_lock, flags);
         }
-        spin_unlock_irqrestore(&task_lock, flags);
 
         if (exited) {
             task_set_terminated(exited);
             kernel_lifecycle_stats.zombies_reaped++;
             destroy_process(exited);
-            KWARN("WindowServer: compositor stopped; restarting\n");
+            KWARN("WindowServer: graphical session stopped; console restored\n");
         }
         task_sleep_ms(1000);
     }

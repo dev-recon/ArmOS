@@ -10,6 +10,7 @@ trap 'rm -f "$TMP_CONFIG"' EXIT
 printf '%s\n' \
     'TARGET_ARCH=arm64' \
     'TARGET_PLATFORM=qemu-virt' \
+    'KEYBOARD_LAYOUT=fr-mac' \
     'ENABLE_NET=yes' \
     'ENABLE_HDMI=no' \
     'ENABLE_ILI9341=no' \
@@ -21,11 +22,11 @@ resolved="$(ARMOS_CONFIG="$TMP_CONFIG" bash -c '
     ROOT_DIR="$1"
     source "$1/tools/armos_config.sh"
     armos_config_validate "$1"
-    printf "%s/%s net=%s hdmi=%s ili9341=%s usb=%s nano=%s\n" \
-        "$TARGET_ARCH" "$TARGET_PLATFORM" "$ENABLE_NET" \
+    printf "%s/%s keymap=%s net=%s hdmi=%s ili9341=%s usb=%s nano=%s\n" \
+        "$TARGET_ARCH" "$TARGET_PLATFORM" "$KEYBOARD_LAYOUT" "$ENABLE_NET" \
         "$ENABLE_HDMI" "$ENABLE_ILI9341" "$ENABLE_USB" "$BUILD_NANO"
 ' _ "$ROOT_DIR")"
-[ "$resolved" = 'arm64/qemu-virt net=1 hdmi=0 ili9341=0 usb=0 nano=1' ]
+[ "$resolved" = 'arm64/qemu-virt keymap=fr-mac net=1 hdmi=0 ili9341=0 usb=0 nano=1' ]
 
 resolved="$(TARGET_ARCH=arm32 ARMOS_CONFIG="$TMP_CONFIG" bash -c '
     ROOT_DIR="$1"
@@ -74,6 +75,16 @@ fi
 if make -s -C "$ROOT_DIR" \
     ARMOS_CONFIG="$TMP_CONFIG.missing" config >/dev/null 2>&1; then
     echo "make accepted a missing explicit configuration file" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    'TARGET_ARCH=arm64' \
+    'TARGET_PLATFORM=qemu-virt' \
+    'KEYBOARD_LAYOUT=be' > "$TMP_CONFIG"
+if ARMOS_CONFIG="$TMP_CONFIG" "$ROOT_DIR/tools/armos_config.sh" --show \
+    >/dev/null 2>&1; then
+    echo "configuration accepted an unsupported keyboard layout" >&2
     exit 1
 fi
 

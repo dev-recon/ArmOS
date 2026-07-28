@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -74,6 +75,32 @@ struct registry_state {
 
 static const char clipboard_mime[] = "text/plain;charset=utf-8";
 static const char clipboard_text[] = "ArmOS clipboard";
+static const char incomplete_xkb_keymap[] =
+    "xkb_keymap {\n"
+    "    xkb_keycodes \"armos-test\" {\n"
+    "        minimum = 127;\n"
+    "        maximum = 127;\n"
+    "        <VOID> = 127;\n"
+    "    };\n"
+    "    xkb_symbols \"armos-test\" {\n"
+    "    };\n"
+    "};\n";
+static const char indexed_xkb_keymap[] =
+    "xkb_keymap {\n"
+    "    xkb_keycodes \"armos-test\" {\n"
+    "        <AD01> = 24;\n"
+    "        <AC03> = 40;\n"
+    "        <AC09> = 46;\n"
+    "    };\n"
+    "    xkb_symbols \"armos-test\" {\n"
+    "        key <AD01> { type[Group1]=\"FOUR_LEVEL_LOGO\","
+    " [ a, A, at, at ] };\n"
+    "        key <AC03> { type[Group1]=\"FOUR_LEVEL_LOGO\","
+    " [ d, D, numbersign, numbersign ] };\n"
+    "        key <AC09> { type[Group1]=\"FOUR_LEVEL_LEVEL3\","
+    " [ l, L, bar, NoSymbol ] };\n"
+    "    };\n"
+    "};\n";
 
 static const struct wl_message generated_compositor_methods[] = {
     {"create_surface", "n", NULL},
@@ -105,6 +132,69 @@ static const struct wl_message server_test_methods[] = {
 static const struct wl_interface server_test_interface = {
     "armos_server_test", 1, 1, server_test_methods, 3, server_test_events
 };
+
+static int test_incomplete_xkb_key(void)
+{
+    struct xkb_context *context;
+    struct xkb_keymap *keymap;
+    struct xkb_state *state;
+    const xkb_keysym_t *symbols = NULL;
+    int valid;
+
+    context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    keymap = context ? xkb_keymap_new_from_buffer(
+        context, incomplete_xkb_keymap, sizeof(incomplete_xkb_keymap) - 1u,
+        XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
+    state = keymap ? xkb_state_new(keymap) : NULL;
+    valid = state &&
+        xkb_keymap_min_keycode(keymap) == 127u &&
+        xkb_keymap_max_keycode(keymap) == 127u &&
+        xkb_keymap_num_levels_for_key(keymap, 127u, 0u) == 0u &&
+        xkb_keymap_key_get_syms_by_level(
+            keymap, 127u, 0u, 0u, &symbols) == 0 &&
+        symbols == NULL &&
+        xkb_state_key_get_one_sym(state, 127u) == XKB_KEY_NoSymbol &&
+        xkb_state_key_get_utf32(state, 127u) == 0u &&
+        xkb_state_key_get_consumed_mods(state, 127u) == 0u;
+    xkb_state_unref(state);
+    xkb_keymap_unref(keymap);
+    xkb_context_unref(context);
+    if (!valid)
+        fprintf(stderr, "wayland-lib-test: incomplete XKB key failed\n");
+    return valid ? 0 : -1;
+}
+
+static int test_indexed_xkb_types(void)
+{
+    struct xkb_context *context;
+    struct xkb_keymap *keymap;
+    struct xkb_state *state;
+    int valid;
+
+    context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    keymap = context ? xkb_keymap_new_from_buffer(
+        context, indexed_xkb_keymap, sizeof(indexed_xkb_keymap) - 1u,
+        XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
+    state = keymap ? xkb_state_new(keymap) : NULL;
+    valid = state &&
+        xkb_state_key_get_one_sym(state, 24u) == XKB_KEY_a &&
+        xkb_state_key_get_one_sym(state, 40u) == XKB_KEY_d;
+    if (state) {
+        xkb_state_update_mask(state, 1u << 5, 0u, 0u, 0u, 0u, 0u);
+        valid = valid &&
+            xkb_state_key_get_one_sym(state, 24u) == XKB_KEY_at &&
+            xkb_state_key_get_one_sym(state, 40u) == XKB_KEY_numbersign;
+        xkb_state_update_mask(state, 1u << 6, 0u, 0u, 0u, 0u, 0u);
+        valid = valid &&
+            xkb_state_key_get_one_sym(state, 46u) == XKB_KEY_bar;
+    }
+    xkb_state_unref(state);
+    xkb_keymap_unref(keymap);
+    xkb_context_unref(context);
+    if (!valid)
+        fprintf(stderr, "wayland-lib-test: indexed XKB type failed\n");
+    return valid ? 0 : -1;
+}
 
 static void registry_global(void *data, struct wl_registry *registry,
                             uint32_t name, const char *interface,
@@ -199,6 +289,8 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
     struct xkb_state *xkb_state = NULL;
     const char *mapping;
     char utf8[8];
+    bool layout_matches = false;
+    bool extended_matches = true;
 
     (void)keyboard;
     mapping = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
@@ -212,25 +304,146 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
             XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
         xkb_state = keymap ? xkb_state_new(keymap) : NULL;
         if (xkb_state &&
-            xkb_keymap_key_by_name(keymap, "AD01") == 24u &&
-            xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_a &&
-            xkb_state_key_get_utf8(xkb_state, 24u, utf8,
-                                   sizeof(utf8)) == 1 &&
-            strcmp(utf8, "a") == 0 &&
-            xkb_state_key_get_one_sym(xkb_state, 11u) ==
-                XKB_KEY_eacute &&
-            xkb_state_key_get_utf8(xkb_state, 11u, utf8,
-                                   sizeof(utf8)) == 2 &&
-            (unsigned char)utf8[0] == 0xc3u &&
-            (unsigned char)utf8[1] == 0xa9u) {
+            xkb_keymap_min_keycode(keymap) == 9u &&
+            xkb_keymap_max_keycode(keymap) == 134u &&
+            xkb_keymap_key_by_name(keymap, "AD01") == 24u) {
+#if ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_US || \
+    ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_US_MAC
+            layout_matches =
+                xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_q &&
+                xkb_state_key_get_utf8(xkb_state, 24u, utf8,
+                                       sizeof(utf8)) == 1 &&
+                strcmp(utf8, "q") == 0 &&
+                xkb_state_key_get_one_sym(xkb_state, 11u) == XKB_KEY_2 &&
+                xkb_state_key_get_utf8(xkb_state, 11u, utf8,
+                                       sizeof(utf8)) == 1 &&
+                strcmp(utf8, "2") == 0;
+#else
+            layout_matches =
+                xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_a &&
+                xkb_state_key_get_utf8(xkb_state, 24u, utf8,
+                                       sizeof(utf8)) == 1 &&
+                strcmp(utf8, "a") == 0 &&
+                xkb_state_key_get_one_sym(xkb_state, 11u) ==
+                    XKB_KEY_eacute &&
+                xkb_state_key_get_utf8(xkb_state, 11u, utf8,
+                                       sizeof(utf8)) == 2 &&
+                (unsigned char)utf8[0] == 0xc3u &&
+                (unsigned char)utf8[1] == 0xa9u;
+#endif
+#if ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR
+            layout_matches = layout_matches &&
+                xkb_state_key_get_one_sym(xkb_state, 34u) ==
+                    XKB_KEY_minus &&
+                xkb_state_key_get_one_sym(xkb_state, 61u) ==
+                    XKB_KEY_semicolon &&
+                xkb_state_key_get_one_sym(xkb_state, 49u) ==
+                    XKB_KEY_at &&
+                xkb_state_key_get_one_sym(xkb_state, 94u) ==
+                    XKB_KEY_less;
+#elif ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR_LEGACY
+            layout_matches = layout_matches &&
+                xkb_state_key_get_one_sym(xkb_state, 10u) ==
+                    XKB_KEY_ampersand &&
+                xkb_state_key_get_one_sym(xkb_state, 51u) ==
+                    XKB_KEY_asterisk &&
+                xkb_state_key_get_one_sym(xkb_state, 34u) ==
+                    XKB_KEY_dead_circumflex &&
+                xkb_state_key_get_one_sym(xkb_state, 61u) ==
+                    XKB_KEY_exclam &&
+                xkb_state_key_get_one_sym(xkb_state, 94u) ==
+                    XKB_KEY_less;
+#endif
+        }
+        if (xkb_state && layout_matches) {
+#if ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR
+            xkb_state_update_mask(xkb_state, 1u << 6, 0u, 0u,
+                                  0u, 0u, 0u);
+            extended_matches =
+                xkb_state_key_get_one_sym(xkb_state, 28u) ==
+                    XKB_KEY_braceleft &&
+                xkb_state_key_get_one_sym(xkb_state, 40u) ==
+                    XKB_KEY_dollar &&
+                xkb_state_key_get_one_sym(xkb_state, 26u) ==
+                    XKB_KEY_EuroSign &&
+                xkb_state_key_get_one_sym(xkb_state, 46u) ==
+                    XKB_KEY_bar;
+#elif ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR_LEGACY
+            xkb_state_update_mask(xkb_state, 1u << 6, 0u, 0u,
+                                  0u, 0u, 0u);
+            extended_matches =
+                xkb_state_key_get_one_sym(xkb_state, 11u) ==
+                    XKB_KEY_asciitilde &&
+                xkb_state_key_get_one_sym(xkb_state, 12u) ==
+                    XKB_KEY_numbersign &&
+                xkb_state_key_get_one_sym(xkb_state, 15u) ==
+                    XKB_KEY_bar &&
+                xkb_state_key_get_one_sym(xkb_state, 19u) ==
+                    XKB_KEY_at &&
+                xkb_state_key_get_one_sym(xkb_state, 20u) ==
+                    XKB_KEY_bracketright &&
+                xkb_state_key_get_one_sym(xkb_state, 21u) ==
+                    XKB_KEY_braceright;
+#elif ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR_MAC
+            xkb_state_update_mask(xkb_state, 1u << 5, 0u, 0u,
+                                  0u, 0u, 0u);
+            extended_matches =
+                xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_at &&
+                xkb_state_key_get_one_sym(xkb_state, 40u) ==
+                    XKB_KEY_numbersign;
+            xkb_state_update_mask(xkb_state, 1u << 3, 0u, 0u,
+                                  0u, 0u, 0u);
+            extended_matches = extended_matches &&
+                xkb_state_key_get_one_sym(xkb_state, 14u) ==
+                    XKB_KEY_braceleft &&
+                xkb_state_key_get_one_sym(xkb_state, 20u) ==
+                    XKB_KEY_braceright &&
+                xkb_state_key_get_one_sym(xkb_state, 57u) ==
+                    XKB_KEY_asciitilde &&
+                xkb_state_key_get_one_sym(xkb_state, 46u) == 0xacu &&
+                xkb_state_key_get_one_sym(xkb_state, 60u) == 0xf7u;
+            xkb_state_update_mask(
+                xkb_state, (1u << 3) | (1u << 0), 0u, 0u,
+                0u, 0u, 0u);
+            extended_matches = extended_matches &&
+                xkb_state_key_get_one_sym(xkb_state, 14u) ==
+                    XKB_KEY_bracketleft &&
+                xkb_state_key_get_one_sym(xkb_state, 20u) ==
+                    XKB_KEY_bracketright &&
+                xkb_state_key_get_one_sym(xkb_state, 46u) == XKB_KEY_bar &&
+                xkb_state_key_get_one_sym(xkb_state, 60u) ==
+                    XKB_KEY_backslash;
+#endif
             xkb_state_update_mask(xkb_state, 1u, 0u, 0u,
                                   0u, 0u, 0u);
+#if ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_US || \
+    ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_US_MAC
+            if (xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_Q &&
+#else
             if (xkb_state_key_get_one_sym(xkb_state, 24u) == XKB_KEY_A &&
+#endif
+#if ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR
+                xkb_state_key_get_one_sym(xkb_state, 49u) ==
+                    XKB_KEY_numbersign &&
+                xkb_state_key_get_one_sym(xkb_state, 61u) ==
+                    XKB_KEY_equal &&
+                xkb_state_key_get_one_sym(xkb_state, 94u) ==
+                    XKB_KEY_greater &&
+#elif ARMOS_DEFAULT_KEYBOARD_LAYOUT == ARMOS_KEYBOARD_LAYOUT_FR_LEGACY
+                xkb_state_key_get_one_sym(xkb_state, 10u) ==
+                    XKB_KEY_1 &&
+                xkb_state_key_get_one_sym(xkb_state, 51u) ==
+                    0xb5u &&
+                xkb_state_key_get_one_sym(xkb_state, 61u) ==
+                    XKB_KEY_section &&
+                xkb_state_key_get_one_sym(xkb_state, 94u) ==
+                    XKB_KEY_greater &&
+#endif
                 xkb_state_key_get_consumed_mods2(
                     xkb_state, 24u, XKB_CONSUMED_MODE_XKB) == 1u) {
                 xkb_state_update_mask(xkb_state, 1u << 2, 0u, 0u,
                                       0u, 0u, 0u);
-                if (xkb_state_key_get_utf8(
+                if (extended_matches && xkb_state_key_get_utf8(
                         xkb_state, 54u, utf8, sizeof(utf8)) == 1 &&
                     (unsigned char)utf8[0] == 0x03u)
                     state->xkb_maps++;
@@ -1429,6 +1642,9 @@ transport_failed:
 
 int main(int argc, char **argv)
 {
+    if (test_incomplete_xkb_key() < 0 ||
+        test_indexed_xkb_types() < 0)
+        return 1;
     if (argc == 2 && strcmp(argv[1], "--registry") == 0)
         return test_registry();
     if (argc == 2 && strcmp(argv[1], "--clipboard") == 0)

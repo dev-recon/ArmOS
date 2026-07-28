@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,7 @@
 #define MOD_ALT     (1u << 3)
 #define MOD_NUM     (1u << 4)
 #define MOD_LOGO    (1u << 5)
+#define MOD_LEVEL3  (1u << 6)
 
 struct xkb_context {
     unsigned int references;
@@ -41,13 +43,17 @@ struct xkb_context {
 
 struct key_definition {
     char name[16];
-    xkb_keysym_t levels[2];
+    xkb_keysym_t levels[4];
     xkb_mod_mask_t modifier;
     unsigned int repeats;
+    unsigned int level_count;
+    xkb_mod_mask_t level3_modifier;
 };
 
 struct xkb_keymap {
     unsigned int references;
+    uint16_t min_keycode;
+    uint16_t max_keycode;
     struct xkb_context *context;
     struct key_definition keys[256];
 };
@@ -72,11 +78,14 @@ struct xkb_compose_state {
 };
 
 #define KEY(code, key_name, normal, shifted) \
-    [code] = { key_name, { normal, shifted }, 0u, 1u }
+    [code] = { key_name, { normal, shifted, normal, shifted }, \
+               0u, 1u, 2u, 0u }
 #define CONTROL_KEY(code, key_name, symbol) \
-    [code] = { key_name, { symbol, symbol }, 0u, 0u }
+    [code] = { key_name, { symbol, symbol, symbol, symbol }, \
+               0u, 0u, 1u, 0u }
 #define MODIFIER_KEY(code, key_name, symbol, mask) \
-    [code] = { key_name, { symbol, symbol }, mask, 0u }
+    [code] = { key_name, { symbol, symbol, symbol, symbol }, \
+               mask, 0u, 1u, 0u }
 
 static const struct key_definition default_keys[256] = {
     CONTROL_KEY(9, "ESC", XKB_KEY_Escape),
@@ -146,6 +155,7 @@ static const struct key_definition default_keys[256] = {
     CONTROL_KEY(74, "FK08", XKB_KEY_F8),
     CONTROL_KEY(75, "FK09", XKB_KEY_F9),
     CONTROL_KEY(76, "FK10", XKB_KEY_F10),
+    KEY(94, "LSGT", XKB_KEY_less, XKB_KEY_greater),
     CONTROL_KEY(95, "FK11", XKB_KEY_F11),
     CONTROL_KEY(96, "FK12", XKB_KEY_F12),
     MODIFIER_KEY(105, "RCTL", XKB_KEY_Control_R, MOD_CONTROL),
@@ -159,7 +169,9 @@ static const struct key_definition default_keys[256] = {
     CONTROL_KEY(116, "DOWN", XKB_KEY_Down),
     CONTROL_KEY(117, "PGDN", XKB_KEY_Next),
     CONTROL_KEY(118, "INS", XKB_KEY_Insert),
-    CONTROL_KEY(119, "DELE", XKB_KEY_Delete)
+    CONTROL_KEY(119, "DELE", XKB_KEY_Delete),
+    MODIFIER_KEY(133, "LWIN", XKB_KEY_Super_L, MOD_LOGO),
+    MODIFIER_KEY(134, "RWIN", XKB_KEY_Super_R, MOD_LOGO)
 };
 
 struct symbol_name {
@@ -195,10 +207,33 @@ static const struct symbol_name symbol_names[] = {
     {"Alt_R", XKB_KEY_Alt_R},
     {"Super_L", XKB_KEY_Super_L},
     {"Super_R", XKB_KEY_Super_R},
+    {"ISO_Level3_Shift", XKB_KEY_ISO_Level3_Shift},
+    {"dead_grave", XKB_KEY_dead_grave},
+    {"dead_acute", XKB_KEY_dead_acute},
+    {"dead_circumflex", XKB_KEY_dead_circumflex},
+    {"dead_tilde", XKB_KEY_dead_tilde},
+    {"dead_macron", XKB_KEY_dead_macron},
+    {"dead_breve", XKB_KEY_dead_breve},
+    {"dead_abovedot", XKB_KEY_dead_abovedot},
+    {"dead_diaeresis", XKB_KEY_dead_diaeresis},
+    {"dead_abovering", XKB_KEY_dead_abovering},
+    {"dead_doubleacute", XKB_KEY_dead_doubleacute},
+    {"dead_caron", XKB_KEY_dead_caron},
+    {"dead_cedilla", XKB_KEY_dead_cedilla},
+    {"dead_ogonek", XKB_KEY_dead_ogonek},
+    {"dead_stroke", XKB_KEY_dead_stroke},
+    {"dead_doublegrave", XKB_KEY_dead_doublegrave},
+    {"dead_belowmacron", XKB_KEY_dead_belowmacron},
+    {"dead_belowdot", XKB_KEY_dead_belowdot},
+    {"dead_invertedbreve", XKB_KEY_dead_invertedbreve},
+    {"dead_belowcomma", XKB_KEY_dead_belowcomma},
+    {"dead_currency", XKB_KEY_dead_currency},
+    {"dead_greek", XKB_KEY_dead_greek},
     {"space", XKB_KEY_space},
     {"exclam", XKB_KEY_exclam},
     {"quotedbl", XKB_KEY_quotedbl},
     {"numbersign", XKB_KEY_numbersign},
+    {"at", XKB_KEY_at},
     {"dollar", XKB_KEY_dollar},
     {"percent", XKB_KEY_percent},
     {"ampersand", XKB_KEY_ampersand},
@@ -227,13 +262,31 @@ static const struct symbol_name symbol_names[] = {
     {"bar", XKB_KEY_bar},
     {"braceright", XKB_KEY_braceright},
     {"asciitilde", XKB_KEY_asciitilde},
+    {"copyright", XKB_KEY_copyright},
+    {"currency", XKB_KEY_currency},
+    {"guillemotleft", XKB_KEY_guillemotleft},
+    {"registered", XKB_KEY_registered},
     {"section", XKB_KEY_section},
+    {"sterling", XKB_KEY_sterling},
     {"degree", XKB_KEY_degree},
+    {"twosuperior", XKB_KEY_twosuperior},
+    {"mu", XKB_KEY_mu},
+    {"guillemotright", XKB_KEY_guillemotright},
+    {"Agrave", XKB_KEY_Agrave},
+    {"Ccedilla", XKB_KEY_Ccedilla},
+    {"Egrave", XKB_KEY_Egrave},
+    {"Eacute", XKB_KEY_Eacute},
+    {"Ugrave", XKB_KEY_Ugrave},
+    {"ssharp", XKB_KEY_ssharp},
     {"agrave", XKB_KEY_agrave},
     {"ccedilla", XKB_KEY_ccedilla},
     {"egrave", XKB_KEY_egrave},
     {"eacute", XKB_KEY_eacute},
     {"ugrave", XKB_KEY_ugrave},
+    {"Greek_epsilon", XKB_KEY_Greek_epsilon},
+    {"OE", XKB_KEY_OE},
+    {"oe", XKB_KEY_oe},
+    {"EuroSign", XKB_KEY_EuroSign},
     {"XF86AudioLowerVolume", XKB_KEY_XF86AudioLowerVolume},
     {"XF86AudioMute", XKB_KEY_XF86AudioMute},
     {"XF86AudioRaiseVolume", XKB_KEY_XF86AudioRaiseVolume},
@@ -251,7 +304,8 @@ static const char *const modifier_names[] = {
     XKB_MOD_NAME_CTRL,
     XKB_MOD_NAME_ALT,
     XKB_MOD_NAME_NUM,
-    XKB_MOD_NAME_LOGO
+    XKB_MOD_NAME_LOGO,
+    "Mod5"
 };
 
 static int text_contains(const char *text, size_t length,
@@ -301,9 +355,18 @@ static struct xkb_keymap *allocate_keymap(struct xkb_context *context,
     if (!keymap)
         return NULL;
     keymap->references = 1u;
+    keymap->min_keycode = UINT16_MAX;
     keymap->context = xkb_context_ref(context);
-    if (use_defaults)
+    if (use_defaults) {
         memcpy(keymap->keys, default_keys, sizeof(default_keys));
+        for (uint16_t key = 0u; key < ARRAY_SIZE(keymap->keys); key++) {
+            if (!keymap->keys[key].name[0])
+                continue;
+            if (keymap->min_keycode == UINT16_MAX)
+                keymap->min_keycode = key;
+            keymap->max_keycode = key;
+        }
+    }
     return keymap;
 }
 
@@ -364,6 +427,11 @@ static void parse_keycodes(struct xkb_keymap *keymap,
             code >= (long)ARRAY_SIZE(keymap->keys))
             continue;
         memcpy(keymap->keys[code].name, name, strlen(name) + 1u);
+        if (keymap->min_keycode == UINT16_MAX ||
+            code < (long)keymap->min_keycode)
+            keymap->min_keycode = (uint16_t)code;
+        if (code > (long)keymap->max_keycode)
+            keymap->max_keycode = (uint16_t)code;
         cursor = number_end;
     }
 }
@@ -402,7 +470,38 @@ static xkb_mod_mask_t symbol_modifier(xkb_keysym_t symbol)
         return MOD_NUM;
     if (symbol == XKB_KEY_Super_L || symbol == XKB_KEY_Super_R)
         return MOD_LOGO;
+    if (symbol == XKB_KEY_ISO_Level3_Shift)
+        return MOD_LEVEL3;
     return 0u;
+}
+
+static const char *find_symbol_list(const char *cursor, const char *end)
+{
+    while (cursor < end && *cursor != ';') {
+        const char *closing;
+        const char *after;
+
+        if (*cursor != '[') {
+            cursor++;
+            continue;
+        }
+        closing = cursor + 1;
+        while (closing < end && *closing != ']')
+            closing++;
+        if (closing >= end)
+            return NULL;
+        after = skip_space(closing + 1, end);
+        /*
+         * XKB properties use indexed names such as type[Group1]=... .
+         * Their brackets describe the property selector, not key symbols.
+         */
+        if (after < end && *after == '=') {
+            cursor = after + 1;
+            continue;
+        }
+        return cursor;
+    }
+    return NULL;
 }
 
 static void parse_symbols(struct xkb_keymap *keymap,
@@ -413,11 +512,11 @@ static void parse_symbols(struct xkb_keymap *keymap,
 
     while (cursor + 4u < end) {
         char key_name[16];
-        char first_name[48];
-        char second_name[48];
+        char symbol_names_text[4][48];
+        xkb_keysym_t symbols[4];
+        const char *type_start;
+        size_t symbol_count = 0u;
         xkb_keycode_t key;
-        xkb_keysym_t first;
-        xkb_keysym_t second;
 
         if (memcmp(cursor, "key ", 4u) != 0) {
             cursor++;
@@ -426,33 +525,50 @@ static void parse_symbols(struct xkb_keymap *keymap,
         cursor = skip_space(cursor + 4u, end);
         if (parse_name(&cursor, end, key_name, sizeof(key_name)) < 0)
             continue;
-        while (cursor < end && *cursor != '[' && *cursor != ';')
-            cursor++;
-        if (cursor >= end || *cursor != '[')
+        type_start = cursor;
+        cursor = find_symbol_list(cursor, end);
+        if (!cursor)
             continue;
         cursor++;
-        if (parse_symbol_token(&cursor, end, first_name,
-                               sizeof(first_name)) < 0)
-            continue;
-        cursor = skip_space(cursor, end);
-        second_name[0] = '\0';
-        if (cursor < end && *cursor == ',') {
+        while (symbol_count < ARRAY_SIZE(symbol_names_text)) {
+            if (parse_symbol_token(&cursor, end,
+                                   symbol_names_text[symbol_count],
+                                   sizeof(symbol_names_text[0])) < 0)
+                break;
+            symbol_count++;
+            cursor = skip_space(cursor, end);
+            if (cursor >= end || *cursor != ',')
+                break;
             cursor++;
-            (void)parse_symbol_token(&cursor, end, second_name,
-                                     sizeof(second_name));
         }
+        if (symbol_count == 0u)
+            continue;
         key = xkb_keymap_key_by_name(keymap, key_name);
         if (key == XKB_KEYCODE_INVALID)
             continue;
-        first = xkb_keysym_from_name(first_name, XKB_KEYSYM_NO_FLAGS);
-        second = second_name[0] ?
-            xkb_keysym_from_name(second_name, XKB_KEYSYM_NO_FLAGS) : first;
-        if (first == XKB_KEY_NoSymbol)
+        for (size_t index = 0u; index < symbol_count; index++)
+            symbols[index] = xkb_keysym_from_name(
+                symbol_names_text[index], XKB_KEYSYM_NO_FLAGS);
+        if (symbols[0] == XKB_KEY_NoSymbol)
             continue;
-        keymap->keys[key].levels[0] = first;
-        keymap->keys[key].levels[1] =
-            second == XKB_KEY_NoSymbol ? first : second;
-        keymap->keys[key].modifier = symbol_modifier(first);
+        for (size_t index = 0u; index < ARRAY_SIZE(symbols); index++)
+            keymap->keys[key].levels[index] =
+                index < symbol_count ? symbols[index] : symbols[0];
+        keymap->keys[key].level_count = (unsigned int)symbol_count;
+        if (symbol_count <= 2u) {
+            keymap->keys[key].level3_modifier = 0u;
+        } else if (text_contains(
+                       type_start, (size_t)(cursor - type_start),
+                       "FOUR_LEVEL_LOGO")) {
+            keymap->keys[key].level3_modifier = MOD_LOGO;
+        } else if (text_contains(
+                       type_start, (size_t)(cursor - type_start),
+                       "FOUR_LEVEL_ALT")) {
+            keymap->keys[key].level3_modifier = MOD_ALT;
+        } else {
+            keymap->keys[key].level3_modifier = MOD_LEVEL3;
+        }
+        keymap->keys[key].modifier = symbol_modifier(symbols[0]);
         keymap->keys[key].repeats =
             keymap->keys[key].modifier == 0u;
     }
@@ -534,12 +650,14 @@ void xkb_keymap_unref(struct xkb_keymap *keymap)
 
 xkb_keycode_t xkb_keymap_min_keycode(struct xkb_keymap *keymap)
 {
-    return keymap ? 8u : XKB_KEYCODE_INVALID;
+    return keymap && keymap->min_keycode != UINT16_MAX ?
+        keymap->min_keycode : XKB_KEYCODE_INVALID;
 }
 
 xkb_keycode_t xkb_keymap_max_keycode(struct xkb_keymap *keymap)
 {
-    return keymap ? 255u : XKB_KEYCODE_INVALID;
+    return keymap && keymap->min_keycode != UINT16_MAX ?
+        keymap->max_keycode : XKB_KEYCODE_INVALID;
 }
 
 xkb_keycode_t xkb_keymap_key_by_name(struct xkb_keymap *keymap,
@@ -596,8 +714,12 @@ xkb_level_index_t xkb_keymap_num_levels_for_key(
         !keymap->keys[key].name[0] ||
         layout != 0u)
         return 0u;
-    return keymap->keys[key].levels[0] ==
-        keymap->keys[key].levels[1] ? 1u : 2u;
+    if (keymap->keys[key].level_count == 0u)
+        return 0u;
+    if (keymap->keys[key].level_count == 2u &&
+        keymap->keys[key].levels[0] == keymap->keys[key].levels[1])
+        return 1u;
+    return keymap->keys[key].level_count;
 }
 
 int xkb_keymap_key_repeats(struct xkb_keymap *keymap, xkb_keycode_t key)
@@ -614,7 +736,8 @@ int xkb_keymap_key_get_syms_by_level(
     if (syms_out)
         *syms_out = NULL;
     if (!keymap || !syms_out || key >= ARRAY_SIZE(keymap->keys) ||
-        !keymap->keys[key].name[0] || layout != 0u || level > 1u)
+        !keymap->keys[key].name[0] || layout != 0u ||
+        level >= keymap->keys[key].level_count)
         return 0;
     if (level == 1u && keymap->keys[key].levels[0] ==
         keymap->keys[key].levels[1])
@@ -630,10 +753,15 @@ size_t xkb_keymap_key_get_mods_for_level(
 {
     if (!keymap || key >= ARRAY_SIZE(keymap->keys) ||
         !keymap->keys[key].name[0] ||
-        layout != 0u || level > 1u)
+        layout != 0u || level >= keymap->keys[key].level_count)
         return 0u;
-    if (masks_out && masks_size > 0u)
-        masks_out[0] = level == 1u ? MOD_SHIFT : 0u;
+    if (masks_out && masks_size > 0u) {
+        masks_out[0] = 0u;
+        if ((level & 1u) != 0u)
+            masks_out[0] |= MOD_SHIFT;
+        if (level >= 2u)
+            masks_out[0] |= keymap->keys[key].level3_modifier;
+    }
     return 1u;
 }
 
@@ -764,14 +892,22 @@ xkb_keysym_t xkb_state_key_get_one_sym(
 {
     xkb_mod_mask_t effective;
     xkb_keysym_t symbol;
-    int shifted;
+    unsigned int level;
+    bool shifted;
 
     if (!state || key >= ARRAY_SIZE(state->keymap->keys) ||
-        !state->keymap->keys[key].name[0])
+        !state->keymap->keys[key].name[0] ||
+        state->keymap->keys[key].level_count == 0u)
         return XKB_KEY_NoSymbol;
     effective = state->depressed | state->latched | state->locked;
     shifted = (effective & MOD_SHIFT) != 0u;
-    symbol = state->keymap->keys[key].levels[shifted ? 1u : 0u];
+    level = shifted ? 1u : 0u;
+    if (state->keymap->keys[key].level_count > 2u &&
+        (effective & state->keymap->keys[key].level3_modifier) != 0u)
+        level += 2u;
+    if (level >= state->keymap->keys[key].level_count)
+        level = state->keymap->keys[key].level_count - 1u;
+    symbol = state->keymap->keys[key].levels[level];
     if (symbol >= XKB_KEY_a && symbol <= XKB_KEY_z &&
         (effective & MOD_CAPS))
         symbol = shifted ? symbol : symbol - ('a' - 'A');
@@ -786,6 +922,14 @@ uint32_t xkb_keysym_to_utf32(xkb_keysym_t keysym)
     if ((keysym >= 0x20u && keysym <= 0x7eu) ||
         (keysym >= 0x00a0u && keysym <= 0x00ffu))
         return keysym;
+    if (keysym == XKB_KEY_Greek_epsilon)
+        return 0x03b5u;
+    if (keysym == XKB_KEY_OE)
+        return 0x0152u;
+    if (keysym == XKB_KEY_oe)
+        return 0x0153u;
+    if (keysym == XKB_KEY_EuroSign)
+        return 0x20acu;
     if ((keysym & 0xff000000u) == 0x01000000u)
         return keysym & 0x00ffffffu;
     if (keysym >= XKB_KEY_KP_0 && keysym <= XKB_KEY_KP_9)
@@ -893,10 +1037,21 @@ xkb_mod_mask_t xkb_state_key_get_consumed_mods2(
     (void)mode;
     if (!state || key >= ARRAY_SIZE(state->keymap->keys) ||
         !state->keymap->keys[key].name[0] ||
-        state->keymap->keys[key].levels[0] ==
-            state->keymap->keys[key].levels[1])
+        state->keymap->keys[key].level_count == 0u)
         return 0u;
-    return MOD_SHIFT;
+    {
+        xkb_mod_mask_t effective =
+            state->depressed | state->latched | state->locked;
+        xkb_mod_mask_t consumed = 0u;
+
+        if (state->keymap->keys[key].levels[0] !=
+            state->keymap->keys[key].levels[1])
+            consumed |= MOD_SHIFT;
+        if (state->keymap->keys[key].level_count > 2u &&
+            (effective & state->keymap->keys[key].level3_modifier) != 0u)
+            consumed |= state->keymap->keys[key].level3_modifier;
+        return consumed;
+    }
 }
 
 xkb_keysym_t xkb_keysym_from_name(const char *name,
@@ -918,6 +1073,15 @@ xkb_keysym_t xkb_keysym_from_name(const char *name,
 
         if (*end == '\0' && number >= 1 && number <= 35)
             return XKB_KEY_F1 + (xkb_keysym_t)(number - 1);
+    }
+    if (name[0] == 'U' && name[1] != '\0') {
+        char *end;
+        unsigned long codepoint = strtoul(name + 1, &end, 16);
+
+        if (*end == '\0' && codepoint >= 0x20ul &&
+            codepoint <= 0x10fffful &&
+            !(codepoint >= 0xd800ul && codepoint <= 0xdffful))
+            return 0x01000000u | (xkb_keysym_t)codepoint;
     }
     return XKB_KEY_NoSymbol;
 }
@@ -944,6 +1108,11 @@ int xkb_keysym_get_name(xkb_keysym_t keysym, char *buffer, size_t size)
     if (!name && keysym >= 0x21u && keysym <= 0x7eu) {
         generated[0] = (char)keysym;
         generated[1] = '\0';
+        name = generated;
+    }
+    if (!name && (keysym & 0xff000000u) == 0x01000000u) {
+        snprintf(generated, sizeof(generated), "U%04X",
+                 (unsigned)(keysym & 0x00ffffffu));
         name = generated;
     }
     if (!name)

@@ -38,6 +38,7 @@
 #include <kernel/fat32.h>
 #include <kernel/tty.h>
 #include <kernel/null.h>
+#include <kernel/keyboard.h>
 #include <kernel/display.h>
 #include <kernel/virtio_net.h>
 #include <kernel/mount.h>
@@ -976,6 +977,7 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     struct armos_fb_blit fbblit;
     int tty_id;
     int fbret;
+    uint32_t keyboard_layout;
 
     if (!task || !task->process)
         return -EINVAL;
@@ -995,6 +997,25 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
         return tty_id;
 
     switch (request) {
+    case ARMOS_TIOCGKEYMAP:
+        if (!file_is_tty(file) && file->type != FILE_TYPE_INPUT)
+            return -ENOTTY;
+        if (!arg)
+            return -EFAULT;
+        keyboard_layout = keyboard_layout_get();
+        return copy_to_user((void *)arg, &keyboard_layout,
+                            sizeof(keyboard_layout)) < 0 ? -EFAULT : 0;
+
+    case ARMOS_TIOCSKEYMAP:
+        if (!file_is_tty(file))
+            return -ENOTTY;
+        if (!arg)
+            return -EFAULT;
+        if (copy_from_user(&keyboard_layout, (void *)arg,
+                           sizeof(keyboard_layout)) < 0)
+            return -EFAULT;
+        return keyboard_layout_set(keyboard_layout);
+
     case ARMOS_FBIOGET_INFO:
         if (file->type != FILE_TYPE_FRAMEBUFFER)
             return -ENOTTY;

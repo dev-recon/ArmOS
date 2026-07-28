@@ -205,13 +205,48 @@ static void shell_cursor_right(int count) {
     }
 }
 
+static int shell_utf8_is_continuation(unsigned char c) {
+    return (c & 0xc0u) == 0x80u;
+}
+
+static int shell_utf8_previous(const char* line, int cursor) {
+    if (cursor <= 0)
+        return 0;
+    cursor--;
+    while (cursor > 0 &&
+           shell_utf8_is_continuation((unsigned char)line[cursor]))
+        cursor--;
+    return cursor;
+}
+
+static int shell_utf8_next(const char* line, int len, int cursor) {
+    if (cursor >= len)
+        return len;
+    cursor++;
+    while (cursor < len &&
+           shell_utf8_is_continuation((unsigned char)line[cursor]))
+        cursor++;
+    return cursor;
+}
+
+static int shell_utf8_columns(const char* line, int begin, int end) {
+    int columns = 0;
+    int offset;
+
+    for (offset = begin; offset < end; offset++) {
+        if (!shell_utf8_is_continuation((unsigned char)line[offset]))
+            columns++;
+    }
+    return columns;
+}
+
 static void shell_redraw_from(char* line, int len, int cursor) {
     int i;
 
     for (i = cursor; i < len; i++)
         putc_tty(line[i]);
     putc_tty(' ');
-    shell_cursor_left(len - cursor + 1);
+    shell_cursor_left(shell_utf8_columns(line, cursor, len) + 1);
 }
 
 static void shell_redraw_line(char* line, int len, int cursor) {
@@ -224,7 +259,7 @@ static void shell_redraw_line(char* line, int len, int cursor) {
     shell_print_prompt();
     for (i = 0; i < len; i++)
         putc_tty(line[i]);
-    shell_cursor_left(len - cursor);
+    shell_cursor_left(shell_utf8_columns(line, cursor, len));
 }
 
 static void shell_set_line(char* line, int* len, int* cursor, const char* text) {
@@ -250,53 +285,88 @@ static void shell_reap_jobs_during_edit(char* line, int len, int cursor) {
     shell_redraw_line(line, len, cursor);
 }
 
-static void shell_insert_char(char* line, int* len, int* cursor, char c) {
+static void shell_insert_bytes(char* line, int* len, int* cursor,
+                               const char* bytes, int byte_count) {
     int i;
 
-    if (*len >= SHELL_BUFFER_SIZE - 1)
+    if (byte_count <= 0 || *len + byte_count >= SHELL_BUFFER_SIZE)
         return;
 
-    for (i = *len; i > *cursor; i--)
-        line[i] = line[i - 1];
+    for (i = *len; i >= *cursor; i--)
+        line[i + byte_count] = line[i];
 
-    line[*cursor] = c;
-    (*len)++;
-    (*cursor)++;
-    line[*len] = '\0';
+    for (i = 0; i < byte_count; i++)
+        line[*cursor + i] = bytes[i];
+    *len += byte_count;
+    *cursor += byte_count;
 
-    for (i = *cursor - 1; i < *len; i++)
+    for (i = *cursor - byte_count; i < *len; i++)
         putc_tty(line[i]);
-    shell_cursor_left(*len - *cursor);
+    shell_cursor_left(shell_utf8_columns(line, *cursor, *len));
 }
 
 static void shell_backspace_char(char* line, int* len, int* cursor) {
+    int previous;
+    int removed;
     int i;
 
     if (*cursor <= 0)
         return;
 
-    (*cursor)--;
-    for (i = *cursor; i < *len - 1; i++)
-        line[i] = line[i + 1];
+    previous = shell_utf8_previous(line, *cursor);
+    removed = *cursor - previous;
+    for (i = previous; i <= *len - removed; i++)
+        line[i] = line[i + removed];
 
-    (*len)--;
-    line[*len] = '\0';
+    *cursor = previous;
+    *len -= removed;
     shell_cursor_left(1);
     shell_redraw_from(line, *len, *cursor);
 }
 
 static void shell_delete_char(char* line, int* len, int cursor) {
+    int next;
+    int removed;
     int i;
 
     if (cursor >= *len)
         return;
 
-    for (i = cursor; i < *len - 1; i++)
-        line[i] = line[i + 1];
+    next = shell_utf8_next(line, *len, cursor);
+    removed = next - cursor;
+    for (i = cursor; i <= *len - removed; i++)
+        line[i] = line[i + removed];
 
-    (*len)--;
-    line[*len] = '\0';
+    *len -= removed;
     shell_redraw_from(line, *len, cursor);
+}
+
+static int shell_read_utf8(int first, char bytes[4]) {
+    unsigned char lead = (unsigned char)first;
+    int expected;
+    int index;
+
+    if (lead < 0x80u)
+        expected = 1;
+    else if (lead >= 0xc2u && lead <= 0xdfu)
+        expected = 2;
+    else if (lead >= 0xe0u && lead <= 0xefu)
+        expected = 3;
+    else if (lead >= 0xf0u && lead <= 0xf4u)
+        expected = 4;
+    else
+        return 0;
+
+    bytes[0] = (char)lead;
+    for (index = 1; index < expected; index++) {
+        int c = getc_tty();
+
+        if (c < 0 ||
+            !shell_utf8_is_continuation((unsigned char)c))
+            return 0;
+        bytes[index] = (char)c;
+    }
+    return expected;
 }
 
 typedef struct completion_result {
@@ -680,21 +750,21 @@ static void shell_handle_escape(char* line, int* len, int* cursor,
     case 'D':
         if (*cursor > 0) {
             shell_cursor_left(1);
-            (*cursor)--;
+            *cursor = shell_utf8_previous(line, *cursor);
         }
         break;
     case 'C':
         if (*cursor < *len) {
             shell_cursor_right(1);
-            (*cursor)++;
+            *cursor = shell_utf8_next(line, *len, *cursor);
         }
         break;
     case 'H':
-        shell_cursor_left(*cursor);
+        shell_cursor_left(shell_utf8_columns(line, 0, *cursor));
         *cursor = 0;
         break;
     case 'F':
-        shell_cursor_right(*len - *cursor);
+        shell_cursor_right(shell_utf8_columns(line, *cursor, *len));
         *cursor = *len;
         break;
     case 'A':
@@ -727,6 +797,7 @@ char* shell_read_line(void) {
     int history_index = shell_history_count;
     char history_draft[SHELL_BUFFER_SIZE];
     int c;
+    char utf8[4];
 
     input_buffer[0] = '\0';
     history_draft[0] = '\0';
@@ -772,10 +843,10 @@ char* shell_read_line(void) {
             if (cursor < len)
                 shell_delete_char(input_buffer, &len, cursor);
         } else if (c == 0x01) {
-            shell_cursor_left(cursor);
+            shell_cursor_left(shell_utf8_columns(input_buffer, 0, cursor));
             cursor = 0;
         } else if (c == 0x05) {
-            shell_cursor_right(len - cursor);
+            shell_cursor_right(shell_utf8_columns(input_buffer, cursor, len));
             cursor = len;
         } else if (c == 0x0B) {
             input_buffer[cursor] = '\0';
@@ -800,7 +871,17 @@ char* shell_read_line(void) {
             shell_handle_escape(input_buffer, &len, &cursor,
                                 &history_index, history_draft);
         } else if (c >= ' ' && c <= '~') {
-            shell_insert_char(input_buffer, &len, &cursor, c);
+            utf8[0] = (char)c;
+            shell_insert_bytes(input_buffer, &len, &cursor, utf8, 1);
+            if (history_index == shell_history_count) {
+                strncpy(history_draft, input_buffer, SHELL_BUFFER_SIZE - 1);
+                history_draft[SHELL_BUFFER_SIZE - 1] = '\0';
+            }
+        } else if (c >= 0x80) {
+            int byte_count = shell_read_utf8(c, utf8);
+
+            shell_insert_bytes(input_buffer, &len, &cursor,
+                               utf8, byte_count);
             if (history_index == shell_history_count) {
                 strncpy(history_draft, input_buffer, SHELL_BUFFER_SIZE - 1);
                 history_draft[SHELL_BUFFER_SIZE - 1] = '\0';

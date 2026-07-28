@@ -47,11 +47,28 @@ NEWLIB_SYSROOT ?= $(shell $(CC) -print-sysroot 2>/dev/null)
 NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
 NEWLIB_LIBM ?= $(NEWLIB_SYSROOT)/lib/libm.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
+KEYBOARD_LAYOUT ?= us
+
+ifeq ($(KEYBOARD_LAYOUT),us)
+KEYBOARD_LAYOUT_ID := 0
+else ifeq ($(KEYBOARD_LAYOUT),us-mac)
+KEYBOARD_LAYOUT_ID := 1
+else ifeq ($(KEYBOARD_LAYOUT),fr)
+KEYBOARD_LAYOUT_ID := 2
+else ifeq ($(KEYBOARD_LAYOUT),fr-mac)
+KEYBOARD_LAYOUT_ID := 3
+else ifeq ($(KEYBOARD_LAYOUT),fr-legacy)
+KEYBOARD_LAYOUT_ID := 4
+else
+$(error Unsupported KEYBOARD_LAYOUT '$(KEYBOARD_LAYOUT)')
+endif
 
 CFLAGS := $(ARCH_FLAGS) -std=gnu99 -Os -ffreestanding -fno-builtin \
           $(REPRO_FLAGS) \
+          -MMD -MP \
           -ffunction-sections -fdata-sections \
           -fno-stack-protector -DARM_OS_NEWLIB \
+          -DARMOS_DEFAULT_KEYBOARD_LAYOUT=$(KEYBOARD_LAYOUT_ID) \
           -D__DYNAMIC_REENT__ \
           -DARMOS_USER_TEXT_ADDRESS=$(USER_TEXT_ADDRESS) \
           -Iinclude -I../include -I$(NEWLIB_SYSROOT)/include
@@ -65,6 +82,11 @@ PORT_OBJECTS := $(NEWLIB_RUNTIME_DIR)/crt0_newlib.o \
                 $(NEWLIB_RUNTIME_DIR)/stdio_lock.o \
                 $(NEWLIB_RUNTIME_DIR)/pthread.o \
                 $(NEWLIB_RUNTIME_DIR)/pthread_sync.o
+NEWLIB_PORT_STAMP := $(NEWLIB_RUNTIME_DIR)/.armos-incremental.stamp
+NEWLIB_PORT_INPUTS := $(shell find $(NEWLIB_PORT) -type f \( \
+                      -name '*.c' -o -name '*.h' -o -name '*.S' -o \
+                      -name 'Makefile' \) 2>/dev/null)
+LINK_DEPS := $(PORT_OBJECTS) $(NEWLIB_LIBC) $(LIBGCC)
 
 COREUTIL_SRCS := $(wildcard coreutils/src/*.c)
 COREUTILS := $(sort $(patsubst coreutils/src/%.c,%,$(COREUTIL_SRCS)))
@@ -152,6 +174,10 @@ $(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
+# Pattern-generated program objects are final cache entries, not disposable
+# intermediates. Keeping them is required for true incremental builds.
+.SECONDARY:
+
 all: check-newlib $(TARGETS)
 
 check-newlib:
@@ -163,8 +189,18 @@ check-newlib:
 		exit 1; \
 	fi
 
-newlib-port:
+newlib-port: $(NEWLIB_PORT_STAMP)
+
+$(NEWLIB_PORT_STAMP): $(NEWLIB_PORT_INPUTS) $(NEWLIB_LIBC)
 	$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" ARCH="$(ARCH)" BUILD_DIR="$(abspath $(NEWLIB_RUNTIME_DIR))" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"
+	touch $@
+
+$(PORT_OBJECTS): $(NEWLIB_PORT_STAMP)
+	@test -f $@ || { \
+		$(MAKE) -C $(NEWLIB_PORT) TARGET_ARCH="$(TARGET_ARCH)" TARGET_PLATFORM="$(TARGET_PLATFORM)" ARCH="$(ARCH)" BUILD_DIR="$(abspath $(NEWLIB_RUNTIME_DIR))" NEWLIB_SYSROOT="$(NEWLIB_SYSROOT)" NEWLIB_LIBC="$(NEWLIB_LIBC)"; \
+		touch $(NEWLIB_PORT_STAMP); \
+		test -f $@; \
+	}
 
 list:
 	@printf '%s\n' $(TARGETS)
@@ -236,14 +272,14 @@ $(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
-$(WAYLAND_API_TEST_TARGET): newlib-port $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
+$(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
 		$(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
 		$(WAYLAND_SERVER_LIBRARY) $(XKBCOMMON_LIBRARY) \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(TEAPOT_DEMO_TARGET): newlib-port $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
+$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
 		$(WAYLAND_CLIENT_LIBRARY) "$(NEWLIB_LIBM)" \
@@ -261,18 +297,18 @@ define PROGRAM_RULE
 $(1)_SRCS := $$(wildcard programs/$(1)/*.c)
 $(1)_OBJECTS := $$(patsubst programs/$(1)/%.c,$$(BUILD_DIR)/programs/$(1)/%.o,$$($(1)_SRCS))
 
-$(OUT_USR_BIN)/$(1): newlib-port $$($(1)_OBJECTS)
+$(OUT_USR_BIN)/$(1): $$(LINK_DEPS) $$($(1)_OBJECTS)
 	mkdir -p $$(@D)
 	$$(CC) $$(LDFLAGS) -o $$@ $$(PORT_OBJECTS) $$($(1)_OBJECTS) "$$(NEWLIB_LIBC)" "$$(LIBGCC)"
 endef
 
 $(foreach prog,$(PROGRAMS),$(eval $(call PROGRAM_RULE,$(prog))))
 
-$(OUT_USR_BIN)/hello64: newlib-port $(HELLO64_OBJECTS)
+$(OUT_USR_BIN)/hello64: $(LINK_DEPS) $(HELLO64_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(HELLO64_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(ARMOS_WLCOMP_TARGET): newlib-port $(ARMOS_WLCOMP_OBJECTS) $(WAYLAND_SERVER_LIBRARY)
+$(ARMOS_WLCOMP_TARGET): $(LINK_DEPS) $(ARMOS_WLCOMP_OBJECTS) $(WAYLAND_SERVER_LIBRARY)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMOS_WLCOMP_OBJECTS) \
 		$(WAYLAND_SERVER_LIBRARY) "$(NEWLIB_LIBC)" "$(LIBGCC)"
@@ -281,7 +317,7 @@ define EXTERNAL_RULE
 $(1)_EXTERNAL_SRCS := $$(wildcard opt/$(1)/src/*.c)
 $(1)_EXTERNAL_OBJECTS := $$(patsubst opt/%.c,$$(BUILD_DIR)/opt/%.o,$$($(1)_EXTERNAL_SRCS))
 
-$(OUT_OPT)/$(1)/bin/$(1): newlib-port $$($(1)_EXTERNAL_OBJECTS)
+$(OUT_OPT)/$(1)/bin/$(1): $$(LINK_DEPS) $$($(1)_EXTERNAL_OBJECTS)
 	mkdir -p $$(@D)
 	$$(CC) $$(LDFLAGS) -o $$@ $$(PORT_OBJECTS) $$($(1)_EXTERNAL_OBJECTS) "$$(NEWLIB_LIBC)" "$$(LIBGCC)"
 
@@ -290,19 +326,19 @@ endef
 
 $(foreach prog,$(EXTERNALS),$(eval $(call EXTERNAL_RULE,$(prog))))
 
-$(OUT_SBIN)/init: newlib-port $(INIT_OBJECTS)
+$(OUT_SBIN)/init: $(LINK_DEPS) $(INIT_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(INIT_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_SBIN)/mash: newlib-port $(MASH_OBJECTS)
+$(OUT_SBIN)/mash: $(LINK_DEPS) $(MASH_OBJECTS)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(MASH_OBJECTS) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_SBIN)/%: newlib-port $(BUILD_DIR)/system/tools/%.o
+$(OUT_SBIN)/%: $(LINK_DEPS) $(BUILD_DIR)/system/tools/%.o
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(BUILD_DIR)/system/tools/$*.o "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(OUT_BIN)/%: newlib-port $(BUILD_DIR)/coreutils/%.o
+$(OUT_BIN)/%: $(LINK_DEPS) $(BUILD_DIR)/coreutils/%.o
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(BUILD_DIR)/coreutils/$*.o "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
@@ -364,3 +400,8 @@ install: $(TARGETS)
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Compiler-generated dependency files make header changes rebuild precisely the
+# affected objects without requiring a global userland clean.
+DEPFILES := $(shell if [ -d "$(BUILD_DIR)" ]; then find "$(BUILD_DIR)" -name '*.d' -type f; fi)
+-include $(DEPFILES)

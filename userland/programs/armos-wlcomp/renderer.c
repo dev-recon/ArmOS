@@ -684,10 +684,12 @@ static int wl_renderer_build_canvas(struct wl_server *server)
     renderer = &server->renderer;
     renderer->clip_enabled = false;
     canvas_width = renderer->framebuffer.pitch / 4u;
-    for (uint32_t y = 0; y < renderer->framebuffer.height; y++) {
-        for (uint32_t x = 0; x < canvas_width; x++)
-            renderer->canvas[y * canvas_width + x] = WL_BACKGROUND;
-    }
+    for (uint32_t x = 0; x < canvas_width; x++)
+        renderer->canvas[x] = WL_BACKGROUND;
+    for (uint32_t y = 1; y < renderer->framebuffer.height; y++)
+        memcpy(renderer->canvas + (size_t)y * canvas_width,
+               renderer->canvas,
+               (size_t)canvas_width * sizeof(uint32_t));
 
     wl_renderer_draw_surfaces(server);
 
@@ -1078,6 +1080,74 @@ static int wl_surface_buffer_valid(const struct wl_server_buffer *buffer)
     return end <= buffer->pool->size;
 }
 
+static int wl_surface_content_origin(
+    const struct wl_server_surface *surface, int32_t *x, int32_t *y)
+{
+    const struct wl_server_surface *ancestor = surface;
+    size_t depth = 0u;
+
+    if (!surface || !x || !y)
+        return -1;
+    if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+        *x = surface->x;
+        *y = surface->y +
+            (surface->server_decorated ?
+             (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
+        return 0;
+    }
+    *x = surface->subsurface_x;
+    *y = surface->subsurface_y;
+    while (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+           ancestor->parent &&
+           depth++ < WL_SERVER_MAX_SURFACES) {
+        ancestor = ancestor->parent;
+        if (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+            *x += ancestor->subsurface_x;
+            *y += ancestor->subsurface_y;
+        } else {
+            *x += ancestor->x;
+            *y += ancestor->y +
+                (ancestor->server_decorated ?
+                 (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
+        }
+    }
+    return depth <= WL_SERVER_MAX_SURFACES ? 0 : -1;
+}
+
+static bool wl_surface_clip_local_damage(
+    const struct wl_server_surface *surface,
+    struct wl_renderer_rect *damage)
+{
+    if (damage->x0 < 0)
+        damage->x0 = 0;
+    if (damage->y0 < 0)
+        damage->y0 = 0;
+    if (damage->x1 > (int32_t)surface->width)
+        damage->x1 = (int32_t)surface->width;
+    if (damage->y1 > (int32_t)surface->height)
+        damage->y1 = (int32_t)surface->height;
+    return damage->x0 < damage->x1 && damage->y0 < damage->y1;
+}
+
+static void wl_surface_copy_damage(
+    struct wl_server_surface *surface,
+    const struct wl_server_buffer *buffer,
+    const struct wl_renderer_rect *damage)
+{
+    size_t row_bytes =
+        (size_t)(damage->x1 - damage->x0) * sizeof(uint32_t);
+
+    for (int32_t y = damage->y0; y < damage->y1; y++) {
+        const uint8_t *source = buffer->pool->mapping + buffer->offset +
+            (size_t)y * buffer->stride +
+            (size_t)damage->x0 * sizeof(uint32_t);
+        uint32_t *destination = surface->pixels +
+            (size_t)y * surface->width + (size_t)damage->x0;
+
+        memcpy(destination, source, row_bytes);
+    }
+}
+
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface)
@@ -1087,18 +1157,27 @@ int wl_surface_commit(struct wl_server *server,
     uint32_t previous_height;
     bool previous_mapped;
     bool content_changed;
+    bool full_copy;
+    bool newly_attached;
     bool callback_pending = false;
+    int32_t content_x = 0;
+    int32_t content_y = 0;
 
     if (!server || !client || !surface)
         return -1;
     previous_width = surface->width;
     previous_height = surface->height;
     previous_mapped = surface->mapped;
-    content_changed = surface->pending_attach;
+    newly_attached = surface->pending_attach;
+    content_changed = surface->pending_attach ||
+        surface->pending_damage_count != 0u;
+    buffer = surface->pending_attach ?
+        surface->pending_buffer : surface->current_buffer;
+    full_copy = surface->pending_damage_count == 0u;
     if (surface->pending_attach) {
-        buffer = surface->pending_buffer;
         surface->pending_attach = false;
         surface->pending_buffer = NULL;
+        surface->current_buffer = buffer;
         if (!buffer) {
             free(surface->pixels);
             surface->pixels = NULL;
@@ -1107,45 +1186,62 @@ int wl_surface_commit(struct wl_server *server,
             surface->opaque = false;
             surface->width = 0;
             surface->height = 0;
-        } else {
-            uint64_t pixel_bytes =
-                (uint64_t)buffer->width * buffer->height * 4u;
-            uint32_t *copy;
+        }
+    }
+    if (buffer && content_changed) {
+        uint64_t pixel_bytes =
+            (uint64_t)buffer->width * buffer->height * 4u;
+        uint32_t *copy;
+        bool same_extent;
 
-            if (!wl_surface_buffer_valid(buffer) ||
-                pixel_bytes > (uint64_t)SIZE_MAX)
+        if (!wl_surface_buffer_valid(buffer) ||
+            pixel_bytes > (uint64_t)SIZE_MAX)
+            return -1;
+        same_extent = previous_mapped &&
+            previous_width == buffer->width &&
+            previous_height == buffer->height;
+        if (surface->pixels_size != (size_t)pixel_bytes) {
+            copy = realloc(surface->pixels, (size_t)pixel_bytes);
+            if (!copy)
                 return -1;
-            if (surface->pixels_size != (size_t)pixel_bytes) {
-                copy = realloc(surface->pixels, (size_t)pixel_bytes);
-                if (!copy)
-                    return -1;
-                surface->pixels = copy;
-                surface->pixels_size = (size_t)pixel_bytes;
-            } else {
-                copy = surface->pixels;
-            }
-            if (buffer->stride == buffer->width * sizeof(uint32_t)) {
-                memcpy(copy, buffer->pool->mapping + buffer->offset,
-                       (size_t)pixel_bytes);
-            } else {
-                for (uint32_t y = 0; y < buffer->height; y++) {
-                    const uint8_t *source = buffer->pool->mapping +
-                        buffer->offset + (size_t)y * buffer->stride;
-                    uint32_t *destination =
-                        copy + (size_t)y * buffer->width;
+            surface->pixels = copy;
+            surface->pixels_size = (size_t)pixel_bytes;
+        } else {
+            copy = surface->pixels;
+        }
+        surface->width = buffer->width;
+        surface->height = buffer->height;
+        if (!same_extent)
+            full_copy = true;
+        if (full_copy &&
+            buffer->stride == buffer->width * sizeof(uint32_t)) {
+            memcpy(copy, buffer->pool->mapping + buffer->offset,
+                   (size_t)pixel_bytes);
+        } else if (full_copy) {
+            for (uint32_t y = 0; y < buffer->height; y++) {
+                const uint8_t *source = buffer->pool->mapping +
+                    buffer->offset + (size_t)y * buffer->stride;
+                uint32_t *destination =
+                    copy + (size_t)y * buffer->width;
 
-                    memcpy(destination, source,
-                           (size_t)buffer->width * sizeof(uint32_t));
-                }
+                memcpy(destination, source,
+                       (size_t)buffer->width * sizeof(uint32_t));
             }
-            surface->width = buffer->width;
-            surface->height = buffer->height;
-            surface->mapped = true;
-            surface->opaque = buffer->format == WL_SHM_FORMAT_XRGB8888;
-            if (buffer->object_alive) {
-                (void)wl_client_send_words(client, buffer->object_id, 0,
-                                           NULL, 0);
+        } else {
+            for (size_t index = 0u;
+                 index < surface->pending_damage_count; index++) {
+                struct wl_renderer_rect damage =
+                    surface->pending_damage[index];
+
+                if (wl_surface_clip_local_damage(surface, &damage))
+                    wl_surface_copy_damage(surface, buffer, &damage);
             }
+        }
+        surface->mapped = true;
+        surface->opaque = buffer->format == WL_SHM_FORMAT_XRGB8888;
+        if (newly_attached && buffer->object_alive) {
+            (void)wl_client_send_words(client, buffer->object_id, 0,
+                                       NULL, 0);
         }
     }
 
@@ -1154,18 +1250,34 @@ int wl_surface_commit(struct wl_server *server,
             (previous_width == surface->width &&
              previous_height == surface->height);
 
-        if (surface->mapped && same_extent) {
-            wl_renderer_damage_rect(
-                server, surface->x,
-                surface->y + (surface->server_decorated ?
-                              (int32_t)WL_WINDOW_TITLE_HEIGHT : 0),
-                surface->width, surface->height);
+        if (surface->mapped && same_extent &&
+            wl_surface_content_origin(surface, &content_x, &content_y) == 0) {
+            if (full_copy) {
+                wl_renderer_damage_rect(
+                    server, content_x, content_y,
+                    surface->width, surface->height);
+            } else {
+                for (size_t index = 0u;
+                     index < surface->pending_damage_count; index++) {
+                    struct wl_renderer_rect damage =
+                        surface->pending_damage[index];
+
+                    if (!wl_surface_clip_local_damage(surface, &damage))
+                        continue;
+                    wl_renderer_damage_rect(
+                        server, content_x + damage.x0,
+                        content_y + damage.y0,
+                        (uint32_t)(damage.x1 - damage.x0),
+                        (uint32_t)(damage.y1 - damage.y0));
+                }
+            }
             if (wl_server_schedule_render(server, false) < 0)
                 return -1;
         } else if (wl_server_schedule_render(server, true) < 0) {
             return -1;
         }
     }
+    surface->pending_damage_count = 0u;
     for (size_t index = 0; index < WL_SERVER_MAX_CALLBACKS; index++) {
         if (surface->callbacks[index].used) {
             callback_pending = true;

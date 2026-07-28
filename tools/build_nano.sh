@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
 HOST_CC="${HOST_CC:-cc}"
@@ -47,14 +49,16 @@ if [ ! -f "$SRC_ARCHIVE" ]; then
     curl -L --fail "$NANO_URL" -o "$SRC_ARCHIVE"
 fi
 
-rm -rf "$SRC_DIR" "$BUILD_DIR" "$BUNDLE_ROOT"
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$BUNDLE_BIN" "$BUNDLE_ETC" "$BUNDLE_SYNTAX"
+SOURCE_CONTRACT="nano-$NANO_VERSION:$(shasum -a 256 "$SRC_ARCHIVE" | awk '{print $1}')"
+if [ ! -f "$SRC_DIR/.armos-source.contract" ] ||
+   [ "$(cat "$SRC_DIR/.armos-source.contract")" != "$SOURCE_CONTRACT" ]; then
+    rm -rf "$SRC_DIR" "$BUILD_DIR"
+    mkdir -p "$SRC_DIR" "$BUILD_DIR"
+    tar -xJf "$SRC_ARCHIVE" -C "$SRC_DIR" --strip-components=1
 
-tar -xJf "$SRC_ARCHIVE" -C "$SRC_DIR" --strip-components=1
-
-# ArmOS' current printw path does not support the C99 %z length modifier.
-# Nano's line-number margin goes through mvwprintw(), so use a plain long.
-patch -d "$SRC_DIR" -p1 <<'PATCH'
+    # ArmOS' current printw path does not support the C99 %z length modifier.
+    # Nano's line-number margin goes through mvwprintw(), so use a plain long.
+    patch -d "$SRC_DIR" -p1 <<'PATCH'
 diff --git a/src/winio.c b/src/winio.c
 --- a/src/winio.c
 +++ b/src/winio.c
@@ -68,6 +72,11 @@ diff --git a/src/winio.c b/src/winio.c
  #ifndef NANO_TINY
  		if (line->has_anchor && (from_col == 0 || !ISSET(SOFTWRAP)))
 PATCH
+    printf '%s\n' "$SOURCE_CONTRACT" > "$SRC_DIR/.armos-source.contract"
+fi
+
+rm -rf "$BUNDLE_ROOT"
+mkdir -p "$BUILD_DIR" "$BUNDLE_BIN" "$BUNDLE_ETC" "$BUNDLE_SYNTAX"
 
 cd "$BUILD_DIR"
 
@@ -122,28 +131,38 @@ CACHE
 BUILD_TRIPLET="$("$SRC_DIR/config.guess" 2>/dev/null || echo unknown)"
 NANO_CPPFLAGS="-I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include -I$NCURSES_PREFIX/include -I$NCURSES_PREFIX/include/ncurses"
 NANO_CFLAGS="$ARM_FLAGS -Os -ffreestanding -fno-builtin -fno-stack-protector -DARM_OS_NEWLIB $NANO_CPPFLAGS"
+NANO_COMPAT_SRC="$ROOT_DIR/userland/opt/nano/armos_nano_compat.c"
 
-cat > "$BUILD_DIR/armos_nano_compat.c" <<'COMPAT'
-#include <unistd.h>
-
-char *
-getlogin(void)
-{
-    return "user";
-}
-COMPAT
-
-"$CC" $NANO_CFLAGS -c "$BUILD_DIR/armos_nano_compat.c" -o "$BUILD_DIR/armos_nano_compat.o"
-
-CC="$CC" \
-BUILD_CC="$HOST_CC" \
-CFLAGS="$NANO_CFLAGS" \
-CPPFLAGS="$NANO_CPPFLAGS" \
-NCURSES_CFLAGS="-I$NCURSES_PREFIX/include -I$NCURSES_PREFIX/include/ncurses" \
-NCURSES_LIBS="$NCURSES_PREFIX/lib/libncurses.a" \
-LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS" \
-LIBS="$BUILD_DIR/armos_nano_compat.o $NCURSES_PREFIX/lib/libncurses.a $NEWLIB_LIBC $LIBGCC" \
-"$SRC_DIR/configure" \
+NANO_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS"
+NANO_LIBS="$BUILD_DIR/armos_nano_compat.o $NCURSES_PREFIX/lib/libncurses.a $NEWLIB_LIBC $LIBGCC"
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile" <<EOF
+bundle=nano
+source=$SOURCE_CONTRACT
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+host_cc=$HOST_CC
+cflags=$NANO_CFLAGS
+cppflags=$NANO_CPPFLAGS
+ldflags=$NANO_LDFLAGS
+libs=$NANO_LIBS
+ncurses=$NCURSES_PREFIX
+args=--cache-file=$BUILD_DIR/config.cache --build=$BUILD_TRIPLET --host=$TARGET_TRIPLET --prefix=/opt/nano --enable-tiny --disable-nls --disable-utf8 --disable-browser --enable-nanorc --enable-linenumbers --enable-color --disable-extra --disable-help --disable-histories --disable-justify --disable-libmagic --disable-multibuffer --disable-operatingdir --disable-speller --disable-tabcomp --disable-wordcomp --disable-wrapping
+EOF
+then
+    "$CC" $NANO_CFLAGS -c "$NANO_COMPAT_SRC" \
+        -o "$BUILD_DIR/armos_nano_compat.o"
+    CC="$CC" \
+    BUILD_CC="$HOST_CC" \
+    CFLAGS="$NANO_CFLAGS" \
+    CPPFLAGS="$NANO_CPPFLAGS" \
+    NCURSES_CFLAGS="-I$NCURSES_PREFIX/include -I$NCURSES_PREFIX/include/ncurses" \
+    NCURSES_LIBS="$NCURSES_PREFIX/lib/libncurses.a" \
+    LDFLAGS="$NANO_LDFLAGS" \
+    LIBS="$NANO_LIBS" \
+    "$SRC_DIR/configure" \
     --cache-file="$BUILD_DIR/config.cache" \
     --build="$BUILD_TRIPLET" \
     --host="$TARGET_TRIPLET" \
@@ -166,6 +185,13 @@ LIBS="$BUILD_DIR/armos_nano_compat.o $NCURSES_PREFIX/lib/libncurses.a $NEWLIB_LI
     --disable-tabcomp \
     --disable-wordcomp \
     --disable-wrapping
+    armos_configure_commit "$BUILD_DIR"
+fi
+
+if [ "$NANO_COMPAT_SRC" -nt "$BUILD_DIR/armos_nano_compat.o" ]; then
+    "$CC" $NANO_CFLAGS -c "$NANO_COMPAT_SRC" \
+        -o "$BUILD_DIR/armos_nano_compat.o"
+fi
 
 make -j"${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 make DESTDIR="$BUNDLE_ROOT" install-exec

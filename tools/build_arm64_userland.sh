@@ -22,6 +22,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
 TARGET_BUILD_ROOT="$ROOT_DIR/build/arm64/$TARGET_PLATFORM"
 
 if [ "${ARMOS_BUILD_LOCK_HELD:-0}" != "1" ]; then
@@ -87,9 +88,14 @@ elif [ "${#TARGETS[@]}" -eq 0 ]; then
     TARGETS=(all)
 fi
 
-if [ "$REBUILD_NEWLIB" -eq 1 ] ||
-   [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$LIBC" ] ||
-   [ ! -f "$SYSROOT/.armos-reproducible-paths-v1" ]; then
+if [ "$REBUILD_NEWLIB" -ne 1 ] &&
+   ! TARGET=aarch64-elf ARCH=aarch64-elf- \
+     NEWLIB_BUILD_ROOT="$TARGET_BUILD_ROOT/newlib-build" \
+     NEWLIB_INSTALL_ROOT="$TARGET_BUILD_ROOT/newlib-sysroot" \
+     "$ROOT_DIR/tools/build_newlib.sh" --check-contract; then
+    REBUILD_NEWLIB=1
+fi
+if [ "$REBUILD_NEWLIB" -eq 1 ]; then
     TARGET=aarch64-elf ARCH=aarch64-elf- \
         NEWLIB_BUILD_ROOT="$TARGET_BUILD_ROOT/newlib-build" \
         NEWLIB_INSTALL_ROOT="$TARGET_BUILD_ROOT/newlib-sysroot" \
@@ -108,6 +114,7 @@ if [ "$CLEAN" -eq 1 ]; then
     make -C "$ROOT_DIR/userland" \
         TARGET_ARCH=arm64 \
         TARGET_PLATFORM="$TARGET_PLATFORM" \
+        KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
         TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
         ARCH=aarch64-elf- \
         NEWLIB_SYSROOT="$SYSROOT" \
@@ -125,6 +132,7 @@ fi
 make -C "$ROOT_DIR/userland" \
     TARGET_ARCH=arm64 \
     TARGET_PLATFORM="$TARGET_PLATFORM" \
+    KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
     TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
     USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
     NEWLIB_RUNTIME_DIR="$TARGET_BUILD_ROOT/newlib-port" \

@@ -23,6 +23,7 @@
 
 #include <kernel/task.h>
 #include <kernel/types.h>
+#include <uapi/armos/input.h>
 
 #define ARMOS_INPUT_EVENT_SYNC       0u
 #define ARMOS_INPUT_EVENT_KEY        1u

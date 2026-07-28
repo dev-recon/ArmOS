@@ -22,6 +22,7 @@
 #define SYS_INPUT_H
 
 #include <stdint.h>
+#include <uapi/armos/input.h>
 
 #define ARMOS_INPUT_EVENT_SYNC       0u
 #define ARMOS_INPUT_EVENT_KEY        1u
@@ -38,6 +39,7 @@
 #define ARMOS_INPUT_BUTTON_RIGHT     0x111u
 #define ARMOS_INPUT_BUTTON_MIDDLE    0x112u
 
+#define ARMOS_INPUT_KEY_C            46u
 #define ARMOS_INPUT_KEY_LEFTCTRL     29u
 #define ARMOS_INPUT_KEY_LEFTSHIFT    42u
 #define ARMOS_INPUT_KEY_RIGHTSHIFT   54u
@@ -45,6 +47,8 @@
 #define ARMOS_INPUT_KEY_CAPSLOCK     58u
 #define ARMOS_INPUT_KEY_RIGHTCTRL    97u
 #define ARMOS_INPUT_KEY_RIGHTALT     100u
+#define ARMOS_INPUT_KEY_LEFTMETA     125u
+#define ARMOS_INPUT_KEY_RIGHTMETA    126u
 
 struct armos_input_event {
     uint32_t timestamp_ms;

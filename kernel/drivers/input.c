@@ -35,15 +35,67 @@ static uint32_t input_tail;
 static spinlock_t input_lock = SPINLOCK_INIT("input_queue");
 static file_t *input_owner;
 
+static bool input_event_is_priority(uint16_t type)
+{
+    return type == ARMOS_INPUT_EVENT_KEY ||
+           type == ARMOS_INPUT_EVENT_CONFIG;
+}
+
+static bool input_drop_nonpriority_locked(void)
+{
+    uint32_t index = input_tail;
+
+    while (index != input_head) {
+        uint32_t next;
+
+        if (input_event_is_priority(input_queue[index].type)) {
+            index = (index + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+            continue;
+        }
+        next = (index + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+        while (next != input_head) {
+            input_queue[index] = input_queue[next];
+            index = next;
+            next = (next + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+        }
+        input_head = (input_head + ARMOS_INPUT_QUEUE_LENGTH - 1u) %
+            ARMOS_INPUT_QUEUE_LENGTH;
+        return true;
+    }
+    return false;
+}
+
 void armos_input_emit(uint16_t type, uint16_t code, int32_t value)
 {
     armos_input_event_t *event;
+    uint32_t previous;
     uint32_t next;
 
     spin_lock(&input_lock);
+    /*
+     * HID transports may delimit every poll with SYN_REPORT, including polls
+     * which contain no state change.  Keeping more than one consecutive sync
+     * has no observable meaning and can evict a key release while a graphical
+     * consumer is delayed by rendering.
+     */
+    if (type == ARMOS_INPUT_EVENT_SYNC && input_head != input_tail) {
+        previous = (input_head + ARMOS_INPUT_QUEUE_LENGTH - 1u) %
+            ARMOS_INPUT_QUEUE_LENGTH;
+        if (input_queue[previous].type == ARMOS_INPUT_EVENT_SYNC) {
+            spin_unlock(&input_lock);
+            return;
+        }
+    }
     next = (input_head + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
-    if (next == input_tail)
-        input_tail = (input_tail + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+    if (next == input_tail) {
+        if (!input_event_is_priority(type)) {
+            spin_unlock(&input_lock);
+            return;
+        }
+        if (!input_drop_nonpriority_locked())
+            input_tail = (input_tail + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+        next = (input_head + 1u) % ARMOS_INPUT_QUEUE_LENGTH;
+    }
     event = &input_queue[input_head];
     event->timestamp_ms = get_system_ticks() * 1000u / TIMER_FREQ;
     event->type = type;

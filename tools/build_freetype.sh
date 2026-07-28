@@ -31,6 +31,8 @@ FREETYPE_SHA256="${FREETYPE_SHA256:-36bc4f1cc413335368ee656c42afca65c5a3987e8768
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 
 WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/freetype}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$ROOT_DIR/build/downloads}"
@@ -89,7 +91,7 @@ if [ ! -f "$NEWLIB_SYSROOT/include/stdio.h" ] ||
     exit 1
 fi
 
-rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
+rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/freetype2" \
     "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" "$BUNDLE_FONT_DIR" \
     "$BUNDLE_TCC_INCLUDE"
@@ -103,9 +105,23 @@ TEST_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static \
 -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections \
 -Wl,--allow-multiple-definition"
 
-(
-    cd "$BUILD_DIR"
-    env \
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile" <<EOF
+bundle=freetype
+version=$FREETYPE_VERSION
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+cflags=$CFLAGS
+ldflags=$CONFIGURE_LDFLAGS
+source_configure=$(shasum -a 256 "$SRC_DIR/configure" | awk '{print $1}')
+args=--host=$TARGET_TRIPLET --prefix=/opt/freetype --disable-shared --enable-static --without-zlib --without-bzip2 --without-png --without-harfbuzz --without-brotli
+EOF
+then
+    (
+        cd "$BUILD_DIR"
+        env \
         CC="$CC" \
         AR="${ARCH}ar" \
         RANLIB="${ARCH}ranlib" \
@@ -122,6 +138,11 @@ TEST_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static \
             --without-png \
             --without-harfbuzz \
             --without-brotli
+    )
+    armos_configure_commit "$BUILD_DIR"
+fi
+(
+    cd "$BUILD_DIR"
     make -j"${JOBS:-4}"
 )
 

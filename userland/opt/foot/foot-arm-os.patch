@@ -50,8 +50,57 @@
  
      for (size_t i = 0; i < 4; i++) {
          for (size_t j = 0; j < counts[i]; j++)
+--- a/input.c
++++ b/input.c
+@@ -717,4 +717,3 @@
+     struct itimerspec t = {
+         .it_value = {.tv_sec = 0, .tv_nsec = seat->kbd.repeat.delay * 1000000},
+-        .it_interval = {.tv_sec = 0, .tv_nsec = 1000000000 / seat->kbd.repeat.rate},
+     };
+@@ -726,8 +725,4 @@
+-    if (t.it_interval.tv_nsec >= 1000000000) {
+-        t.it_interval.tv_sec += t.it_interval.tv_nsec / 1000000000;
+-        t.it_interval.tv_nsec %= 1000000000;
+-    }
+     if (timerfd_settime(seat->kbd.repeat.fd, 0, &t, NULL) < 0) {
+         LOG_ERRNO("%s: failed to arm keyboard repeat timer", seat->name);
+         return false;
+     }
 --- a/wayland.c
 +++ b/wayland.c
+@@ -838,5 +838,31 @@
++    /*
++     * Keyboard repeat is interactive state, not elapsed work.  Rendering
++     * stalls must not replay every missed timer tick as an input burst.
++     */
+     seat->kbd.repeat.dont_re_repeat = true;
+-    for (size_t i = 0; i < expiration_count; i++)
++    if (expiration_count > 0)
+         input_repeat(seat, seat->kbd.repeat.key);
+     seat->kbd.repeat.dont_re_repeat = false;
++
++    /*
++     * A one-shot timer gives the Wayland fd a chance to deliver the key
++     * release before another repeat becomes readable on a slow renderer.
++     */
++    if (expiration_count > 0 && seat->kbd.repeat.rate > 0) {
++        uint64_t interval_ns =
++            1000000000ull / (uint64_t)seat->kbd.repeat.rate;
++        struct itimerspec next = {
++            .it_value = {
++                .tv_sec = interval_ns / 1000000000ull,
++                .tv_nsec = interval_ns % 1000000000ull,
++            },
++        };
++
++        if (interval_ns == 0)
++            next.it_value.tv_nsec = 1;
++        if (timerfd_settime(seat->kbd.repeat.fd, 0, &next, NULL) < 0) {
++            LOG_ERRNO("failed to rearm keyboard repeat timer");
++            return false;
++        }
++    }
+     return true;
 @@ -1572,6 +1572,8 @@
      }
  

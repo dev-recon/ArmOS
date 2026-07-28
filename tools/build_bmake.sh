@@ -20,6 +20,8 @@ BUNDLE_SHARE="$BUNDLE_PREFIX/share"
 ARCH="${ARCH:-arm-none-eabi-}"
 # shellcheck source=tools/cross_target_env.sh
 source "$ROOT_DIR/tools/cross_target_env.sh"
+# shellcheck source=tools/configure_cache.sh
+source "$ROOT_DIR/tools/configure_cache.sh"
 CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
 
@@ -54,18 +56,34 @@ for regex_symbol in regcomp regexec regerror regfree; do
     fi
 done
 
-rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
+rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_BIN" "$BUNDLE_SHARE"
 
 BMAKE_CFLAGS="$ARM_FLAGS -Os -ffreestanding -fno-builtin -fno-stack-protector -DARM_OS_NEWLIB -I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include"
 
 cd "$BUILD_DIR"
 
-CC="$CC" \
-CFLAGS="$BMAKE_CFLAGS" \
-LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS" \
-LIBS="$NEWLIB_LIBC $LIBGCC" \
-"$SRC_DIR/configure" \
+BMAKE_LDFLAGS="$ARM_FLAGS -nostdlib -nostartfiles -static -Wl,-Ttext=$TARGET_TEXT_ADDRESS -Wl,-e,_start -Wl,--gc-sections -Wl,--allow-multiple-definition $RUNTIME_OBJECTS"
+BMAKE_LIBS="$NEWLIB_LIBC $LIBGCC"
+if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile.config" <<EOF
+bundle=bmake
+target_arch=$TARGET_ARCH
+target_platform=$TARGET_PLATFORM
+target_triplet=$TARGET_TRIPLET
+cc=$CC
+cc_version=$("$CC" --version | head -1)
+cflags=$BMAKE_CFLAGS
+ldflags=$BMAKE_LDFLAGS
+libs=$BMAKE_LIBS
+source_configure=$(shasum -a 256 "$SRC_DIR/configure" | awk '{print $1}')
+args=--host=$TARGET_TRIPLET --target=$TARGET_TRIPLET --prefix=/opt/bmake --without-meta --without-filemon --with-defshell=/sbin/mash --with-default-sys-path=/opt/bmake/share/mk --with-machine=armos --with-machine_arch=arm
+EOF
+then
+    CC="$CC" \
+    CFLAGS="$BMAKE_CFLAGS" \
+    LDFLAGS="$BMAKE_LDFLAGS" \
+    LIBS="$BMAKE_LIBS" \
+    "$SRC_DIR/configure" \
     --host="$TARGET_TRIPLET" \
     --target="$TARGET_TRIPLET" \
     --prefix=/opt/bmake \
@@ -75,6 +93,8 @@ LIBS="$NEWLIB_LIBC $LIBGCC" \
     --with-default-sys-path=/opt/bmake/share/mk \
     --with-machine=armos \
     --with-machine_arch=arm
+    armos_configure_commit "$BUILD_DIR"
+fi
 
 sh ./make-bootstrap.sh
 

@@ -32,6 +32,8 @@
 #define WL_XKB_MOD_LOCK    (1u << 1)
 #define WL_XKB_MOD_CONTROL (1u << 2)
 #define WL_XKB_MOD_ALT     (1u << 3)
+#define WL_XKB_MOD_LOGO    (1u << 5)
+#define WL_XKB_MOD_LEVEL3  (1u << 6)
 
 static struct wl_server_object *wl_find_input_object(
     struct wl_server_client *client, enum wl_server_object_type type)
@@ -309,6 +311,8 @@ static void wl_focus_surface(struct wl_server *server,
     }
     server->focus_client = client;
     server->focus_surface = surface;
+    if (!client || !surface)
+        return;
     keyboard = wl_find_input_object(client, WL_SERVER_OBJECT_KEYBOARD);
     if (keyboard) {
         keyboard_enter[0] = ++server->serial;
@@ -343,7 +347,9 @@ static void wl_handle_button(struct wl_server *server,
         wl_send_pointer_motion(server, event->timestamp_ms);
         surface = wl_surface_at(server, server->pointer_x, server->pointer_y,
                                 &owner_index);
-        if (surface && owner_index < WL_SERVER_MAX_CLIENTS) {
+        if (!surface || owner_index >= WL_SERVER_MAX_CLIENTS) {
+            wl_focus_surface(server, NULL, NULL);
+        } else {
             bool close_button;
 
             client = &server->clients[owner_index];
@@ -401,7 +407,7 @@ static void wl_handle_key(struct wl_server *server,
     uint32_t mask = 0u;
     bool modifiers_changed;
 
-    if (event->code >= ARMOS_INPUT_BUTTON_LEFT)
+    if (event->code >= ARMOS_INPUT_BUTTON_LEFT || event->value == 2)
         return;
     previous_depressed = server->modifiers_depressed;
     previous_locked = server->modifiers_locked;
@@ -412,8 +418,16 @@ static void wl_handle_key(struct wl_server *server,
              event->code == ARMOS_INPUT_KEY_RIGHTCTRL)
         mask = WL_XKB_MOD_CONTROL;
     else if (event->code == ARMOS_INPUT_KEY_LEFTALT ||
-             event->code == ARMOS_INPUT_KEY_RIGHTALT)
+             (event->code == ARMOS_INPUT_KEY_RIGHTALT &&
+              server->keyboard_layout != ARMOS_KEYBOARD_LAYOUT_FR &&
+              server->keyboard_layout !=
+                  ARMOS_KEYBOARD_LAYOUT_FR_LEGACY))
         mask = WL_XKB_MOD_ALT;
+    else if (event->code == ARMOS_INPUT_KEY_RIGHTALT)
+        mask = WL_XKB_MOD_LEVEL3;
+    else if (event->code == ARMOS_INPUT_KEY_LEFTMETA ||
+             event->code == ARMOS_INPUT_KEY_RIGHTMETA)
+        mask = WL_XKB_MOD_LOGO;
     if (mask != 0u) {
         if (event->value != 0)
             server->modifiers_depressed |= mask;
@@ -421,11 +435,21 @@ static void wl_handle_key(struct wl_server *server,
             server->modifiers_depressed &= ~mask;
     } else if (event->code == ARMOS_INPUT_KEY_CAPSLOCK &&
                event->value == 1) {
-        server->modifiers_locked ^= WL_XKB_MOD_LOCK;
+        if (server->keyboard_layout ==
+            ARMOS_KEYBOARD_LAYOUT_FR_LEGACY)
+            server->modifiers_locked ^= WL_XKB_MOD_SHIFT;
+        else
+            server->modifiers_locked ^= WL_XKB_MOD_LOCK;
     }
     modifiers_changed =
         server->modifiers_depressed != previous_depressed ||
         server->modifiers_locked != previous_locked;
+    if (event->code == ARMOS_INPUT_KEY_C && event->value == 1 &&
+        (server->modifiers_depressed & WL_XKB_MOD_CONTROL) != 0u &&
+        (!server->focus_client || !server->focus_surface)) {
+        server->exit_requested = true;
+        return;
+    }
     if (!server->focus_client || !server->focus_client->used ||
         !server->focus_surface || !server->focus_surface->used)
         return;
@@ -446,7 +470,15 @@ static void wl_handle_key(struct wl_server *server,
 static void wl_handle_input_event(struct wl_server *server,
                                   const struct armos_input_event *event)
 {
-    if (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
+    if (event->type == ARMOS_INPUT_EVENT_CONFIG) {
+        if (event->code == ARMOS_INPUT_CONFIG_KEYBOARD_LAYOUT &&
+            event->value >= 0 &&
+            (uint32_t)event->value < ARMOS_KEYBOARD_LAYOUT_COUNT &&
+            server->keyboard_layout != (uint32_t)event->value) {
+            server->keyboard_layout = (uint32_t)event->value;
+            (void)wl_server_broadcast_keymap(server);
+        }
+    } else if (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
         event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
         int32_t previous_pointer_x = server->pointer_x;
         int32_t previous_pointer_y = server->pointer_y;

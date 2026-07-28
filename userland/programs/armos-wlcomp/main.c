@@ -11,6 +11,7 @@
  * Responsibilities:
  * - Own the Wayland local socket and accept bounded client connections.
  * - Drive protocol dispatch through the shared Wayland server event loop.
+ * - Own the initial Foot terminal for the lifetime of the graphical session.
  * - Provide a headless mode for deterministic protocol validation.
  * - Support silent supervised startup without writing over shell prompts.
  *
@@ -28,13 +29,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #define WL_SERVER_FRAME_INTERVAL_MS 16
 
+static volatile sig_atomic_t wl_terminal_changed;
+
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
+
+static void wl_server_terminal_signal(int signal_number)
+{
+    (void)signal_number;
+    wl_terminal_changed = 1;
+}
 
 static void wl_server_usage(const char *program)
 {
@@ -139,8 +150,12 @@ static int wl_server_render_event(void *data)
             server->scene_damage_pending = false;
     } else if (server->damage_pending) {
         result = wl_renderer_compose_damage(server);
-    } else {
+    } else if (!server->pointer_presented ||
+               server->presented_pointer_x != server->pointer_x ||
+               server->presented_pointer_y != server->pointer_y) {
         result = wl_renderer_compose_pointer(server);
+    } else {
+        result = 0;
     }
     if (result < 0) {
         server->fatal_error = true;
@@ -187,7 +202,12 @@ static int wl_server_input_event(int fd, uint32_t mask, void *data)
         server->fatal_error = true;
         return -1;
     }
-    if (result > 0 && wl_server_schedule_render(server, false) < 0) {
+    if (result > 0 &&
+        (server->scene_damage_pending || server->damage_pending ||
+         !server->pointer_presented ||
+         server->presented_pointer_x != server->pointer_x ||
+         server->presented_pointer_y != server->pointer_y) &&
+        wl_server_schedule_render(server, false) < 0) {
         server->fatal_error = true;
         return -1;
     }
@@ -219,7 +239,40 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
     return 0;
 }
 
-static int wl_server_run(struct wl_server *server)
+static pid_t wl_server_launch_terminal(void)
+{
+    static char *const argv[] = {"foot", NULL};
+    static char *const envp[] = {
+        "PATH=/sbin:/bin:/usr/bin",
+        "HOME=/home/user",
+        "USER=user",
+        "LOGNAME=user",
+        "LANG=C.UTF-8",
+        "SHELL=/sbin/mash",
+        "MASH_PROTECT=1",
+        "WAYLAND_DISPLAY=wayland-0",
+        "XDG_RUNTIME_DIR=/tmp",
+        NULL
+    };
+    pid_t child = fork();
+
+    if (child != 0)
+        return child;
+
+    if (getuid() == 0 && (setgid(1000) < 0 || setuid(1000) < 0)) {
+        perror("armos-wlcomp: terminal credentials");
+        _exit(126);
+    }
+    if (chdir("/home/user") < 0) {
+        perror("armos-wlcomp: terminal cwd");
+        _exit(126);
+    }
+    execve("/usr/bin/foot", argv, envp);
+    perror("armos-wlcomp: exec /usr/bin/foot");
+    _exit(127);
+}
+
+static int wl_server_run(struct wl_server *server, pid_t *terminal_pid)
 {
     server->event_display = wl_display_create();
     if (!server->event_display)
@@ -242,12 +295,23 @@ static int wl_server_run(struct wl_server *server)
         if (!server->input_source)
             return -1;
     }
-    while (!server->fatal_error) {
+    while (!server->fatal_error && !server->exit_requested) {
+        if (terminal_pid && *terminal_pid > 0 && wl_terminal_changed) {
+            int status;
+            pid_t waited;
+
+            wl_terminal_changed = 0;
+            waited = waitpid(*terminal_pid, &status, WNOHANG);
+            if (waited == *terminal_pid) {
+                *terminal_pid = -1;
+                return 0;
+            }
+        }
         if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
             errno != EINTR)
             return -1;
     }
-    return -1;
+    return server->exit_requested ? 0 : -1;
 }
 
 int main(int argc, char **argv)
@@ -256,6 +320,7 @@ int main(int argc, char **argv)
     const char *socket_path = ARMOS_WLCOMP_SOCKET_PATH;
     bool headless = false;
     bool quiet = false;
+    pid_t terminal_pid = -1;
 
     (void)signal(SIGPIPE, SIG_IGN);
     for (int index = 1; index < argc; index++) {
@@ -290,6 +355,15 @@ int main(int argc, char **argv)
             wl_renderer_destroy(&server.renderer);
             return 1;
         }
+        if (ioctl(server.input_fd, ARMOS_INPUT_GET_KEYMAP,
+                  &server.keyboard_layout) < 0) {
+            perror("armos-wlcomp: keyboard layout");
+            close(server.input_fd);
+            wl_renderer_destroy(&server.renderer);
+            return 1;
+        }
+    } else {
+        server.keyboard_layout = ARMOS_DEFAULT_KEYBOARD_LAYOUT;
     }
     server.listen_fd = wl_server_open_socket(socket_path);
     if (server.listen_fd < 0) {
@@ -314,7 +388,21 @@ int main(int argc, char **argv)
                (unsigned)server.renderer.framebuffer.height,
                headless ? ", headless" : "");
     }
-    if (wl_server_run(&server) < 0)
+    if (!headless) {
+        wl_terminal_changed = 0;
+        if (signal(SIGCHLD, wl_server_terminal_signal) == SIG_ERR) {
+            perror("armos-wlcomp: SIGCHLD");
+            server.fatal_error = true;
+        } else {
+            terminal_pid = wl_server_launch_terminal();
+            if (terminal_pid < 0) {
+                perror("armos-wlcomp: terminal");
+                server.fatal_error = true;
+            }
+        }
+    }
+    if (!server.fatal_error &&
+        wl_server_run(&server, &terminal_pid) < 0)
         perror("armos-wlcomp: event loop");
     for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
         if (server.clients[index].used)
@@ -325,5 +413,12 @@ int main(int argc, char **argv)
     if (server.input_fd >= 0)
         close(server.input_fd);
     wl_renderer_destroy(&server.renderer);
-    return 1;
+    if (terminal_pid > 0) {
+        int status;
+
+        (void)kill(terminal_pid, SIGTERM);
+        while (waitpid(terminal_pid, &status, 0) < 0 && errno == EINTR)
+            ;
+    }
+    return server.fatal_error ? 1 : 0;
 }

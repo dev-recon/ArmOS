@@ -114,6 +114,7 @@ struct flock_kernel {
 #define TIOCGWINSZ  0x5413
 #define TIOCSWINSZ  0x5414
 #define TIOCSCTTY   0x540E
+#include <uapi/armos/input.h>
 
 struct winsize {
     uint16_t ws_row;

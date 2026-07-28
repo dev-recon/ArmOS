@@ -97,6 +97,13 @@ struct wl_server_buffer;
 struct wl_server_surface;
 struct wl_server_client;
 
+struct wl_renderer_rect {
+    int32_t x0;
+    int32_t y0;
+    int32_t x1;
+    int32_t y1;
+};
+
 struct wl_server_data_source {
     bool used;
     uint32_t object_id;
@@ -161,6 +168,7 @@ struct wl_server_surface {
     int32_t subsurface_y;
     struct wl_server_surface *parent;
     struct wl_server_buffer *pending_buffer;
+    struct wl_server_buffer *current_buffer;
     bool pending_attach;
     bool mapped;
     bool opaque;
@@ -171,6 +179,8 @@ struct wl_server_surface {
     uint32_t height;
     uint32_t *pixels;
     size_t pixels_size;
+    size_t pending_damage_count;
+    struct wl_renderer_rect pending_damage[WL_SERVER_MAX_DAMAGE_RECTS];
     char title[WL_SERVER_MAX_TITLE_LENGTH];
     struct wl_server_callback callbacks[WL_SERVER_MAX_CALLBACKS];
 };
@@ -207,13 +217,6 @@ struct wl_server_renderer {
     bool pointer_backing_valid;
 };
 
-struct wl_renderer_rect {
-    int32_t x0;
-    int32_t y0;
-    int32_t x1;
-    int32_t y1;
-};
-
 struct wl_server {
     int listen_fd;
     int input_fd;
@@ -225,6 +228,7 @@ struct wl_server {
     bool render_pending;
     bool scene_damage_pending;
     bool fatal_error;
+    bool exit_requested;
     bool pointer_presented;
     int32_t presented_pointer_x;
     int32_t presented_pointer_y;
@@ -237,6 +241,7 @@ struct wl_server {
     uint32_t pointer_grab_serial;
     uint32_t modifiers_depressed;
     uint32_t modifiers_locked;
+    uint32_t keyboard_layout;
     int32_t drag_offset_x;
     int32_t drag_offset_y;
     bool damage_pending;
@@ -313,8 +318,10 @@ int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);
 int wl_server_handle_input(struct wl_server *server);
-int wl_server_send_keymap(struct wl_server_client *client,
+int wl_server_send_keymap(struct wl_server *server,
+                          struct wl_server_client *client,
                           uint32_t keyboard_id);
+int wl_server_broadcast_keymap(struct wl_server *server);
 int wl_server_bind_output(struct wl_server *server,
                           struct wl_server_client *client,
                           uint32_t output_id, uint32_t version);

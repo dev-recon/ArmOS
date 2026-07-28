@@ -6,7 +6,7 @@
 # never evaluated as shell code.
 
 ARMOS_CONFIG_KEYS="
-TARGET_ARCH TARGET_PLATFORM ARCH CROSS_COMPILE NEWLIB_SYSROOT SMP_CPUS
+TARGET_ARCH TARGET_PLATFORM ARCH CROSS_COMPILE NEWLIB_SYSROOT SMP_CPUS KEYBOARD_LAYOUT
 ENABLE_NET ENABLE_WIFI ENABLE_GPU ENABLE_HDMI ENABLE_ILI9341 ENABLE_USB HDMI_WIDTH HDMI_HEIGHT
 BUILD_NEWLIB BUILD_ALL_USERLAND BUILD_TCC BUILD_BSD BUILD_NCURSES BUILD_NANO BUILD_EPOLL_SHIM BUILD_PIXMAN BUILD_TLLIST BUILD_UTF8PROC BUILD_FREETYPE BUILD_EXPAT BUILD_FONTCONFIG BUILD_HARFBUZZ BUILD_FCFT BUILD_FOOT
 BUILD_XV_DEPS BUILD_FBVIEW BUILD_ZLIB BUILD_LIBJPEG BUILD_LIBPNG BUILD_LIBTIFF
@@ -153,6 +153,15 @@ armos_config_validate() {
 
     armos_config_normalize || return 1
 
+    case "${KEYBOARD_LAYOUT:-us}" in
+        us|us-mac|fr|fr-mac|fr-legacy) ;;
+        *)
+            armos_config_error \
+                "KEYBOARD_LAYOUT expects us, us-mac, fr, fr-mac, or fr-legacy"
+            return 1
+            ;;
+    esac
+
     if [ -n "${TARGET_ARCH:-}" ] && [ -n "${TARGET_PLATFORM:-}" ]; then
         platform_dir="${TARGET_PLATFORM//-/_}"
         [ -f "$root_dir/arch/$TARGET_ARCH/platform/$platform_dir/platform.mk" ] || {
@@ -265,6 +274,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
     TARGET_ARCH="${TARGET_ARCH:-arm32}"
     TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
+    KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
     ENABLE_NET="${ENABLE_NET:-0}"
     ENABLE_WIFI="${ENABLE_WIFI:-0}"
     ENABLE_GPU="${ENABLE_GPU:-0}"

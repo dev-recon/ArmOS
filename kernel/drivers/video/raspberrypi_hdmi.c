@@ -151,9 +151,17 @@ static int hdmi_flush_rect(const uint8_t *framebuffer, uint32_t pitch,
     if (y + height > hdmi.height)
         height = hdmi.height - y;
 
-    for (uint32_t row = 0; row < height; row++) {
-        const uint8_t *start = framebuffer + (y + row) * pitch + x * 4u;
-        arch_clean_dcache_by_mva(start, width * 4u);
+    if (x == 0u && width * 4u == pitch) {
+        const uint8_t *start = framebuffer + y * pitch;
+
+        arch_clean_dcache_by_mva(start, (size_t)height * pitch);
+    } else {
+        for (uint32_t row = 0; row < height; row++) {
+            const uint8_t *start =
+                framebuffer + (y + row) * pitch + x * 4u;
+
+            arch_clean_dcache_by_mva(start, width * 4u);
+        }
     }
     arch_data_sync_barrier();
     return 0;

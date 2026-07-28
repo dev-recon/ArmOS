@@ -22,6 +22,7 @@
 #include <kernel/arch_platform.h>
 #include <kernel/types.h>
 #include <kernel/task.h>
+#include <uapi/armos/input.h>
 
 /* Legacy PL050 keyboard fallback selected by the current platform. */
 #define KBD_BASE        ARMOS_PLATFORM_PL050_KBD_BASE
@@ -51,9 +52,12 @@ typedef struct {
 void init_keyboard(void);
 void keyboard_irq_handler(void);
 void handle_scancode(uint8_t scancode);
-char convert_to_ascii_mac_fr(uint8_t scancode);
+uint32_t keyboard_layout_get(void);
+const char *keyboard_layout_name(uint32_t layout);
+int keyboard_layout_set(uint32_t layout);
+char keyboard_translate_key(uint16_t key, bool shift, bool caps_lock,
+                            bool alternate);
 void add_to_keyboard_buffer(char c);
 char keyboard_getchar(void);
-void keyboard_irq_handler(void);
 
 #endif
