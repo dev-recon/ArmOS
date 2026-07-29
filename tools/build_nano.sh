@@ -13,6 +13,7 @@ CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
 HOST_CC="${HOST_CC:-cc}"
 NANO_VERSION="${NANO_VERSION:-8.7}"
+NANO_PORT_REVISION="${NANO_PORT_REVISION:-2}"
 NANO_URL="${NANO_URL:-https://www.nano-editor.org/dist/v8/nano-$NANO_VERSION.tar.xz}"
 
 WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/nano}"
@@ -49,7 +50,7 @@ if [ ! -f "$SRC_ARCHIVE" ]; then
     curl -L --fail "$NANO_URL" -o "$SRC_ARCHIVE"
 fi
 
-SOURCE_CONTRACT="nano-$NANO_VERSION:$(shasum -a 256 "$SRC_ARCHIVE" | awk '{print $1}')"
+SOURCE_CONTRACT="nano-$NANO_VERSION:$(shasum -a 256 "$SRC_ARCHIVE" | awk '{print $1}'):armos-$NANO_PORT_REVISION"
 if [ ! -f "$SRC_DIR/.armos-source.contract" ] ||
    [ "$(cat "$SRC_DIR/.armos-source.contract")" != "$SOURCE_CONTRACT" ]; then
     rm -rf "$SRC_DIR" "$BUILD_DIR"
@@ -72,6 +73,20 @@ diff --git a/src/winio.c b/src/winio.c
  #ifndef NANO_TINY
  		if (line->has_anchor && (from_col == 0 || !ISSET(SOFTWRAP)))
 PATCH
+
+    # Newlib's sigaction handler is a scalar, so the portable zero
+    # initializer uses one brace level.  This also keeps -Wall builds clean.
+    patch -d "$SRC_DIR" -p1 <<'PATCH'
+diff --git a/src/nano.c b/src/nano.c
+--- a/src/nano.c
++++ b/src/nano.c
+@@ -909 +909 @@ void set_up_sigwinch_handler(void)
+-	struct sigaction deed = {{0}};
++	struct sigaction deed = {0};
+@@ -920 +920 @@ void set_up_signal_handlers(void)
+-	struct sigaction deed = {{0}};
++	struct sigaction deed = {0};
+PATCH
     printf '%s\n' "$SOURCE_CONTRACT" > "$SRC_DIR/.armos-source.contract"
 fi
 
@@ -82,7 +97,9 @@ cd "$BUILD_DIR"
 
 # Keep the first port intentionally small.  nano's configure script comes from
 # gnulib and normally probes a large Unix surface by executing test programs;
-# for ArmOS cross-builds we pin the answers that matter for the tiny profile.
+# for ArmOS cross-builds we pin the answers that matter for the compact
+# profile.  Keep Nano's normal SIGWINCH support: the upstream tiny profile
+# deliberately removes terminal resize handling.
 cat > config.cache <<'CACHE'
 ac_cv_func_chown=yes
 ac_cv_func_fchmod=yes
@@ -149,7 +166,7 @@ cppflags=$NANO_CPPFLAGS
 ldflags=$NANO_LDFLAGS
 libs=$NANO_LIBS
 ncurses=$NCURSES_PREFIX
-args=--cache-file=$BUILD_DIR/config.cache --build=$BUILD_TRIPLET --host=$TARGET_TRIPLET --prefix=/opt/nano --enable-tiny --disable-nls --disable-utf8 --disable-browser --enable-nanorc --enable-linenumbers --enable-color --disable-extra --disable-help --disable-histories --disable-justify --disable-libmagic --disable-multibuffer --disable-operatingdir --disable-speller --disable-tabcomp --disable-wordcomp --disable-wrapping
+args=--cache-file=$BUILD_DIR/config.cache --build=$BUILD_TRIPLET --host=$TARGET_TRIPLET --prefix=/opt/nano --disable-tiny --disable-nls --disable-utf8 --disable-browser --enable-nanorc --enable-linenumbers --enable-color --disable-extra --disable-help --disable-histories --disable-justify --disable-libmagic --disable-multibuffer --disable-operatingdir --disable-speller --disable-tabcomp --disable-wordcomp --disable-wrapping
 EOF
 then
     "$CC" $NANO_CFLAGS -c "$NANO_COMPAT_SRC" \
@@ -167,7 +184,7 @@ then
     --build="$BUILD_TRIPLET" \
     --host="$TARGET_TRIPLET" \
     --prefix=/opt/nano \
-    --enable-tiny \
+    --disable-tiny \
     --disable-nls \
     --disable-utf8 \
     --disable-browser \

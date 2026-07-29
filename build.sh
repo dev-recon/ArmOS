@@ -61,6 +61,7 @@ enable_complete_userland_build()
     BUILD_HARFBUZZ=1
     BUILD_FCFT=1
     BUILD_FOOT=1
+    BUILD_NUKLEAR=1
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -99,6 +100,8 @@ BUILD_FONTCONFIG="${BUILD_FONTCONFIG:-0}"
 BUILD_HARFBUZZ="${BUILD_HARFBUZZ:-0}"
 BUILD_FCFT="${BUILD_FCFT:-0}"
 BUILD_FOOT="${BUILD_FOOT:-0}"
+BUILD_NUKLEAR="${BUILD_NUKLEAR:-0}"
+export BUILD_NUKLEAR
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -198,6 +201,7 @@ USERLAND_CONTRACT="$(
             "target_arch=$TARGET_ARCH" \
             "target_platform=$TARGET_PLATFORM" \
             "keyboard_layout=${KEYBOARD_LAYOUT:-us}" \
+            "build_nuklear=$BUILD_NUKLEAR" \
             "arch=$ARCH" \
             "compiler=$("${ARCH}gcc" --version | head -1)"
         shasum -a 256 "$ROOT_DIR/userland/Makefile"
@@ -225,6 +229,7 @@ make -C userland install \
     USERFS_ROOT="$TARGET_USERFS" \
     NEWLIB_RUNTIME_DIR="$NEWLIB_RUNTIME_DIR" \
     BUILD_NEWLIB="$BUILD_NEWLIB" \
+    BUILD_NUKLEAR="$BUILD_NUKLEAR" \
     ENABLE_TCC="$BUILD_TCC" \
     ARCH="$ARCH" \
     NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
@@ -515,7 +520,10 @@ make platform-kernel ARCH="$ARCH" CROSS_COMPILE="$ARCH" TARGET_ARCH="$TARGET_ARC
 
 echo "=== Recreating disk image ==="
 rm -f disk.img fat32.img ext2.img "build/images/disk-${IMAGE_SUFFIX}.img"
-make platform-disk ARCH="$ARCH" CROSS_COMPILE="$ARCH" TARGET_ARCH="$TARGET_ARCH" TARGET_PLATFORM="$TARGET_PLATFORM" KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
+make platform-disk ARCH="$ARCH" CROSS_COMPILE="$ARCH" \
+    TARGET_ARCH="$TARGET_ARCH" TARGET_PLATFORM="$TARGET_PLATFORM" \
+    KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}" \
+    BUILD_NUKLEAR="$BUILD_NUKLEAR"
 
 echo "=== Validating installed userfs ELF architecture ==="
 TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH" \

@@ -41,6 +41,7 @@
 #include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/shm.h>
+#include <uapi/armos/signal.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/thread.h>
 #include <uapi/armos/time.h>
@@ -321,6 +322,26 @@ int getdtablesize(void)
     return ARMOS_OPEN_MAX;
 }
 
+long fpathconf(int fd, int name)
+{
+    struct stat status;
+
+    if (fstat(fd, &status) < 0)
+        return -1;
+
+    switch (name) {
+    case _PC_PIPE_BUF:
+        return 4096;
+    case _PC_NAME_MAX:
+        return NAME_MAX;
+    case _PC_PATH_MAX:
+        return PATH_MAX;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
+
 char *dirname(char *path)
 {
     static char dot[] = ".";
@@ -347,6 +368,29 @@ char *dirname(char *path)
         slash--;
     *slash = '\0';
     return path;
+}
+
+#ifdef basename
+#undef basename
+#endif
+
+char *basename(char *path)
+{
+    static char dot[] = ".";
+    char *end;
+    char *base;
+
+    if (!path || !*path)
+        return dot;
+
+    end = path + strlen(path);
+    while (end > path + 1 && end[-1] == '/')
+        *--end = '\0';
+
+    base = strrchr(path, '/');
+    if (base == path && path[1] == '\0')
+        return path;
+    return base ? base + 1 : path;
 }
 
 static int passwd_fd = -1;
@@ -603,6 +647,36 @@ static sigset_t sigset_os_to_newlib(uint32_t set)
     }
 
     return out;
+}
+
+static int signal_flags_newlib_to_os(int flags)
+{
+    unsigned int input = (unsigned int)flags;
+    unsigned int output = 0;
+
+    if ((input & (unsigned int)SA_RESTART) != 0 || (input & 0x01u) != 0)
+        output |= ARMOS_SA_RESTART;
+    if ((input & (unsigned int)SA_NODEFER) != 0)
+        output |= ARMOS_SA_NODEFER;
+    if ((input & (unsigned int)SA_RESETHAND) != 0)
+        output |= ARMOS_SA_RESETHAND;
+
+    return (int)output;
+}
+
+static int signal_flags_os_to_newlib(int flags)
+{
+    unsigned int input = (unsigned int)flags;
+    unsigned int output = 0;
+
+    if ((input & ARMOS_SA_RESTART) != 0)
+        output |= (unsigned int)SA_RESTART;
+    if ((input & ARMOS_SA_NODEFER) != 0)
+        output |= (unsigned int)SA_NODEFER;
+    if ((input & ARMOS_SA_RESETHAND) != 0)
+        output |= (unsigned int)SA_RESETHAND;
+
+    return (int)output;
 }
 
 static int wait_status_os_to_newlib(int status)
@@ -1491,6 +1565,43 @@ int execv(const char *pathname, char *const argv[])
     return _execve(pathname, argv, environ);
 }
 
+int execl(const char *pathname, const char *arg0, ...)
+{
+    va_list ap;
+    const char *arg;
+    char **argv;
+    size_t argc = 0;
+    size_t index;
+    int result;
+
+    va_start(ap, arg0);
+    for (arg = arg0; arg; arg = va_arg(ap, const char *))
+        argc++;
+    va_end(ap);
+
+    if (argc > (SIZE_MAX / sizeof(*argv)) - 1) {
+        errno = E2BIG;
+        return -1;
+    }
+
+    argv = malloc((argc + 1) * sizeof(*argv));
+    if (!argv)
+        return -1;
+
+    va_start(ap, arg0);
+    arg = arg0;
+    for (index = 0; index < argc; index++) {
+        argv[index] = (char *)arg;
+        arg = va_arg(ap, const char *);
+    }
+    va_end(ap);
+    argv[argc] = NULL;
+
+    result = execv(pathname, argv);
+    free(argv);
+    return result;
+}
+
 int execvp(const char *file, char *const argv[])
 {
     const char *path;
@@ -2188,7 +2299,7 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
                         act ? (void *)&(struct os_sigaction) {
                             .sa_handler = act->sa_handler,
                             .sa_mask = sigset_newlib_to_os(act->sa_mask),
-                            .sa_flags = act->sa_flags,
+                            .sa_flags = signal_flags_newlib_to_os(act->sa_flags),
                             .sa_restorer = __signal_return_trampoline,
                         } : NULL,
                         oldact ? &os_old : NULL);
@@ -2200,7 +2311,7 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
     if (oldact) {
         oldact->sa_handler = os_old.sa_handler;
         oldact->sa_mask = sigset_os_to_newlib(os_old.sa_mask);
-        oldact->sa_flags = os_old.sa_flags;
+        oldact->sa_flags = signal_flags_os_to_newlib(os_old.sa_flags);
     }
 
     return 0;

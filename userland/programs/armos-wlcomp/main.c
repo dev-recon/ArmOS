@@ -155,9 +155,15 @@ static int wl_server_accept_client(struct wl_server *server)
 {
     struct wl_server_client *client;
     int fd = accept(server->listen_fd, NULL, NULL);
+    int flags;
 
     if (fd < 0)
         return -1;
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
     client = wl_server_free_client(server);
     if (!client) {
         close(fd);
@@ -232,7 +238,9 @@ static int wl_server_render_event(void *data)
         result = wl_renderer_compose_damage(server);
     } else if (!server->pointer_presented ||
                server->presented_pointer_x != server->pointer_x ||
-               server->presented_pointer_y != server->pointer_y) {
+               server->presented_pointer_y != server->pointer_y ||
+               server->presented_pointer_cursor !=
+                   server->pointer_cursor) {
         result = wl_renderer_compose_pointer(server);
     } else {
         result = 0;
@@ -320,7 +328,9 @@ static int wl_server_input_event(int fd, uint32_t mask, void *data)
         (server->scene_damage_pending || server->damage_pending ||
          !server->pointer_presented ||
          server->presented_pointer_x != server->pointer_x ||
-         server->presented_pointer_y != server->pointer_y) &&
+         server->presented_pointer_y != server->pointer_y ||
+         server->presented_pointer_cursor !=
+             server->pointer_cursor) &&
         wl_server_schedule_render(server, false) < 0) {
         server->fatal_error = true;
         return -1;
@@ -343,8 +353,11 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
     }
     if (!client)
         return -1;
-    result = (mask & WL_EVENT_READABLE) != 0u ?
-        wl_server_receive_client(server, client) : -1;
+    result = 0;
+    if ((mask & WL_EVENT_READABLE) != 0u)
+        result = wl_server_receive_client(server, client);
+    if (result >= 0 && (mask & WL_EVENT_WRITABLE) != 0u)
+        result = wl_client_flush_output(client);
     if (result < 0 ||
         (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
         wl_server_disconnect_client(server, client);
@@ -417,7 +430,39 @@ static pid_t wl_server_launch_terminal(void)
     _exit(127);
 }
 
-static int wl_server_run(struct wl_server *server, pid_t *terminal_pid)
+static pid_t wl_server_launch_shell(uint32_t token)
+{
+    static char *const argv[] = {"armos-shell", NULL};
+    char token_environment[48];
+    char *envp[] = {
+        "PATH=/sbin:/bin:/usr/bin",
+        "HOME=/root",
+        "USER=root",
+        "LOGNAME=root",
+        "LANG=C.UTF-8",
+        "WAYLAND_DISPLAY=wayland-0",
+        "XDG_RUNTIME_DIR=/tmp",
+        token_environment,
+        NULL
+    };
+    pid_t child;
+
+    snprintf(token_environment, sizeof(token_environment),
+             "ARMOS_SHELL_TOKEN=%u", (unsigned)token);
+    child = fork();
+    if (child != 0)
+        return child;
+    if (chdir("/") < 0) {
+        perror("armos-wlcomp: shell cwd");
+        _exit(126);
+    }
+    execve("/sbin/armos-shell", argv, envp);
+    perror("armos-wlcomp: exec /sbin/armos-shell");
+    _exit(127);
+}
+
+static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
+                         pid_t *shell_pid)
 {
     server->event_display = wl_display_create();
     if (!server->event_display)
@@ -441,13 +486,20 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid)
             return -1;
     }
     while (!server->fatal_error && !server->exit_requested) {
-        if (terminal_pid && *terminal_pid > 0 && wl_terminal_changed) {
+        if (wl_terminal_changed) {
             int status;
-            pid_t waited;
 
             wl_terminal_changed = 0;
-            waited = waitpid(*terminal_pid, &status, WNOHANG);
-            if (waited == *terminal_pid) {
+            if (shell_pid && *shell_pid > 0 &&
+                waitpid(*shell_pid, &status, WNOHANG) == *shell_pid) {
+                *shell_pid = -1;
+                server->shell_client = NULL;
+                server->panel_height = 0u;
+                (void)wl_server_schedule_render(server, true);
+            }
+            if (terminal_pid && *terminal_pid > 0 &&
+                waitpid(*terminal_pid, &status, WNOHANG) ==
+                    *terminal_pid) {
                 *terminal_pid = -1;
                 return 0;
             }
@@ -467,6 +519,7 @@ int main(int argc, char **argv)
     bool quiet = false;
     bool profile = false;
     pid_t terminal_pid = -1;
+    pid_t shell_pid = -1;
 
     (void)signal(SIGPIPE, SIG_IGN);
     /*
@@ -492,6 +545,11 @@ int main(int argc, char **argv)
     }
 
     memset(&server, 0, sizeof(server));
+    server.shell_token =
+        (uint32_t)wl_monotonic_us() ^ (uint32_t)getpid() ^
+        0xa53c9e17u;
+    if (server.shell_token == 0u)
+        server.shell_token = 1u;
     server.listen_fd = -1;
     server.input_fd = -1;
     for (size_t index = 0; index < WL_SERVER_MAX_CLIENTS; index++)
@@ -551,6 +609,11 @@ int main(int argc, char **argv)
             perror("armos-wlcomp: SIGCHLD");
             server.fatal_error = true;
         } else {
+            shell_pid = wl_server_launch_shell(server.shell_token);
+            if (shell_pid < 0) {
+                perror("armos-wlcomp: shell");
+                server.fatal_error = true;
+            }
             terminal_pid = wl_server_launch_terminal();
             if (terminal_pid < 0) {
                 perror("armos-wlcomp: terminal");
@@ -559,7 +622,7 @@ int main(int argc, char **argv)
         }
     }
     if (!server.fatal_error &&
-        wl_server_run(&server, &terminal_pid) < 0)
+        wl_server_run(&server, &terminal_pid, &shell_pid) < 0)
         perror("armos-wlcomp: event loop");
     for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
         if (server.clients[index].used)
@@ -575,6 +638,13 @@ int main(int argc, char **argv)
 
         (void)kill(terminal_pid, SIGTERM);
         while (waitpid(terminal_pid, &status, 0) < 0 && errno == EINTR)
+            ;
+    }
+    if (shell_pid > 0) {
+        int status;
+
+        (void)kill(shell_pid, SIGTERM);
+        while (waitpid(shell_pid, &status, 0) < 0 && errno == EINTR)
             ;
     }
     return server.fatal_error ? 1 : 0;

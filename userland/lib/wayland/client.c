@@ -29,6 +29,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <armos-shell-client-protocol.h>
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
 
@@ -114,8 +115,12 @@ struct wl_data_source { struct wl_proxy proxy; };
 struct wl_data_device { struct wl_proxy proxy; };
 struct wl_data_offer { struct wl_proxy proxy; };
 struct xdg_wm_base { struct wl_proxy proxy; };
+struct xdg_positioner { struct wl_proxy proxy; };
 struct xdg_surface { struct wl_proxy proxy; };
 struct xdg_toplevel { struct wl_proxy proxy; };
+struct xdg_popup { struct wl_proxy proxy; };
+struct armos_shell_v1 { struct wl_proxy proxy; };
+struct armos_shell_panel_v1 { struct wl_proxy proxy; };
 
 static const struct wl_message wl_compositor_methods[] = {
     {"create_surface", "n", NULL},
@@ -207,6 +212,15 @@ static const struct wl_message xdg_wm_base_methods[] = {
     {"get_xdg_surface", "no", NULL},
     {"pong", "u", NULL},
 };
+static const struct wl_message xdg_positioner_methods[] = {
+    {"destroy", "", NULL},
+    {"set_size", "ii", NULL},
+    {"set_anchor_rect", "iiii", NULL},
+    {"set_anchor", "u", NULL},
+    {"set_gravity", "u", NULL},
+    {"set_constraint_adjustment", "u", NULL},
+    {"set_offset", "ii", NULL},
+};
 static const struct wl_message xdg_surface_methods[] = {
     {"destroy", "", NULL},
     {"get_toplevel", "n", NULL},
@@ -229,6 +243,18 @@ static const struct wl_message xdg_toplevel_methods[] = {
     {"set_fullscreen", "?o", NULL},
     {"unset_fullscreen", "", NULL},
     {"set_minimized", "", NULL},
+};
+static const struct wl_message xdg_popup_methods[] = {
+    {"destroy", "", NULL},
+    {"grab", "ou", NULL},
+};
+static const struct wl_message armos_shell_methods[] = {
+    {"destroy", "", NULL},
+    {"authenticate", "u", NULL},
+    {"get_panel", "noi", NULL},
+};
+static const struct wl_message armos_shell_panel_methods[] = {
+    {"destroy", "", NULL},
 };
 
 const struct wl_interface wl_display_interface = {
@@ -315,12 +341,28 @@ const struct wl_interface xdg_wm_base_interface = {
     "xdg_wm_base", 1, 4, xdg_wm_base_methods, 1, NULL
 };
 
+const struct wl_interface xdg_positioner_interface = {
+    "xdg_positioner", 1, 7, xdg_positioner_methods, 0, NULL
+};
+
 const struct wl_interface xdg_surface_interface = {
     "xdg_surface", 1, 5, xdg_surface_methods, 1, NULL
 };
 
 const struct wl_interface xdg_toplevel_interface = {
     "xdg_toplevel", 1, 14, xdg_toplevel_methods, 2, NULL
+};
+
+const struct wl_interface xdg_popup_interface = {
+    "xdg_popup", 1, 2, xdg_popup_methods, 2, NULL
+};
+
+const struct wl_interface armos_shell_v1_interface = {
+    "armos_shell_v1", 1, 3, armos_shell_methods, 0, NULL
+};
+
+const struct wl_interface armos_shell_panel_v1_interface = {
+    "armos_shell_panel_v1", 1, 1, armos_shell_panel_methods, 2, NULL
 };
 
 static uint32_t wl_load_u32(const uint8_t *data)
@@ -2025,6 +2067,18 @@ void xdg_wm_base_pong(struct xdg_wm_base *xdg_wm_base, uint32_t serial)
                             xdg_wm_base->proxy.id, 3u, &serial, 1u);
 }
 
+struct xdg_positioner *xdg_wm_base_create_positioner(
+    struct xdg_wm_base *xdg_wm_base)
+{
+    if (!xdg_wm_base) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return (struct xdg_positioner *)wl_create_object(
+        &xdg_wm_base->proxy, 1u, sizeof(struct xdg_positioner),
+        &xdg_positioner_interface);
+}
+
 struct xdg_surface *xdg_wm_base_get_xdg_surface(
     struct xdg_wm_base *xdg_wm_base, struct wl_surface *surface)
 {
@@ -2059,6 +2113,77 @@ void xdg_wm_base_destroy(struct xdg_wm_base *xdg_wm_base)
     wl_proxy_destroy(&xdg_wm_base->proxy);
 }
 
+static void xdg_positioner_send_pair(struct xdg_positioner *positioner,
+                                     uint16_t opcode,
+                                     int32_t first, int32_t second)
+{
+    uint32_t words[2] = { (uint32_t)first, (uint32_t)second };
+
+    if (positioner)
+        (void)wl_send_words(positioner->proxy.display,
+                            positioner->proxy.id, opcode, words, 2u);
+}
+
+void xdg_positioner_set_size(struct xdg_positioner *positioner,
+                             int32_t width, int32_t height)
+{
+    xdg_positioner_send_pair(positioner, 1u, width, height);
+}
+
+void xdg_positioner_set_anchor_rect(struct xdg_positioner *positioner,
+                                    int32_t x, int32_t y,
+                                    int32_t width, int32_t height)
+{
+    uint32_t words[4] = {
+        (uint32_t)x, (uint32_t)y, (uint32_t)width, (uint32_t)height
+    };
+
+    if (positioner)
+        (void)wl_send_words(positioner->proxy.display,
+                            positioner->proxy.id, 2u, words, 4u);
+}
+
+static void xdg_positioner_send_value(struct xdg_positioner *positioner,
+                                      uint16_t opcode, uint32_t value)
+{
+    if (positioner)
+        (void)wl_send_words(positioner->proxy.display,
+                            positioner->proxy.id, opcode, &value, 1u);
+}
+
+void xdg_positioner_set_anchor(struct xdg_positioner *positioner,
+                               uint32_t anchor)
+{
+    xdg_positioner_send_value(positioner, 3u, anchor);
+}
+
+void xdg_positioner_set_gravity(struct xdg_positioner *positioner,
+                                uint32_t gravity)
+{
+    xdg_positioner_send_value(positioner, 4u, gravity);
+}
+
+void xdg_positioner_set_constraint_adjustment(
+    struct xdg_positioner *positioner, uint32_t constraint_adjustment)
+{
+    xdg_positioner_send_value(positioner, 5u, constraint_adjustment);
+}
+
+void xdg_positioner_set_offset(struct xdg_positioner *positioner,
+                               int32_t x, int32_t y)
+{
+    xdg_positioner_send_pair(positioner, 6u, x, y);
+}
+
+void xdg_positioner_destroy(struct xdg_positioner *positioner)
+{
+    if (!positioner)
+        return;
+    (void)wl_send_words(positioner->proxy.display,
+                        positioner->proxy.id, 0u, NULL, 0u);
+    wl_proxy_destroy(&positioner->proxy);
+}
+
 int xdg_surface_add_listener(
     struct xdg_surface *xdg_surface,
     const struct xdg_surface_listener *listener, void *data)
@@ -2077,6 +2202,32 @@ struct xdg_toplevel *xdg_surface_get_toplevel(
     return (struct xdg_toplevel *)wl_create_object(
         &xdg_surface->proxy, 1u, sizeof(struct xdg_toplevel),
         &xdg_toplevel_interface);
+}
+
+struct xdg_popup *xdg_surface_get_popup(
+    struct xdg_surface *xdg_surface, struct xdg_surface *parent,
+    struct xdg_positioner *positioner)
+{
+    struct xdg_popup *popup;
+    uint32_t words[3];
+
+    if (!xdg_surface || !positioner) {
+        errno = EINVAL;
+        return NULL;
+    }
+    popup = (struct xdg_popup *)wl_proxy_allocate(
+        &xdg_surface->proxy, sizeof(*popup), &xdg_popup_interface, 1u);
+    if (!popup)
+        return NULL;
+    words[0] = popup->proxy.id;
+    words[1] = parent ? parent->proxy.id : 0u;
+    words[2] = positioner->proxy.id;
+    if (wl_send_words(xdg_surface->proxy.display, xdg_surface->proxy.id,
+                      2u, words, 3u) < 0) {
+        wl_proxy_destroy(&popup->proxy);
+        return NULL;
+    }
+    return popup;
 }
 
 void xdg_surface_set_window_geometry(struct xdg_surface *xdg_surface,
@@ -2212,6 +2363,99 @@ void xdg_toplevel_destroy(struct xdg_toplevel *xdg_toplevel)
     (void)wl_send_words(xdg_toplevel->proxy.display,
                         xdg_toplevel->proxy.id, 0u, NULL, 0u);
     wl_proxy_destroy(&xdg_toplevel->proxy);
+}
+
+int xdg_popup_add_listener(
+    struct xdg_popup *xdg_popup,
+    const struct xdg_popup_listener *listener, void *data)
+{
+    return wl_proxy_add_listener(&xdg_popup->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void xdg_popup_grab(struct xdg_popup *xdg_popup,
+                    struct wl_seat *seat, uint32_t serial)
+{
+    uint32_t words[2];
+
+    if (!xdg_popup || !seat)
+        return;
+    words[0] = ((struct wl_proxy *)seat)->id;
+    words[1] = serial;
+    (void)wl_send_words(xdg_popup->proxy.display,
+                        xdg_popup->proxy.id, 1u, words, 2u);
+}
+
+void xdg_popup_destroy(struct xdg_popup *xdg_popup)
+{
+    if (!xdg_popup)
+        return;
+    (void)wl_send_words(xdg_popup->proxy.display,
+                        xdg_popup->proxy.id, 0u, NULL, 0u);
+    wl_proxy_destroy(&xdg_popup->proxy);
+}
+
+void armos_shell_v1_authenticate(
+    struct armos_shell_v1 *shell, uint32_t token)
+{
+    if (shell)
+        (void)wl_send_words(shell->proxy.display, shell->proxy.id,
+                            1u, &token, 1u);
+}
+
+struct armos_shell_panel_v1 *armos_shell_v1_get_panel(
+    struct armos_shell_v1 *shell, struct wl_surface *surface,
+    int32_t height)
+{
+    struct armos_shell_panel_v1 *panel;
+    uint32_t words[3];
+
+    if (!shell || !surface || height <= 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    panel = (struct armos_shell_panel_v1 *)wl_proxy_allocate(
+        &shell->proxy, sizeof(*panel),
+        &armos_shell_panel_v1_interface, 1u);
+    if (!panel)
+        return NULL;
+    words[0] = panel->proxy.id;
+    words[1] = ((struct wl_proxy *)surface)->id;
+    words[2] = (uint32_t)height;
+    if (wl_send_words(shell->proxy.display, shell->proxy.id,
+                      2u, words, 3u) < 0) {
+        wl_proxy_destroy(&panel->proxy);
+        return NULL;
+    }
+    return panel;
+}
+
+void armos_shell_v1_destroy(struct armos_shell_v1 *shell)
+{
+    if (!shell)
+        return;
+    (void)wl_send_words(shell->proxy.display, shell->proxy.id,
+                        0u, NULL, 0u);
+    wl_proxy_destroy(&shell->proxy);
+}
+
+int armos_shell_panel_v1_add_listener(
+    struct armos_shell_panel_v1 *panel,
+    const struct armos_shell_panel_v1_listener *listener,
+    void *data)
+{
+    return wl_proxy_add_listener(&panel->proxy,
+                                 (void (**)(void))listener, data);
+}
+
+void armos_shell_panel_v1_destroy(
+    struct armos_shell_panel_v1 *panel)
+{
+    if (!panel)
+        return;
+    (void)wl_send_words(panel->proxy.display, panel->proxy.id,
+                        0u, NULL, 0u);
+    wl_proxy_destroy(&panel->proxy);
 }
 
 static struct wl_surface *wl_event_surface(struct wl_display *display,
@@ -2880,6 +3124,58 @@ static int wl_dispatch_xdg_toplevel_event(struct wl_proxy *proxy,
     return -1;
 }
 
+static int wl_dispatch_xdg_popup_event(struct wl_proxy *proxy,
+                                       uint16_t opcode,
+                                       const uint8_t *payload, size_t size)
+{
+    const struct xdg_popup_listener *listener =
+        (const struct xdg_popup_listener *)proxy->listener;
+
+    if (opcode == 0u && size == 16u) {
+        if (listener && listener->configure)
+            listener->configure(
+                proxy->listener_data, (struct xdg_popup *)proxy,
+                (int32_t)wl_load_u32(payload),
+                (int32_t)wl_load_u32(payload + 4u),
+                (int32_t)wl_load_u32(payload + 8u),
+                (int32_t)wl_load_u32(payload + 12u));
+        return 0;
+    }
+    if (opcode == 1u && size == 0u) {
+        if (listener && listener->popup_done)
+            listener->popup_done(proxy->listener_data,
+                                 (struct xdg_popup *)proxy);
+        return 0;
+    }
+    return -1;
+}
+
+static int wl_dispatch_armos_shell_panel_event(
+    struct wl_proxy *proxy, uint16_t opcode,
+    const uint8_t *payload, size_t size)
+{
+    const struct armos_shell_panel_v1_listener *listener =
+        (const struct armos_shell_panel_v1_listener *)proxy->listener;
+
+    if (opcode == 0u && size == 8u) {
+        if (listener && listener->configure)
+            listener->configure(
+                proxy->listener_data,
+                (struct armos_shell_panel_v1 *)proxy,
+                (int32_t)wl_load_u32(payload),
+                (int32_t)wl_load_u32(payload + 4u));
+        return 0;
+    }
+    if (opcode == 1u && size == 0u) {
+        if (listener && listener->closed)
+            listener->closed(
+                proxy->listener_data,
+                (struct armos_shell_panel_v1 *)proxy);
+        return 0;
+    }
+    return -1;
+}
+
 static int wl_dispatch_registry_event(struct wl_proxy *proxy,
                                       uint16_t opcode,
                                       const uint8_t *payload, size_t size)
@@ -3021,6 +3317,11 @@ static int wl_display_dispatch_event(struct wl_display *display,
         result = wl_dispatch_xdg_surface_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &xdg_toplevel_interface)) {
         result = wl_dispatch_xdg_toplevel_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &xdg_popup_interface)) {
+        result = wl_dispatch_xdg_popup_event(proxy, opcode, payload, size);
+    } else if (wl_proxy_is(proxy, &armos_shell_panel_v1_interface)) {
+        result = wl_dispatch_armos_shell_panel_event(
+            proxy, opcode, payload, size);
     } else if (proxy == &display->proxy)
         result = wl_dispatch_display_event(display, opcode, payload, size);
     display->dispatch_event = NULL;

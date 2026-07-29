@@ -23,6 +23,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_PLATFORM="${TARGET_PLATFORM:-qemu-virt}"
 KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}"
+BUILD_NUKLEAR="${BUILD_NUKLEAR:-0}"
 TARGET_BUILD_ROOT="$ROOT_DIR/build/arm64/$TARGET_PLATFORM"
 
 if [ "${ARMOS_BUILD_LOCK_HELD:-0}" != "1" ]; then
@@ -115,6 +116,7 @@ if [ "$CLEAN" -eq 1 ]; then
         TARGET_ARCH=arm64 \
         TARGET_PLATFORM="$TARGET_PLATFORM" \
         KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
+        BUILD_NUKLEAR="$BUILD_NUKLEAR" \
         TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
         ARCH=aarch64-elf- \
         NEWLIB_SYSROOT="$SYSROOT" \
@@ -133,6 +135,7 @@ make -C "$ROOT_DIR/userland" \
     TARGET_ARCH=arm64 \
     TARGET_PLATFORM="$TARGET_PLATFORM" \
     KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
+    BUILD_NUKLEAR="$BUILD_NUKLEAR" \
     TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
     USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
     NEWLIB_RUNTIME_DIR="$TARGET_BUILD_ROOT/newlib-port" \
@@ -145,13 +148,30 @@ OUT_DIR="$TARGET_BUILD_ROOT/userland/out"
 USERFS_DIR="$TARGET_BUILD_ROOT/userfs"
 EXECUTABLES=0
 while IFS= read -r binary; do
+    [ -f "$binary" ] || {
+        echo "error: expected AArch64 userland output is missing: $binary" >&2
+        exit 1
+    }
     if ! aarch64-elf-readelf -h "$binary" | grep -q 'Class:.*ELF64' ||
        ! aarch64-elf-readelf -h "$binary" | grep -q 'Machine:.*AArch64'; then
         echo "error: expected AArch64 ELF64 output was not produced: $binary" >&2
         exit 1
     fi
     EXECUTABLES=$((EXECUTABLES + 1))
-done < <(find "$OUT_DIR" -type f | sort)
+done < <(
+    make -s -C "$ROOT_DIR/userland" \
+        TARGET_ARCH=arm64 \
+        TARGET_PLATFORM="$TARGET_PLATFORM" \
+        KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
+        BUILD_NUKLEAR="$BUILD_NUKLEAR" \
+        TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+        USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
+        NEWLIB_RUNTIME_DIR="$TARGET_BUILD_ROOT/newlib-port" \
+        ARCH=aarch64-elf- \
+        NEWLIB_SYSROOT="$SYSROOT" \
+        NEWLIB_LIBC="$LIBC" \
+        list | sort -u
+)
 
 if [ "$EXECUTABLES" -eq 0 ]; then
     echo "error: no AArch64 userland executable was produced" >&2
@@ -168,7 +188,20 @@ if [ "$INSTALL" -eq 1 ]; then
             echo "error: invalid installed AArch64 executable: $installed" >&2
             exit 1
         fi
-    done < <(find "$OUT_DIR" -type f | sort)
+    done < <(
+        make -s -C "$ROOT_DIR/userland" \
+            TARGET_ARCH=arm64 \
+            TARGET_PLATFORM="$TARGET_PLATFORM" \
+            KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
+            BUILD_NUKLEAR="$BUILD_NUKLEAR" \
+            TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+            USERFS_ROOT="$TARGET_BUILD_ROOT/userfs" \
+            NEWLIB_RUNTIME_DIR="$TARGET_BUILD_ROOT/newlib-port" \
+            ARCH=aarch64-elf- \
+            NEWLIB_SYSROOT="$SYSROOT" \
+            NEWLIB_LIBC="$LIBC" \
+            list | sort -u
+    )
     echo "AArch64 userland installed in target userfs: $EXECUTABLES executables"
 else
     echo "AArch64 userland ready: $EXECUTABLES executables"

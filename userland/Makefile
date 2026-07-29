@@ -48,6 +48,7 @@ NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
 NEWLIB_LIBM ?= $(NEWLIB_SYSROOT)/lib/libm.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
 KEYBOARD_LAYOUT ?= us
+BUILD_NUKLEAR ?= 0
 
 ifeq ($(KEYBOARD_LAYOUT),us)
 KEYBOARD_LAYOUT_ID := 0
@@ -113,13 +114,18 @@ PROGRAMS := $(filter-out wayland-lib-test,$(PROGRAMS))
 # Linked explicitly against the native Wayland client and math libraries.
 PROGRAMS := $(filter-out teapot-demo,$(PROGRAMS))
 
+# Linked explicitly against Nuklear and the native Wayland client.
+PROGRAMS := $(filter-out armui-demo,$(PROGRAMS))
+PROGRAMS := $(filter-out armos-control-center,$(PROGRAMS))
+PROGRAMS := $(filter-out armos-shell,$(PROGRAMS))
+
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
 
 # These tools have their own configure/build flow and are staged by dedicated
 # top-level build switches.  The generic "one directory -> one binary" rule is
 # intentionally too small for them.
-EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs epoll-shim tcc zlib libjpeg libpng libtiff,$(EXTERNALS))
+EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs epoll-shim tcc zlib libjpeg libpng libtiff nuklear,$(EXTERNALS))
 
 ifneq ($(ENABLE_TCC),1)
 PROGRAMS := $(filter-out tcc,$(PROGRAMS))
@@ -171,16 +177,40 @@ WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-te
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
 TEAPOT_DEMO_TARGET := $(OUT_USR_BIN)/teapot-demo
+NUKLEAR_OBJECT := $(BUILD_DIR)/opt/nuklear/src/nuklear.o
+NUKLEAR_LIBRARY := $(OUT_OPT)/nuklear/lib/libnuklear.a
+ARMUI_OBJECT := $(BUILD_DIR)/lib/armui/armui.o
+ARMUI_RENDERER_OBJECT := $(BUILD_DIR)/lib/armui/nuklear_software.o
+ARMUI_APPLICATION_OBJECT := $(BUILD_DIR)/lib/armui/application.o
+ARMUI_LIBRARY := $(OUT_USR_LIB)/libarmui.a
+ARMUI_DEMO_OBJECT := $(BUILD_DIR)/programs/armui-demo/armui-demo.o
+ARMUI_DEMO_TARGET := $(OUT_USR_BIN)/armui-demo
+ARMOS_SERVICES_OBJECT := $(BUILD_DIR)/lib/armos-services/services.o
+ARMOS_SERVICES_LIBRARY := $(OUT_USR_LIB)/libarmos-services.a
+CONTROL_CENTER_OBJECT := \
+	$(BUILD_DIR)/programs/armos-control-center/armos-control-center.o
+CONTROL_CENTER_TARGET := $(OUT_USR_BIN)/armos-control-center
+ARMOS_SHELL_OBJECT := \
+	$(BUILD_DIR)/programs/armos-shell/armos-shell.o
+ARMOS_SHELL_TARGET := $(OUT_SBIN)/armos-shell
 
 TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
-           $(WAYLAND_API_TEST_TARGET) \
-           $(TEAPOT_DEMO_TARGET)
+           $(WAYLAND_API_TEST_TARGET)
+
+ifeq ($(BUILD_NUKLEAR),1)
+TARGETS += $(NUKLEAR_LIBRARY) $(ARMUI_LIBRARY) $(ARMUI_DEMO_TARGET) \
+           $(TEAPOT_DEMO_TARGET) $(ARMOS_SERVICES_LIBRARY) \
+           $(CONTROL_CENTER_TARGET) $(ARMOS_SHELL_TARGET)
+endif
 
 $(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
 # The demo is deliberately CPU-rendered and benefits substantially over -Os.
 $(TEAPOT_DEMO_OBJECT): CFLAGS += -O3
+$(NUKLEAR_OBJECT) $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) $(ARMUI_DEMO_OBJECT) \
+	$(TEAPOT_DEMO_OBJECT): CFLAGS += -Iopt/nuklear/include
 
-.PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
+.PHONY: all clean install check-newlib newlib-port list init mash hello64 \
+	armos-wlcomp armui-demo
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
 # Pattern-generated program objects are final cache entries, not disposable
@@ -218,6 +248,7 @@ init: $(OUT_SBIN)/init
 mash: $(OUT_SBIN)/mash
 hello64: $(OUT_USR_BIN)/hello64
 armos-wlcomp: $(ARMOS_WLCOMP_TARGET)
+armui-demo: $(ARMUI_DEMO_TARGET)
 $(SYSTEM_TOOLS): %: $(OUT_SBIN)/%
 $(COREUTILS): %: $(OUT_BIN)/%
 $(PROGRAMS): %: $(OUT_USR_BIN)/%
@@ -257,6 +288,14 @@ $(BUILD_DIR)/lib/syslog/%.o: lib/syslog/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/armui/%.o: lib/armui/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/armos-services/%.o: lib/armos-services/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
@@ -281,6 +320,19 @@ $(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
+$(NUKLEAR_LIBRARY): $(NUKLEAR_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(ARMUI_LIBRARY): $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) \
+		$(ARMUI_APPLICATION_OBJECT) $(NUKLEAR_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(ARMOS_SERVICES_LIBRARY): $(ARMOS_SERVICES_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
 $(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
@@ -288,11 +340,39 @@ $(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LI
 		$(WAYLAND_SERVER_LIBRARY) $(XKBCOMMON_LIBRARY) \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
+$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
-		$(WAYLAND_CLIENT_LIBRARY) "$(NEWLIB_LIBM)" \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(ARMUI_DEMO_TARGET): $(LINK_DEPS) $(ARMUI_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMUI_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(CONTROL_CENTER_TARGET): $(LINK_DEPS) $(CONTROL_CENTER_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(CONTROL_CENTER_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(ARMOS_SHELL_TARGET): $(LINK_DEPS) $(ARMOS_SHELL_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMOS_SHELL_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
@@ -404,8 +484,42 @@ install: $(TARGETS)
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
+ifeq ($(BUILD_NUKLEAR),1)
 	cp $(TEAPOT_DEMO_TARGET) $(USERFS_USR_BIN)/teapot-demo
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/teapot-demo
+	cp $(ARMUI_DEMO_TARGET) $(USERFS_USR_BIN)/armui-demo
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/armui-demo
+	cp $(CONTROL_CENTER_TARGET) $(USERFS_USR_BIN)/armos-control-center
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/armos-control-center
+	cp $(ARMOS_SHELL_TARGET) $(USERFS_SBIN)/armos-shell
+	$(STRIP) --strip-all $(USERFS_SBIN)/armos-shell
+	mkdir -p $(USERFS_USR_LIB) $(USERFS_ROOT)/usr/include/armui
+	cp $(ARMUI_LIBRARY) $(USERFS_USR_LIB)/libarmui.a
+	cp $(ARMOS_SERVICES_LIBRARY) \
+		$(USERFS_USR_LIB)/libarmos-services.a
+	cp include/armui/armui.h $(USERFS_ROOT)/usr/include/armui/armui.h
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/services.h \
+		$(USERFS_ROOT)/usr/include/armos/services.h
+	cp include/armos-shell-client-protocol.h \
+		$(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
+	mkdir -p $(USERFS_OPT)/nuklear/include $(USERFS_OPT)/nuklear/lib
+	cp opt/nuklear/include/nuklear.h $(USERFS_OPT)/nuklear/include/nuklear.h
+	cp opt/nuklear/include/armos_nuklear_config.h \
+		$(USERFS_OPT)/nuklear/include/armos_nuklear_config.h
+	cp $(NUKLEAR_LIBRARY) $(USERFS_OPT)/nuklear/lib/libnuklear.a
+else
+	rm -f $(USERFS_USR_BIN)/teapot-demo
+	rm -f $(USERFS_USR_BIN)/armui-demo
+	rm -f $(USERFS_USR_BIN)/armos-control-center
+	rm -f $(USERFS_SBIN)/armos-shell
+	rm -f $(USERFS_USR_LIB)/libarmui.a
+	rm -f $(USERFS_USR_LIB)/libarmos-services.a
+	rm -rf $(USERFS_ROOT)/usr/include/armui
+	rm -rf $(USERFS_ROOT)/usr/include/armos
+	rm -f $(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
+	rm -rf $(USERFS_OPT)/nuklear
+endif
 
 clean:
 	rm -rf $(BUILD_DIR)

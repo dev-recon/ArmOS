@@ -5,6 +5,15 @@ the CPU architecture and display controller. The compositor is a normal
 userland process; display, input, shared memory, descriptor passing and process
 isolation remain common kernel services.
 
+Application-facing responsibilities and the two supported application models
+are defined in `docs/GRAPHICAL_APPLICATION_CONTRACT.md`. Terminal applications
+run through Foot and PTYs. Graphical applications use the public ArmUI API and
+its common Wayland backend; demos must not define alternative lifecycle rules.
+
+The ArmUI desktop stack, including transactional pointer input, transient
+popups, the Control Center service boundary and the authenticated system-bar
+role, has been validated as one end-to-end architecture.
+
 ## Architecture
 
 The graphical session is split into three layers:
@@ -26,8 +35,9 @@ VirtIO-GPU framebuffer or Raspberry Pi firmware HDMI framebuffer
 
 `windowserverd` is a small kernel task responsible only for starting and
 reaping the privileged compositor. It executes `/sbin/armos-wlcomp` in a
-regular user address space. The compositor starts `/usr/bin/foot` as the
-initial unprivileged graphical terminal. If the graphical session terminates,
+regular user address space. The compositor starts `/sbin/armos-shell` as its
+authenticated system-bar client and `/usr/bin/foot` as the initial
+unprivileged graphical terminal. If the graphical session terminates,
 the kernel launcher restores console ownership but does not automatically
 restart the compositor.
 
@@ -43,10 +53,16 @@ The current server publishes:
 - `wl_shm`, growable pools and subregion-backed buffers;
 - `wl_seat` with pointer and keyboard input;
 - `wl_output` and `zxdg_output_manager_v1`;
-- `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`;
+- `xdg_wm_base`, `xdg_surface`, `xdg_toplevel`, `xdg_positioner` and
+  `xdg_popup`;
 - `zxdg_decoration_manager_v1` for server-side decorations;
 - `wl_subcompositor` and subsurfaces;
 - `wl_data_device_manager` for the current selection path.
+
+The private `armos_shell_v1` interface is deliberately narrow. A
+per-compositor capability token authorizes one system panel, and the
+compositor alone controls its placement and the reserved desktop work area.
+It is not an application-facing replacement for standard Wayland protocols.
 
 ArmOS also supplies native `libwayland-client`, `libwayland-server` and
 `libwayland-cursor` compatibility libraries. They are sufficient for the
@@ -90,7 +106,9 @@ BUILD_NANO=yes
 
 Nano is installed below `/opt/nano` and exposed as `/usr/bin/nano`. Foot is
 installed as `/usr/bin/foot`; the compositor itself is installed as
-`/sbin/armos-wlcomp`.
+`/sbin/armos-wlcomp`. The ArmUI system bar is installed as
+`/sbin/armos-shell`, while `armos-control-center` is an ordinary
+`/usr/bin` application.
 
 For a manual compositor test:
 
@@ -99,8 +117,9 @@ su
 armos-wlcomp
 ```
 
-The normal graphical boot path starts the compositor and Foot automatically
-when the platform reports a usable display and permits the compositor.
+The normal graphical boot path starts the compositor, system bar and Foot
+automatically when the platform reports a usable display and permits the
+compositor.
 
 ## Platform Status
 

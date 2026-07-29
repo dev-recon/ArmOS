@@ -12,6 +12,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -23,14 +24,15 @@
 #define SHELL_HISTORY_SIZE  128
 #define SHELL_COMPLETION_MAX 64
 #define SHELL_HISTORY_BASENAME ".mash_history"
-#define SHELL_COMMAND_CACHE_MAX 128
+#define SHELL_COMMAND_CACHE_INITIAL 128
 #define SHELL_COMMAND_CACHE_NAME_MAX 80
 
 static char shell_history[SHELL_HISTORY_SIZE][SHELL_BUFFER_SIZE];
 static int shell_history_count = 0;
 static char completion_matches[SHELL_COMPLETION_MAX][80];
-static char command_cache[SHELL_COMMAND_CACHE_MAX][SHELL_COMMAND_CACHE_NAME_MAX];
+static char (*command_cache)[SHELL_COMMAND_CACHE_NAME_MAX];
 static int command_cache_count = 0;
+static int command_cache_capacity = 0;
 static int command_cache_valid = 0;
 static char command_cache_path[SHELL_BUFFER_SIZE];
 static int shell_line_eof = 0;
@@ -438,11 +440,35 @@ static int command_cache_contains(const char* name) {
     return 0;
 }
 
+static int command_cache_reserve(void) {
+    char (*new_cache)[SHELL_COMMAND_CACHE_NAME_MAX];
+    int new_capacity;
+
+    if (command_cache_count < command_cache_capacity)
+        return 0;
+
+    if (command_cache_capacity > INT_MAX / 2)
+        return -1;
+    new_capacity = command_cache_capacity > 0 ?
+        command_cache_capacity * 2 : SHELL_COMMAND_CACHE_INITIAL;
+
+    new_cache = realloc(
+        command_cache, (size_t)new_capacity * sizeof(*command_cache));
+    if (!new_cache)
+        return -1;
+
+    command_cache = new_cache;
+    command_cache_capacity = new_capacity;
+    return 0;
+}
+
 static void command_cache_add(const char* name) {
-    if (!name || !*name || command_cache_count >= SHELL_COMMAND_CACHE_MAX)
+    if (!name || !*name)
         return;
 
     if (command_cache_contains(name))
+        return;
+    if (command_cache_reserve() < 0)
         return;
 
     strncpy(command_cache[command_cache_count], name,

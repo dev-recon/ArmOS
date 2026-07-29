@@ -1501,6 +1501,8 @@ int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, void* t
     }
 
     while (1) {
+        uint32_t generation = task_poll_generation();
+
         ready = select_scan(nfds, read_ptr, write_ptr, read_out, write_out, except_out);
         if (ready < 0)
             return ready;
@@ -1510,7 +1512,9 @@ int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, void* t
             break;
         if (has_pending_signals(task))
             return -EINTR;
-        task_sleep_ms(1);
+        if (task_poll_wait(
+                task, generation, timeout ? deadline : 0u) < 0)
+            return -EINTR;
     }
 
     if (readfds && copy_to_user(readfds, read_out, words * sizeof(uint32_t)) < 0)

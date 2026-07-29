@@ -39,11 +39,15 @@
 #define WL_SERVER_MAX_REGIONS       32u
 #define WL_SERVER_MAX_REGION_RECTS  16u
 #define WL_SERVER_MAX_CALLBACKS     16u
+#define WL_SERVER_MAX_CONFIGURES    16u
 #define WL_SERVER_MAX_DAMAGE_RECTS  16u
 #define WL_SERVER_MAX_RECEIVE       (64u * 1024u)
 #define WL_SERVER_MAX_PENDING_FDS   16u
+#define WL_SERVER_MAX_OUTPUT_BYTES  (128u * 1024u)
+#define WL_SERVER_MAX_OUTPUT_MESSAGES 128u
 #define WL_SERVER_MAX_DATA_SOURCES  8u
 #define WL_SERVER_MAX_DATA_OFFERS   8u
+#define WL_SERVER_MAX_POSITIONERS   16u
 #define WL_SERVER_MAX_MIME_TYPES    8u
 #define WL_SERVER_MAX_MIME_LENGTH   64u
 #define WL_SERVER_MAX_TITLE_LENGTH  96u
@@ -52,6 +56,7 @@
 #define WL_RENDER_TILE_SIZE 32u
 #define WL_RENDER_FRAME_INTERVAL_US 16667u
 #define WL_RENDER_OVERDUE_COALESCE_MS 2
+#define WL_WINDOW_TITLE_HEIGHT 28u
 
 #define WL_DISPLAY_ID 1u
 
@@ -64,6 +69,7 @@
 #define WL_GLOBAL_SUBCOMPOSITOR 7u
 #define WL_GLOBAL_XDG_OUTPUT  8u
 #define WL_GLOBAL_XDG_DECORATION 9u
+#define WL_GLOBAL_ARMOS_SHELL    10u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -93,8 +99,12 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_DATA_DEVICE,
     WL_SERVER_OBJECT_DATA_OFFER,
     WL_SERVER_OBJECT_XDG_WM_BASE,
+    WL_SERVER_OBJECT_XDG_POSITIONER,
     WL_SERVER_OBJECT_XDG_SURFACE,
     WL_SERVER_OBJECT_XDG_TOPLEVEL,
+    WL_SERVER_OBJECT_XDG_POPUP,
+    WL_SERVER_OBJECT_ARMOS_SHELL,
+    WL_SERVER_OBJECT_ARMOS_SHELL_PANEL,
     WL_SERVER_OBJECT_XDG_DECORATION_MANAGER,
     WL_SERVER_OBJECT_XDG_TOPLEVEL_DECORATION
 };
@@ -143,6 +153,22 @@ struct wl_server_data_offer {
     struct wl_server_data_source *source;
 };
 
+struct wl_server_positioner {
+    bool used;
+    uint32_t object_id;
+    int32_t width;
+    int32_t height;
+    int32_t anchor_x;
+    int32_t anchor_y;
+    int32_t anchor_width;
+    int32_t anchor_height;
+    uint32_t anchor;
+    uint32_t gravity;
+    uint32_t constraint_adjustment;
+    int32_t offset_x;
+    int32_t offset_y;
+};
+
 struct wl_server_object {
     uint32_t id;
     uint32_t version;
@@ -180,7 +206,17 @@ enum wl_server_surface_role {
     WL_SERVER_SURFACE_ROLE_NONE = 0,
     WL_SERVER_SURFACE_ROLE_TOPLEVEL,
     WL_SERVER_SURFACE_ROLE_SUBSURFACE,
+    WL_SERVER_SURFACE_ROLE_POPUP,
+    WL_SERVER_SURFACE_ROLE_PANEL,
     WL_SERVER_SURFACE_ROLE_CURSOR
+};
+
+enum wl_server_pointer_cursor {
+    WL_SERVER_POINTER_CURSOR_ARROW = 0,
+    WL_SERVER_POINTER_CURSOR_RESIZE_EW,
+    WL_SERVER_POINTER_CURSOR_RESIZE_NS,
+    WL_SERVER_POINTER_CURSOR_RESIZE_NWSE,
+    WL_SERVER_POINTER_CURSOR_RESIZE_NESW
 };
 
 struct wl_server_surface {
@@ -189,8 +225,12 @@ struct wl_server_surface {
     uint64_t z_order;
     enum wl_server_surface_role role;
     bool subsurface_synchronized;
+    bool subsurface_commit_pending;
+    bool subsurface_position_pending;
     int32_t subsurface_x;
     int32_t subsurface_y;
+    int32_t pending_subsurface_x;
+    int32_t pending_subsurface_y;
     struct wl_server_surface *parent;
     struct wl_server_buffer *pending_buffer;
     struct wl_server_buffer *current_buffer;
@@ -202,17 +242,65 @@ struct wl_server_surface {
     struct wl_server_region_state pending_opaque_region;
     struct wl_server_region_state opaque_region;
     bool server_decorated;
+    bool maximized;
+    bool fullscreen;
+    bool minimized;
+    bool shaded;
+    bool xdg_initial_commit_received;
+    bool xdg_initial_configure_sent;
+    bool xdg_configure_acked;
+    uint32_t xdg_pending_configure_serial;
+    uint32_t xdg_acked_configure_serial;
+    uint32_t xdg_configure_serials[WL_SERVER_MAX_CONFIGURES];
+    size_t xdg_configure_count;
+    bool resize_from_left;
+    bool resize_from_top;
     int32_t x;
     int32_t y;
+    int32_t restore_x;
+    int32_t restore_y;
+    int32_t minimize_restore_x;
+    int32_t minimize_restore_y;
+    int32_t resize_anchor_right;
+    int32_t resize_anchor_bottom;
     uint32_t width;
     uint32_t height;
+    uint32_t restore_width;
+    uint32_t restore_height;
+    uint32_t minimum_width;
+    uint32_t minimum_height;
+    uint32_t maximum_width;
+    uint32_t maximum_height;
     uint32_t *pixels;
     uint32_t pixels_pitch;
     size_t pending_damage_count;
     struct wl_renderer_rect pending_damage[WL_SERVER_MAX_DAMAGE_RECTS];
     char title[WL_SERVER_MAX_TITLE_LENGTH];
+    struct wl_server_callback pending_callbacks[WL_SERVER_MAX_CALLBACKS];
     struct wl_server_callback callbacks[WL_SERVER_MAX_CALLBACKS];
 };
+
+static inline bool wl_surface_is_child_role(
+    const struct wl_server_surface *surface)
+{
+    return surface &&
+        (surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE ||
+         surface->role == WL_SERVER_SURFACE_ROLE_POPUP);
+}
+
+struct wl_server_outgoing {
+    struct wl_server_outgoing *next;
+    size_t size;
+    size_t offset;
+    int fd;
+    uint8_t data[];
+};
+
+static inline bool wl_surface_has_server_decoration(
+    const struct wl_server_surface *surface)
+{
+    return surface && surface->server_decorated && !surface->fullscreen;
+}
 
 struct wl_server_client {
     bool used;
@@ -224,7 +312,12 @@ struct wl_server_client {
     size_t receive_length;
     int pending_fds[WL_SERVER_MAX_PENDING_FDS];
     size_t pending_fd_count;
+    struct wl_server_outgoing *output_head;
+    struct wl_server_outgoing *output_tail;
+    size_t output_bytes;
+    size_t output_messages;
     uint32_t next_server_id;
+    bool shell_authenticated;
     struct wl_server_object objects[WL_SERVER_MAX_OBJECTS];
     struct wl_server_pool pools[WL_SERVER_MAX_POOLS];
     struct wl_server_buffer buffers[WL_SERVER_MAX_BUFFERS];
@@ -232,6 +325,7 @@ struct wl_server_client {
     struct wl_server_region regions[WL_SERVER_MAX_REGIONS];
     struct wl_server_data_source data_sources[WL_SERVER_MAX_DATA_SOURCES];
     struct wl_server_data_offer data_offers[WL_SERVER_MAX_DATA_OFFERS];
+    struct wl_server_positioner positioners[WL_SERVER_MAX_POSITIONERS];
 };
 
 struct wl_server_renderer {
@@ -277,18 +371,31 @@ struct wl_server {
     bool pointer_presented;
     int32_t presented_pointer_x;
     int32_t presented_pointer_y;
+    enum wl_server_pointer_cursor presented_pointer_cursor;
     uint32_t serial;
     uint32_t next_surface_position;
     uint64_t next_surface_z;
     int32_t pointer_x;
     int32_t pointer_y;
+    enum wl_server_pointer_cursor pointer_cursor;
     bool pointer_left;
     uint32_t pointer_grab_serial;
     uint32_t modifiers_depressed;
     uint32_t modifiers_locked;
     uint32_t keyboard_layout;
+    uint32_t shell_token;
+    uint32_t panel_height;
     int32_t drag_offset_x;
     int32_t drag_offset_y;
+    uint32_t resize_edges;
+    int32_t resize_pointer_x;
+    int32_t resize_pointer_y;
+    int32_t resize_x;
+    int32_t resize_y;
+    uint32_t resize_width;
+    uint32_t resize_height;
+    uint32_t resize_initial_width;
+    uint32_t resize_initial_height;
     bool damage_pending;
     uint64_t profile_started_us;
     uint64_t profile_render_us;
@@ -299,7 +406,10 @@ struct wl_server {
     struct wl_server_surface *pointer_surface;
     struct wl_server_client *drag_client;
     struct wl_server_surface *drag_surface;
+    struct wl_server_client *resize_client;
+    struct wl_server_surface *resize_surface;
     struct wl_server_client *selection_client;
+    struct wl_server_client *shell_client;
     struct wl_server_data_source *selection_source;
     struct wl_server_renderer renderer;
     struct wl_server_client clients[WL_SERVER_MAX_CLIENTS];
@@ -315,6 +425,7 @@ int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
 int wl_client_send_fd_words(struct wl_server_client *client,
                             uint32_t object_id, uint16_t opcode,
                             const uint32_t *words, size_t word_count, int fd);
+int wl_client_flush_output(struct wl_server_client *client);
 int wl_client_send_string(struct wl_server_client *client,
                           uint32_t object_id, uint16_t opcode,
                           const char *text);
@@ -341,6 +452,12 @@ int wl_client_take_fd(struct wl_server_client *client);
 int wl_server_dispatch_message(struct wl_server *server,
                                struct wl_server_client *client,
                                const uint8_t *message, size_t size);
+int wl_server_configure_toplevel(struct wl_server *server,
+    struct wl_server_client *client, struct wl_server_surface *surface,
+    uint32_t width, uint32_t height, uint32_t state);
+int wl_server_set_surface_minimized(struct wl_server *server,
+    struct wl_server_client *client, struct wl_server_surface *surface,
+    bool minimized);
 void wl_server_drop_client_selection(struct wl_server *server,
                                      struct wl_server_client *client);
 int wl_server_receive_client(struct wl_server *server,
@@ -383,6 +500,7 @@ int wl_surface_commit(struct wl_server *server,
                       struct wl_server_surface *surface);
 int wl_surface_release_buffer(struct wl_server_client *client,
                               struct wl_server_surface *surface);
+void wl_client_reclaim_shm(struct wl_server_client *client);
 int wl_server_handle_input(struct wl_server *server);
 int wl_server_send_keymap(struct wl_server *server,
                           struct wl_server_client *client,

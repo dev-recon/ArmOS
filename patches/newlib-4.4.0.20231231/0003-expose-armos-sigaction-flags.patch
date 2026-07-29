@@ -1,0 +1,19 @@
+diff --git a/newlib/libc/include/sys/signal.h b/newlib/libc/include/sys/signal.h
+--- a/newlib/libc/include/sys/signal.h
++++ b/newlib/libc/include/sys/signal.h
+@@ -120,6 +120,15 @@ struct sigaction
+ 
+ #define SA_NOCLDSTOP 1  /* only value supported now for sa_flags */
+ 
++/*
++ * POSIX signal-action flags used by ArmOS.  Keep the public values distinct
++ * from SA_NOCLDSTOP; the ArmOS newlib syscall adapter translates them to the
++ * stable, compact kernel ABI representation.
++ */
++#define SA_RESTART    0x10000000
++#define SA_NODEFER    0x40000000
++#define SA_RESETHAND  0x80000000
++
+ typedef void (*_sig_func_ptr)(int);
+ 
+ struct sigaction 

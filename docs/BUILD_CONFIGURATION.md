@@ -206,6 +206,7 @@ BUILD_FONTCONFIG=no
 BUILD_HARFBUZZ=no
 BUILD_FCFT=no
 BUILD_FOOT=no
+BUILD_NUKLEAR=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -227,7 +228,11 @@ installed in ArmOS; TCC can consume the library but does not build it.
 `BUILD_FCFT=yes` installs fcft 2.5.1 with HarfBuzz and utf8proc shaping for
 Foot. `BUILD_FOOT=yes` cross-builds Foot 1.9.2 with the maintained ArmOS
 portability patch and generates its Wayland protocol bindings below the
-target-specific build tree. `BUILD_ALL_USERLAND=yes` enables the
+target-specific build tree. `BUILD_NUKLEAR=yes` builds the pinned Nuklear
+library under `/opt/nuklear`, installs its public header for TCC, and includes
+the native `armui-demo` Wayland client. It also installs the first-party,
+engine-independent `/usr/lib/libarmui.a` and `<armui/armui.h>` interface;
+Nuklear types remain private to its implementation. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
 
