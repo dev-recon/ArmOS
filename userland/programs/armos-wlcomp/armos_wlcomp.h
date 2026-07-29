@@ -36,6 +36,8 @@
 #define WL_SERVER_MAX_POOLS         16u
 #define WL_SERVER_MAX_BUFFERS       64u
 #define WL_SERVER_MAX_SURFACES      32u
+#define WL_SERVER_MAX_REGIONS       32u
+#define WL_SERVER_MAX_REGION_RECTS  16u
 #define WL_SERVER_MAX_CALLBACKS     16u
 #define WL_SERVER_MAX_DAMAGE_RECTS  16u
 #define WL_SERVER_MAX_RECEIVE       (64u * 1024u)
@@ -45,8 +47,11 @@
 #define WL_SERVER_MAX_MIME_TYPES    8u
 #define WL_SERVER_MAX_MIME_LENGTH   64u
 #define WL_SERVER_MAX_TITLE_LENGTH  96u
+#define WL_SERVER_CLIENT_DISPATCH_BUDGET 8u
 
 #define WL_RENDER_TILE_SIZE 32u
+#define WL_RENDER_FRAME_INTERVAL_US 16667u
+#define WL_RENDER_OVERDUE_COALESCE_MS 2
 
 #define WL_DISPLAY_ID 1u
 
@@ -98,12 +103,30 @@ struct wl_server_pool;
 struct wl_server_buffer;
 struct wl_server_surface;
 struct wl_server_client;
+struct wl_server;
 
 struct wl_renderer_rect {
     int32_t x0;
     int32_t y0;
     int32_t x1;
     int32_t y1;
+};
+
+struct wl_server_region_state {
+    size_t rect_count;
+    struct wl_renderer_rect rects[WL_SERVER_MAX_REGION_RECTS];
+};
+
+struct wl_server_region {
+    bool used;
+    uint32_t object_id;
+    struct wl_server_region_state state;
+};
+
+struct wl_render_profile {
+    uint64_t fill_pixels;
+    uint64_t copy_pixels;
+    uint64_t blend_pixels;
 };
 
 struct wl_server_data_source {
@@ -174,13 +197,17 @@ struct wl_server_surface {
     bool pending_attach;
     bool mapped;
     bool opaque;
+    bool buffer_held;
+    bool pending_opaque_region_set;
+    struct wl_server_region_state pending_opaque_region;
+    struct wl_server_region_state opaque_region;
     bool server_decorated;
     int32_t x;
     int32_t y;
     uint32_t width;
     uint32_t height;
     uint32_t *pixels;
-    size_t pixels_size;
+    uint32_t pixels_pitch;
     size_t pending_damage_count;
     struct wl_renderer_rect pending_damage[WL_SERVER_MAX_DAMAGE_RECTS];
     char title[WL_SERVER_MAX_TITLE_LENGTH];
@@ -191,6 +218,8 @@ struct wl_server_client {
     bool used;
     int fd;
     struct wl_event_source *event_source;
+    struct wl_event_source *dispatch_idle;
+    struct wl_server *server;
     uint8_t receive[WL_SERVER_MAX_RECEIVE];
     size_t receive_length;
     int pending_fds[WL_SERVER_MAX_PENDING_FDS];
@@ -200,6 +229,7 @@ struct wl_server_client {
     struct wl_server_pool pools[WL_SERVER_MAX_POOLS];
     struct wl_server_buffer buffers[WL_SERVER_MAX_BUFFERS];
     struct wl_server_surface surfaces[WL_SERVER_MAX_SURFACES];
+    struct wl_server_region regions[WL_SERVER_MAX_REGIONS];
     struct wl_server_data_source data_sources[WL_SERVER_MAX_DATA_SOURCES];
     struct wl_server_data_offer data_offers[WL_SERVER_MAX_DATA_OFFERS];
 };
@@ -241,6 +271,7 @@ struct wl_server {
     struct wl_event_source *render_timer;
     bool render_pending;
     bool scene_damage_pending;
+    uint64_t next_frame_us;
     bool fatal_error;
     bool exit_requested;
     bool pointer_presented;
@@ -314,6 +345,8 @@ void wl_server_drop_client_selection(struct wl_server *server,
                                      struct wl_server_client *client);
 int wl_server_receive_client(struct wl_server *server,
                              struct wl_server_client *client);
+int wl_server_dispatch_client_pending(struct wl_server *server,
+                                      struct wl_server_client *client);
 void wl_server_disconnect_client(struct wl_server *server,
                                  struct wl_server_client *client);
 
@@ -328,6 +361,10 @@ void wl_render_blend_rect(uint32_t *destination, uint32_t destination_pitch,
                           const uint32_t *source, uint32_t source_pitch,
                           uint32_t width, uint32_t height);
 uint32_t wl_render_blend_pixel(uint32_t destination, uint32_t source);
+void wl_render_profile_set_enabled(bool enabled);
+void wl_render_profile_take(struct wl_render_profile *profile);
+void wl_render_arch_blend(uint32_t *destination, const uint32_t *source,
+                          size_t pixels);
 int wl_renderer_backend_present_rect(
     struct wl_server_renderer *renderer, int32_t x, int32_t y,
     uint32_t width, uint32_t height);
@@ -344,6 +381,8 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);
+int wl_surface_release_buffer(struct wl_server_client *client,
+                              struct wl_server_surface *surface);
 int wl_server_handle_input(struct wl_server *server);
 int wl_server_send_keymap(struct wl_server *server,
                           struct wl_server_client *client,

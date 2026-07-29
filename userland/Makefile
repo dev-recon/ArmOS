@@ -143,9 +143,14 @@ INIT_SRCS := $(wildcard system/init/*.c)
 INIT_OBJECTS := $(patsubst system/init/%.c,$(BUILD_DIR)/system/init/%.o,$(INIT_SRCS))
 HELLO64_SRCS := $(wildcard programs/hello64/*.c)
 HELLO64_OBJECTS := $(patsubst programs/hello64/%.c,$(BUILD_DIR)/programs/hello64/%.o,$(HELLO64_SRCS))
-ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c)
+ARMOS_WLCOMP_ARCH_SRCS := \
+	programs/armos-wlcomp/arch/$(TARGET_ARCH)/render_simd.c
+ARMOS_WLCOMP_SRCS := $(wildcard programs/armos-wlcomp/*.c) \
+	$(ARMOS_WLCOMP_ARCH_SRCS)
 ARMOS_WLCOMP_OBJECTS := $(patsubst programs/armos-wlcomp/%.c,$(BUILD_DIR)/programs/armos-wlcomp/%.o,$(ARMOS_WLCOMP_SRCS))
 $(ARMOS_WLCOMP_OBJECTS): programs/armos-wlcomp/armos_wlcomp.h
+$(BUILD_DIR)/programs/armos-wlcomp/arch/$(TARGET_ARCH)/render_simd.o: \
+	programs/armos-wlcomp/arch/render_simd_impl.h
 # Software composition is a per-pixel hot path on Raspberry Pi.
 $(ARMOS_WLCOMP_OBJECTS): CFLAGS += -O3
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o

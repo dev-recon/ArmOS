@@ -36,11 +36,22 @@
 #include <time.h>
 #include <unistd.h>
 
-#define WL_SERVER_FRAME_INTERVAL_MS 16
-
 static volatile sig_atomic_t wl_terminal_changed;
 
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
+
+static void wl_server_client_dispatch_idle(void *data);
+
+static int wl_server_defer_client_dispatch(struct wl_server_client *client)
+{
+    if (!client || !client->server)
+        return -1;
+    if (client->dispatch_idle)
+        return 0;
+    client->dispatch_idle = wl_event_loop_add_idle(
+        client->server->event_loop, wl_server_client_dispatch_idle, client);
+    return client->dispatch_idle ? 0 : -1;
+}
 
 static uint64_t wl_monotonic_us(void)
 {
@@ -56,6 +67,7 @@ static void wl_server_profile_frame(struct wl_server *server,
                                     uint64_t started_us)
 {
     struct wl_server_renderer *renderer = &server->renderer;
+    struct wl_render_profile primitives;
     uint64_t now_us;
     uint64_t compose_us;
 
@@ -70,17 +82,22 @@ static void wl_server_profile_frame(struct wl_server *server,
         server->profile_started_us = now_us;
     if (now_us - server->profile_started_us < 1000000u)
         return;
+    wl_render_profile_take(&primitives);
     compose_us = server->profile_render_us;
     if (compose_us >= renderer->profile_present_us)
         compose_us -= renderer->profile_present_us;
     fprintf(stderr,
             "WLPROFILE frames=%llu compose_avg_us=%llu "
-            "present_avg_us=%llu present_pixels=%llu\n",
+            "present_avg_us=%llu present_pixels=%llu "
+            "fill_pixels=%llu copy_pixels=%llu blend_pixels=%llu\n",
             (unsigned long long)server->profile_frames,
             (unsigned long long)(compose_us / server->profile_frames),
             (unsigned long long)(renderer->profile_present_us /
                                  server->profile_frames),
-            (unsigned long long)renderer->profile_present_pixels);
+            (unsigned long long)renderer->profile_present_pixels,
+            (unsigned long long)primitives.fill_pixels,
+            (unsigned long long)primitives.copy_pixels,
+            (unsigned long long)primitives.blend_pixels);
     server->profile_started_us = now_us;
     server->profile_render_us = 0u;
     server->profile_frames = 0u;
@@ -150,6 +167,7 @@ static int wl_server_accept_client(struct wl_server *server)
     memset(client, 0, sizeof(*client));
     client->used = true;
     client->fd = fd;
+    client->server = server;
     client->next_server_id = 0xff000000u;
     if (wl_client_add_object(client, WL_DISPLAY_ID, WL_SERVER_OBJECT_DISPLAY,
                              1u, NULL) < 0) {
@@ -228,11 +246,30 @@ static int wl_server_render_event(void *data)
         return -1;
     }
     wl_server_profile_frame(server, started_us);
+    {
+        uint64_t now_us = wl_monotonic_us();
+
+        if (now_us != 0u) {
+            if (server->next_frame_us == 0u)
+                server->next_frame_us =
+                    now_us + WL_RENDER_FRAME_INTERVAL_US;
+            else {
+                do {
+                    server->next_frame_us +=
+                        WL_RENDER_FRAME_INTERVAL_US;
+                } while (server->next_frame_us <= now_us);
+            }
+        }
+    }
     return 0;
 }
 
 int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
 {
+    uint64_t now_us;
+    uint64_t delay_us;
+    int delay_ms;
+
     if (!server || !server->render_timer)
         return -1;
     if (scene_damage)
@@ -240,8 +277,22 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
     if (server->render_pending)
         return 0;
     server->render_pending = true;
-    if (wl_event_source_timer_update(server->render_timer,
-                                     WL_SERVER_FRAME_INTERVAL_MS) < 0) {
+    now_us = wl_monotonic_us();
+    if (now_us == 0u || server->next_frame_us == 0u ||
+        now_us >= server->next_frame_us) {
+        /*
+         * Keep a short batching window even after a missed deadline. An
+         * immediate timer can otherwise run between two clients becoming
+         * readable, causing separate Foot and animated-client compositions.
+         * This retains the old input/damage coalescing property without
+         * reintroducing a cumulative 16 ms delay.
+         */
+        delay_ms = WL_RENDER_OVERDUE_COALESCE_MS;
+    } else {
+        delay_us = server->next_frame_us - now_us;
+        delay_ms = (int)((delay_us + 999u) / 1000u);
+    }
+    if (wl_event_source_timer_update(server->render_timer, delay_ms) < 0) {
         server->render_pending = false;
         return -1;
     }
@@ -281,6 +332,7 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
 {
     struct wl_server *server = data;
     struct wl_server_client *client = NULL;
+    int result;
 
     for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
         if (server->clients[index].used &&
@@ -291,8 +343,9 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
     }
     if (!client)
         return -1;
-    if ((mask & WL_EVENT_READABLE) == 0u ||
-        wl_server_receive_client(server, client) < 0 ||
+    result = (mask & WL_EVENT_READABLE) != 0u ?
+        wl_server_receive_client(server, client) : -1;
+    if (result < 0 ||
         (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
         wl_server_disconnect_client(server, client);
         /*
@@ -306,7 +359,29 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
                     "armos-wlcomp: cannot schedule client removal repaint\n");
         return 0;
     }
+    if (result > 0 && wl_server_defer_client_dispatch(client) < 0) {
+        wl_server_disconnect_client(server, client);
+        return 0;
+    }
     return 0;
+}
+
+static void wl_server_client_dispatch_idle(void *data)
+{
+    struct wl_server_client *client = data;
+    struct wl_server *server;
+    int result;
+
+    if (!client || !client->used || !(server = client->server))
+        return;
+    client->dispatch_idle = NULL;
+    result = wl_server_dispatch_client_pending(server, client);
+    if (result < 0) {
+        wl_server_disconnect_client(server, client);
+        return;
+    }
+    if (result > 0 && wl_server_defer_client_dispatch(client) < 0)
+        wl_server_disconnect_client(server, client);
 }
 
 static pid_t wl_server_launch_terminal(void)
@@ -425,8 +500,6 @@ int main(int argc, char **argv)
         perror("armos-wlcomp: renderer");
         return 1;
     }
-    server.renderer.profile_enabled =
-        profile || getenv("ARMOS_WL_PROFILE") != NULL;
     server.pointer_x = (int32_t)server.renderer.framebuffer.width / 2;
     server.pointer_y = (int32_t)server.renderer.framebuffer.height / 2;
     if (!headless) {
@@ -462,6 +535,9 @@ int main(int argc, char **argv)
         wl_renderer_destroy(&server.renderer);
         return 1;
     }
+    server.renderer.profile_enabled =
+        profile || getenv("ARMOS_WL_PROFILE") != NULL;
+    wl_render_profile_set_enabled(server.renderer.profile_enabled);
 
     if (!quiet) {
         printf("armos-wlcomp: ready on %s (%ux%u%s)\n", socket_path,

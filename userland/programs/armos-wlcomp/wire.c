@@ -371,6 +371,46 @@ static int wl_client_queue_control_fds(struct wl_server_client *client,
     return 0;
 }
 
+int wl_server_dispatch_client_pending(struct wl_server *server,
+                                      struct wl_server_client *client)
+{
+    size_t dispatched = 0u;
+
+    if (!server || !client)
+        return -1;
+    while (client->receive_length >= WL_WIRE_HEADER_SIZE &&
+           dispatched < WL_SERVER_CLIENT_DISPATCH_BUDGET) {
+        uint32_t header = wl_wire_u32(client->receive + 4);
+        uint32_t size = header >> 16;
+
+        if (size < WL_WIRE_HEADER_SIZE || (size & 3u) != 0 ||
+            size > sizeof(client->receive))
+            return -1;
+        if (client->receive_length < size)
+            return 0;
+        if (wl_server_dispatch_message(server, client, client->receive,
+                                       size) < 0)
+            return -1;
+        client->receive_length -= size;
+        if (client->receive_length > 0) {
+            memmove(client->receive, client->receive + size,
+                    client->receive_length);
+        }
+        dispatched++;
+    }
+    if (client->receive_length >= WL_WIRE_HEADER_SIZE) {
+        uint32_t header = wl_wire_u32(client->receive + 4);
+        uint32_t size = header >> 16;
+
+        if (size < WL_WIRE_HEADER_SIZE || (size & 3u) != 0 ||
+            size > sizeof(client->receive))
+            return -1;
+        if (client->receive_length >= size)
+            return 1;
+    }
+    return 0;
+}
+
 int wl_server_receive_client(struct wl_server *server,
                              struct wl_server_client *client)
 {
@@ -378,9 +418,14 @@ int wl_server_receive_client(struct wl_server *server,
     struct iovec iov;
     struct msghdr message;
     ssize_t count;
+    int pending;
 
-    if (!server || !client ||
-        client->receive_length >= sizeof(client->receive))
+    if (!server || !client)
+        return -1;
+    pending = wl_server_dispatch_client_pending(server, client);
+    if (pending != 0)
+        return pending;
+    if (client->receive_length >= sizeof(client->receive))
         return -1;
 
     memset(&message, 0, sizeof(message));
@@ -402,25 +447,7 @@ int wl_server_receive_client(struct wl_server *server,
         return -1;
     client->receive_length += (size_t)count;
 
-    while (client->receive_length >= WL_WIRE_HEADER_SIZE) {
-        uint32_t header = wl_wire_u32(client->receive + 4);
-        uint32_t size = header >> 16;
-
-        if (size < WL_WIRE_HEADER_SIZE || (size & 3u) != 0 ||
-            size > sizeof(client->receive))
-            return -1;
-        if (client->receive_length < size)
-            break;
-        if (wl_server_dispatch_message(server, client, client->receive,
-                                       size) < 0)
-            return -1;
-        client->receive_length -= size;
-        if (client->receive_length > 0) {
-            memmove(client->receive, client->receive + size,
-                    client->receive_length);
-        }
-    }
-    return 0;
+    return wl_server_dispatch_client_pending(server, client);
 }
 
 void wl_server_disconnect_client(struct wl_server *server,
@@ -459,10 +486,6 @@ void wl_server_disconnect_client(struct wl_server *server,
             }
         }
     }
-    for (size_t index = 0; index < WL_SERVER_MAX_SURFACES; index++) {
-        free(client->surfaces[index].pixels);
-        client->surfaces[index].pixels = NULL;
-    }
     for (size_t index = 0; index < WL_SERVER_MAX_POOLS; index++) {
         if (!client->pools[index].used)
             continue;
@@ -479,6 +502,10 @@ void wl_server_disconnect_client(struct wl_server *server,
     if (client->event_source) {
         (void)wl_event_source_remove(client->event_source);
         client->event_source = NULL;
+    }
+    if (client->dispatch_idle) {
+        (void)wl_event_source_remove(client->dispatch_idle);
+        client->dispatch_idle = NULL;
     }
     if (client->fd >= 0)
         close(client->fd);

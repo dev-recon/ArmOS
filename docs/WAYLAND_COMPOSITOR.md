@@ -145,12 +145,45 @@ opaque spans and tiles: opaque spans are copied directly, and adjacent tiles
 with the same visibility are composed as one horizontal run instead of
 invoking the complete renderer for every 32x32 area.
 
+ARM32 and ARM64 builds now select an architecture-local 128-bit integer
+backend for genuinely translucent spans. Opaque copy and repeated-row fill
+continue through newlib's optimized `memcpy`, which is faster for those
+memory-bound operations. The scene renderer only calls the common primitive
+contract; NEON/ASIMD selection remains in the userland build and architecture
+directories. Scalar tails keep arbitrary clipping and window sizes valid.
+Generated window shadows iterate only their visible bottom and right bands;
+they no longer scan the covered window interior merely to reject its pixels.
+
+Frame scheduling uses an absolute 60 Hz deadline. Damage arriving after a
+missed deadline receives a 2 ms coalescing window instead of paying another
+fixed 16 ms delay. This lets commits from Foot and animated clients join the
+same presentation when they become runnable together. Input is still drained
+before every composition, so keyboard release events remain independent from
+graphical pacing.
+
+Core `wl_region` state is retained and `wl_surface.set_opaque_region` becomes
+effective on the following surface commit. Declared opaque terminal content
+can therefore participate in tile occlusion and direct copies without an
+expensive per-pixel alpha scan. Client wire dispatch is also bounded per event
+loop turn; large bursts from Foot are resumed through idle callbacks so they
+cannot starve another client or an expired frame timer.
+
+Committed SHM buffers are now retained as the surface backing store instead of
+being copied into a private full-size allocation. The compositor releases the
+previous `wl_buffer` when a replacement is attached, after which the client may
+reuse it. Composition therefore performs one SHM-to-canvas transfer rather
+than an upload followed by a second transfer. Buffer pitch and pool remapping
+remain explicit, and the protocol/backend split is unchanged.
+
 The next performance milestone is to measure the remaining time separately in
-surface upload, tile composition and backend presentation after mapped
-presentation. Large Raspberry Pi operations may then use DMA above a measured
-size threshold, with cache maintenance and a CPU fallback kept inside the
-platform backend. QEMU should instead batch VirtIO-GPU transfer and flush
-rectangles.
+tile composition and backend presentation after mapped presentation.
+`armos-wlcomp --profile` reports whole-frame and presentation time plus fill,
+copy and blend pixel counts. Primitive-local timestamps are deliberately
+avoided: dozens of `clock_gettime` system calls per tiled frame measurably
+distorted Raspberry Pi performance. Large Raspberry Pi operations may then use
+DMA above a measured size threshold, with cache maintenance and a CPU fallback
+kept inside the platform backend. QEMU should instead batch VirtIO-GPU transfer
+and flush rectangles.
 
 Native VC4/V3D composition is a later backend milestone. It must not move
 Wayland policy into Raspberry-specific code: the common compositor will retain

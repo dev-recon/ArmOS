@@ -38,6 +38,7 @@
 #define WINDOW_HEIGHT 360
 #define PIXEL_COUNT ((size_t)WINDOW_WIDTH * WINDOW_HEIGHT)
 #define BUFFER_BYTES ((int32_t)(PIXEL_COUNT * sizeof(uint32_t)))
+#define BUFFER_COUNT 2u
 
 #define PATCH_STEPS       5
 #define MAX_TRIANGLES   1800
@@ -99,14 +100,15 @@ struct app {
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
     struct wl_shm_pool *pool;
-    struct wl_buffer *buffer;
+    struct wl_buffer *buffers[BUFFER_COUNT];
     struct wl_callback *frame_callback;
+    uint32_t *mapping;
     uint32_t *pixels;
     float *depth;
     int shm_fd;
     int configured;
     int frame_ready;
-    int buffer_busy;
+    int buffer_busy[BUFFER_COUNT];
     int closed;
     float yaw;
     float pitch;
@@ -591,8 +593,12 @@ static void buffer_release(void *data, struct wl_buffer *buffer)
 {
     struct app *app = data;
 
-    (void)buffer;
-    app->buffer_busy = 0;
+    for (size_t index = 0u; index < BUFFER_COUNT; index++) {
+        if (app->buffers[index] == buffer) {
+            app->buffer_busy[index] = 0;
+            return;
+        }
+    }
 }
 
 static const struct wl_buffer_listener buffer_listener = {
@@ -619,14 +625,22 @@ static const struct wl_callback_listener frame_listener = {
 static int present_frame(struct app *app)
 {
     uint64_t render_started_us;
+    size_t buffer_index;
 
-    if (!app->configured || !app->frame_ready || app->buffer_busy)
+    if (!app->configured || !app->frame_ready)
+        return 0;
+    for (buffer_index = 0u; buffer_index < BUFFER_COUNT; buffer_index++) {
+        if (!app->buffer_busy[buffer_index])
+            break;
+    }
+    if (buffer_index == BUFFER_COUNT)
         return 0;
 
     usleep(16000u);
     app->yaw += app->yaw_speed;
     app->pitch += app->pitch_speed;
     app->pitch_speed *= 0.92f;
+    app->pixels = app->mapping + buffer_index * PIXEL_COUNT;
     render_started_us = app->profile_enabled ? monotonic_us() : 0u;
     render_frame(app);
     profile_frame(app, render_started_us);
@@ -637,8 +651,8 @@ static int present_frame(struct app *app)
                                  &frame_listener, app) < 0)
         return -1;
     app->frame_ready = 0;
-    app->buffer_busy = 1;
-    wl_surface_attach(app->surface, app->buffer, 0, 0);
+    app->buffer_busy[buffer_index] = 1;
+    wl_surface_attach(app->surface, app->buffers[buffer_index], 0, 0);
     wl_surface_damage_buffer(app->surface, 0, 0,
                              WINDOW_WIDTH, WINDOW_HEIGHT);
     wl_surface_commit(app->surface);
@@ -887,28 +901,37 @@ static int create_window(struct app *app)
     snprintf(shm_name, sizeof(shm_name), "/teapot-demo-%d", getpid());
     app->shm_fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (app->shm_fd < 0 || shm_unlink(shm_name) < 0 ||
-        ftruncate(app->shm_fd, BUFFER_BYTES) < 0)
+        ftruncate(app->shm_fd, BUFFER_COUNT * BUFFER_BYTES) < 0)
         return -1;
-    app->pixels = mmap(NULL, BUFFER_BYTES, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, app->shm_fd, 0);
-    if (app->pixels == MAP_FAILED)
+    app->mapping = mmap(NULL, BUFFER_COUNT * BUFFER_BYTES,
+                        PROT_READ | PROT_WRITE, MAP_SHARED,
+                        app->shm_fd, 0);
+    if (app->mapping == MAP_FAILED)
         return -1;
-    app->pool = wl_shm_create_pool(app->shm, app->shm_fd, BUFFER_BYTES);
-    app->buffer = app->pool ? wl_shm_pool_create_buffer(
-        app->pool, 0, WINDOW_WIDTH, WINDOW_HEIGHT,
-        WINDOW_WIDTH * (int32_t)sizeof(uint32_t),
-        WL_SHM_FORMAT_XRGB8888) : NULL;
-    if (!app->buffer ||
-        wl_buffer_add_listener(app->buffer, &buffer_listener, app) < 0)
+    app->pool = wl_shm_create_pool(
+        app->shm, app->shm_fd, BUFFER_COUNT * BUFFER_BYTES);
+    if (!app->pool)
         return -1;
+    for (size_t index = 0u; index < BUFFER_COUNT; index++) {
+        app->buffers[index] = wl_shm_pool_create_buffer(
+            app->pool, (int32_t)(index * BUFFER_BYTES),
+            WINDOW_WIDTH, WINDOW_HEIGHT,
+            WINDOW_WIDTH * (int32_t)sizeof(uint32_t),
+            WL_SHM_FORMAT_XRGB8888);
+        if (!app->buffers[index] ||
+            wl_buffer_add_listener(app->buffers[index],
+                                   &buffer_listener, app) < 0)
+            return -1;
+    }
 
     app->depth = malloc(PIXEL_COUNT * sizeof(float));
     if (!app->depth)
         return -1;
 
+    app->pixels = app->mapping;
     render_frame(app);
-    app->buffer_busy = 1;
-    wl_surface_attach(app->surface, app->buffer, 0, 0);
+    app->buffer_busy[0] = 1;
+    wl_surface_attach(app->surface, app->buffers[0], 0, 0);
     wl_surface_damage_buffer(app->surface, 0, 0,
                              WINDOW_WIDTH, WINDOW_HEIGHT);
     wl_surface_commit(app->surface);
@@ -929,12 +952,14 @@ static void destroy_app(struct app *app)
         xdg_surface_destroy(app->xdg_surface);
     if (app->surface)
         wl_surface_destroy(app->surface);
-    if (app->buffer)
-        wl_buffer_destroy(app->buffer);
+    for (size_t index = 0u; index < BUFFER_COUNT; index++) {
+        if (app->buffers[index])
+            wl_buffer_destroy(app->buffers[index]);
+    }
     if (app->pool)
         wl_shm_pool_destroy(app->pool);
-    if (app->pixels && app->pixels != MAP_FAILED)
-        munmap(app->pixels, BUFFER_BYTES);
+    if (app->mapping && app->mapping != MAP_FAILED)
+        munmap(app->mapping, BUFFER_COUNT * BUFFER_BYTES);
     if (app->shm_fd >= 0)
         close(app->shm_fd);
     if (app->wm_base)

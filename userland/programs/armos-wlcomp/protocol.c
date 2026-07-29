@@ -15,7 +15,7 @@
  *
  * Notes:
  * - wl_seat exposes the common ArmOS pointer and keyboard event stream.
- * - Damage and region requests are accepted but full-surface redraw is used.
+ * - Damage and opaque-region state are applied transactionally on commit.
  */
 
 #include "armos_wlcomp.h"
@@ -123,6 +123,20 @@ static struct wl_server_pool *wl_allocate_pool(
             client->pools[index].used = true;
             client->pools[index].fd = -1;
             return &client->pools[index];
+        }
+    }
+    return NULL;
+}
+
+static struct wl_server_region *wl_allocate_region(
+    struct wl_server_client *client)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_REGIONS; index++) {
+        if (!client->regions[index].used) {
+            memset(&client->regions[index], 0,
+                   sizeof(client->regions[index]));
+            client->regions[index].used = true;
+            return &client->regions[index];
         }
     }
     return NULL;
@@ -629,11 +643,20 @@ static int wl_dispatch_compositor(struct wl_server *server,
         return 0;
     }
     if (opcode == 1u) {
+        struct wl_server_region *region = wl_allocate_region(client);
+
+        if (!region)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                    "region limit reached");
+        region->object_id = new_id;
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_REGION,
-                                 1u, NULL) < 0)
+                                 1u, region) < 0) {
+            memset(region, 0, sizeof(*region));
             return wl_protocol_fail(client, object->id,
                                     WL_PROTOCOL_ERROR_INVALID_OBJECT,
                                     "invalid region object id");
+        }
         return 0;
     }
     return wl_protocol_fail(client, object->id,
@@ -785,12 +808,81 @@ static int wl_dispatch_region(struct wl_server_client *client,
                               struct wl_server_object *object,
                               uint16_t opcode, struct wl_request *request)
 {
+    struct wl_server_region *region = object->resource;
+
+    if (!region || !region->used)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                "invalid wl_region");
     if (opcode == 0u && wl_request_complete(request)) {
+        memset(region, 0, sizeof(*region));
         wl_client_remove_object(client, object->id, true);
         return 0;
     }
     if ((opcode == 1u || opcode == 2u) && request->size == 16u) {
-        request->cursor = request->size;
+        uint32_t raw_x;
+        uint32_t raw_y;
+        uint32_t raw_width;
+        uint32_t raw_height;
+        int32_t x;
+        int32_t y;
+        int32_t width;
+        int32_t height;
+        int64_t x1;
+        int64_t y1;
+
+        if (wl_request_u32(request, &raw_x) < 0 ||
+            wl_request_u32(request, &raw_y) < 0 ||
+            wl_request_u32(request, &raw_width) < 0 ||
+            wl_request_u32(request, &raw_height) < 0 ||
+            !wl_request_complete(request))
+            return -1;
+        x = (int32_t)raw_x;
+        y = (int32_t)raw_y;
+        width = (int32_t)raw_width;
+        height = (int32_t)raw_height;
+        x1 = (int64_t)x + width;
+        y1 = (int64_t)y + height;
+        if (width <= 0 || height <= 0 ||
+            x1 < INT32_MIN || x1 > INT32_MAX ||
+            y1 < INT32_MIN || y1 > INT32_MAX)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "invalid wl_region rectangle");
+        if (opcode == 1u) {
+            struct wl_renderer_rect incoming = {
+                .x0 = x,
+                .y0 = y,
+                .x1 = (int32_t)x1,
+                .y1 = (int32_t)y1
+            };
+
+            /*
+             * Keep rectangles independent. Replacing two overlapping
+             * rectangles by their bounding box could incorrectly classify
+             * uncovered corner pixels as opaque.
+             */
+            if (region->state.rect_count < WL_SERVER_MAX_REGION_RECTS)
+                region->state.rects[region->state.rect_count++] = incoming;
+        } else {
+            /*
+             * Subtraction is conservative for opacity: discard intersecting
+             * rectangles. This may miss an optimization, but can never mark
+             * translucent pixels opaque.
+             */
+            size_t output = 0u;
+
+            for (size_t index = 0u;
+                 index < region->state.rect_count; index++) {
+                struct wl_renderer_rect rect =
+                    region->state.rects[index];
+
+                if (x >= rect.x1 || x1 <= rect.x0 ||
+                    y >= rect.y1 || y1 <= rect.y0)
+                    region->state.rects[output++] = rect;
+            }
+            region->state.rect_count = output;
+        }
         return 0;
     }
     return wl_protocol_fail(client, object->id,
@@ -871,7 +963,7 @@ static int wl_pool_create_buffer(struct wl_server_client *client,
         wl_request_u32(request, &stride) < 0 ||
         wl_request_u32(request, &format) < 0 ||
         !wl_request_complete(request) || width == 0u || height == 0u ||
-        stride < width * 4u ||
+        stride < width * 4u || (stride & 3u) != 0u ||
         (format != WL_SHM_FORMAT_ARGB8888 &&
          format != WL_SHM_FORMAT_XRGB8888))
         return wl_protocol_fail(client, object->id,
@@ -939,6 +1031,16 @@ static int wl_dispatch_pool(struct wl_server_client *client,
         munmap(pool->mapping, pool->size);
         pool->mapping = mapping;
         pool->size = size;
+        for (size_t index = 0u;
+             index < WL_SERVER_MAX_SURFACES; index++) {
+            struct wl_server_surface *surface = &client->surfaces[index];
+            struct wl_server_buffer *buffer = surface->current_buffer;
+
+            if (!surface->used || !buffer || buffer->pool != pool)
+                continue;
+            surface->pixels = (uint32_t *)(void *)(
+                pool->mapping + buffer->offset);
+        }
         return 0;
     }
     return wl_protocol_fail(client, object->id,
@@ -1144,7 +1246,8 @@ static int wl_dispatch_surface(struct wl_server *server,
                 role->resource == surface)
                 role->resource = NULL;
         }
-        free(surface->pixels);
+        if (wl_surface_release_buffer(client, surface) < 0)
+            return -1;
         memset(surface, 0, sizeof(*surface));
         wl_client_remove_object(client, object->id, true);
         return wl_renderer_compose(server);
@@ -1183,6 +1286,7 @@ static int wl_dispatch_surface(struct wl_server *server,
         return wl_surface_add_callback(client, object, surface, request);
     if ((opcode == 4u || opcode == 5u) && request->size == 4u) {
         uint32_t region_id;
+        struct wl_server_region *region_state = NULL;
 
         if (wl_request_u32(request, &region_id) < 0)
             return -1;
@@ -1194,6 +1298,19 @@ static int wl_dispatch_surface(struct wl_server *server,
                 return wl_protocol_fail(client, object->id,
                                         WL_PROTOCOL_ERROR_INVALID_OBJECT,
                                         "unknown wl_region");
+            region_state = region->resource;
+            if (!region_state || !region_state->used)
+                return wl_protocol_fail(client, object->id,
+                                        WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                        "invalid wl_region");
+        }
+        if (opcode == 4u) {
+            surface->pending_opaque_region_set = true;
+            if (region_state)
+                surface->pending_opaque_region = region_state->state;
+            else
+                memset(&surface->pending_opaque_region, 0,
+                       sizeof(surface->pending_opaque_region));
         }
         return 0;
     }

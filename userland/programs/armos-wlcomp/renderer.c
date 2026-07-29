@@ -329,35 +329,56 @@ static void wl_renderer_shadow_ring(
     int32_t x, int32_t y, uint32_t width, uint32_t height,
     uint32_t radius, int32_t inner_x, int32_t inner_y,
     uint32_t inner_width, uint32_t inner_height,
-    uint32_t inner_radius, uint32_t color)
+    uint32_t color)
 {
     uint32_t column0;
     uint32_t row0;
     uint32_t column1;
     uint32_t row1;
+    uint32_t right_column;
+    uint32_t bottom_row;
+    int32_t right_offset;
+    int32_t bottom_offset;
 
     if (!wl_renderer_local_clip(renderer, x, y, width, height,
                                 &column0, &row0, &column1, &row1))
         return;
-    for (uint32_t row = row0; row < row1; row++) {
-        for (uint32_t column = column0; column < column1; column++) {
-            int32_t screen_x = x + (int32_t)column;
-            int32_t screen_y = y + (int32_t)row;
-            bool shadow_side =
-                screen_x >= inner_x + (int32_t)inner_width ||
-                screen_y >= inner_y + (int32_t)inner_height;
-            bool hidden_by_window =
-                screen_x >= inner_x && screen_y >= inner_y &&
-                screen_x < inner_x + (int32_t)inner_width &&
-                screen_y < inner_y + (int32_t)inner_height &&
-                wl_point_in_rounded_rect(
-                    (uint32_t)(screen_x - inner_x),
-                    (uint32_t)(screen_y - inner_y),
-                    inner_width, inner_height, inner_radius);
 
-            if (shadow_side && !hidden_by_window &&
-                wl_point_in_rounded_rect(column, row, width, height, radius))
-                wl_renderer_put_pixel(renderer, screen_x, screen_y, color);
+    right_offset = inner_x + (int32_t)inner_width - x;
+    if (right_offset <= (int32_t)column0)
+        right_column = column0;
+    else if (right_offset >= (int32_t)column1)
+        right_column = column1;
+    else
+        right_column = (uint32_t)right_offset;
+    bottom_offset = inner_y + (int32_t)inner_height - y;
+    if (bottom_offset <= (int32_t)row0)
+        bottom_row = row0;
+    else if (bottom_offset >= (int32_t)row1)
+        bottom_row = row1;
+    else
+        bottom_row = (uint32_t)bottom_offset;
+
+    /* Right band, including the bottom-right corner. */
+    for (uint32_t row = row0; row < row1; row++) {
+        for (uint32_t column = right_column;
+             column < column1; column++) {
+            if (wl_point_in_rounded_rect(
+                    column, row, width, height, radius))
+                wl_renderer_put_pixel(
+                    renderer, x + (int32_t)column,
+                    y + (int32_t)row, color);
+        }
+    }
+    /* Bottom band stops before the right band to avoid blending twice. */
+    for (uint32_t row = bottom_row; row < row1; row++) {
+        for (uint32_t column = column0;
+             column < right_column; column++) {
+            if (wl_point_in_rounded_rect(
+                    column, row, width, height, radius))
+                wl_renderer_put_pixel(
+                    renderer, x + (int32_t)column,
+                    y + (int32_t)row, color);
         }
     }
 }
@@ -480,9 +501,20 @@ static bool wl_renderer_surface_clip_opaque(
     source_y0 = (uint32_t)(renderer->clip_y0 - content_y);
     width = (uint32_t)(renderer->clip_x1 - renderer->clip_x0);
     height = (uint32_t)(renderer->clip_y1 - renderer->clip_y0);
+    for (size_t index = 0u;
+         index < surface->opaque_region.rect_count; index++) {
+        const struct wl_renderer_rect *rect =
+            &surface->opaque_region.rects[index];
+
+        if (rect->x0 <= (int32_t)source_x0 &&
+            rect->y0 <= (int32_t)source_y0 &&
+            rect->x1 >= (int32_t)(source_x0 + width) &&
+            rect->y1 >= (int32_t)(source_y0 + height))
+            return true;
+    }
     for (uint32_t row = 0u; row < height; row++) {
         const uint32_t *source = surface->pixels +
-            (size_t)(source_y0 + row) * surface->width + source_x0;
+            (size_t)(source_y0 + row) * surface->pixels_pitch + source_x0;
 
         for (uint32_t column = 0u; column < width; column++) {
             if ((source[column] >> 24) != 255u)
@@ -550,7 +582,6 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
                 frame_width + spread * 2u, frame_height + spread * 2u,
                 WL_WINDOW_RADIUS + spread,
                 surface->x, surface->y, frame_width, frame_height,
-                WL_WINDOW_RADIUS,
                 (alpha << 24));
         }
         wl_renderer_rounded_rect(renderer, surface->x, surface->y,
@@ -601,17 +632,19 @@ draw_content:
                 (uint32_t)(content_y + source_y0) * canvas_width +
                 (uint32_t)(content_x + source_x0);
             const uint32_t *source = surface->pixels +
-                (size_t)(uint32_t)source_y0 * surface->width +
+                (size_t)(uint32_t)source_y0 * surface->pixels_pitch +
                 (uint32_t)source_x0;
             uint32_t width = (uint32_t)(source_x1 - source_x0);
             uint32_t height = (uint32_t)(source_y1 - source_y0);
 
             if (surface->opaque || opaque_clip)
                 wl_render_copy_rect(destination, canvas_width,
-                                    source, surface->width, width, height);
+                                    source, surface->pixels_pitch,
+                                    width, height);
             else
                 wl_render_blend_rect(destination, canvas_width,
-                                     source, surface->width, width, height);
+                                     source, surface->pixels_pitch,
+                                     width, height);
         }
     }
 }
@@ -1152,23 +1185,18 @@ static bool wl_surface_clip_local_damage(
     return damage->x0 < damage->x1 && damage->y0 < damage->y1;
 }
 
-static void wl_surface_copy_damage(
-    struct wl_server_surface *surface,
-    const struct wl_server_buffer *buffer,
-    const struct wl_renderer_rect *damage)
+int wl_surface_release_buffer(struct wl_server_client *client,
+                              struct wl_server_surface *surface)
 {
-    size_t row_bytes =
-        (size_t)(damage->x1 - damage->x0) * sizeof(uint32_t);
+    struct wl_server_buffer *buffer;
 
-    for (int32_t y = damage->y0; y < damage->y1; y++) {
-        const uint8_t *source = buffer->pool->mapping + buffer->offset +
-            (size_t)y * buffer->stride +
-            (size_t)damage->x0 * sizeof(uint32_t);
-        uint32_t *destination = surface->pixels +
-            (size_t)y * surface->width + (size_t)damage->x0;
-
-        memcpy(destination, source, row_bytes);
-    }
+    if (!client || !surface || !surface->buffer_held)
+        return 0;
+    buffer = surface->current_buffer;
+    surface->buffer_held = false;
+    if (!buffer || !buffer->object_alive)
+        return 0;
+    return wl_client_send_words(client, buffer->object_id, 0u, NULL, 0u);
 }
 
 int wl_surface_commit(struct wl_server *server,
@@ -1181,19 +1209,26 @@ int wl_surface_commit(struct wl_server *server,
     bool previous_mapped;
     bool content_changed;
     bool full_copy;
-    bool newly_attached;
     bool callback_pending = false;
     bool previous_origin_valid = false;
     int32_t previous_origin_x = 0;
     int32_t previous_origin_y = 0;
     int32_t content_x = 0;
     int32_t content_y = 0;
+    struct wl_server_buffer *previous_buffer;
 
     if (!server || !client || !surface)
         return -1;
     previous_width = surface->width;
     previous_height = surface->height;
     previous_mapped = surface->mapped;
+    previous_buffer = surface->current_buffer;
+    if (surface->pending_opaque_region_set) {
+        surface->opaque_region = surface->pending_opaque_region;
+        surface->pending_opaque_region_set = false;
+        memset(&surface->pending_opaque_region, 0,
+               sizeof(surface->pending_opaque_region));
+    }
     if (previous_mapped) {
         if (surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
             previous_origin_valid =
@@ -1206,7 +1241,6 @@ int wl_surface_commit(struct wl_server *server,
             previous_origin_valid = true;
         }
     }
-    newly_attached = surface->pending_attach;
     content_changed = surface->pending_attach ||
         surface->pending_damage_count != 0u;
     buffer = surface->pending_attach ?
@@ -1215,11 +1249,15 @@ int wl_surface_commit(struct wl_server *server,
     if (surface->pending_attach) {
         surface->pending_attach = false;
         surface->pending_buffer = NULL;
+        if (previous_buffer && previous_buffer != buffer &&
+            wl_surface_release_buffer(client, surface) < 0)
+            return -1;
         surface->current_buffer = buffer;
+        if (buffer && buffer != previous_buffer)
+            surface->buffer_held = true;
         if (!buffer) {
-            free(surface->pixels);
             surface->pixels = NULL;
-            surface->pixels_size = 0;
+            surface->pixels_pitch = 0u;
             surface->mapped = false;
             surface->opaque = false;
             surface->width = 0;
@@ -1227,60 +1265,22 @@ int wl_surface_commit(struct wl_server *server,
         }
     }
     if (buffer && content_changed) {
-        uint64_t pixel_bytes =
-            (uint64_t)buffer->width * buffer->height * 4u;
-        uint32_t *copy;
         bool same_extent;
 
-        if (!wl_surface_buffer_valid(buffer) ||
-            pixel_bytes > (uint64_t)SIZE_MAX)
+        if (!wl_surface_buffer_valid(buffer))
             return -1;
         same_extent = previous_mapped &&
             previous_width == buffer->width &&
             previous_height == buffer->height;
-        if (surface->pixels_size != (size_t)pixel_bytes) {
-            copy = realloc(surface->pixels, (size_t)pixel_bytes);
-            if (!copy)
-                return -1;
-            surface->pixels = copy;
-            surface->pixels_size = (size_t)pixel_bytes;
-        } else {
-            copy = surface->pixels;
-        }
         surface->width = buffer->width;
         surface->height = buffer->height;
+        surface->pixels = (uint32_t *)(void *)(
+            buffer->pool->mapping + buffer->offset);
+        surface->pixels_pitch = buffer->stride / sizeof(uint32_t);
         if (!same_extent)
             full_copy = true;
-        if (full_copy &&
-            buffer->stride == buffer->width * sizeof(uint32_t)) {
-            memcpy(copy, buffer->pool->mapping + buffer->offset,
-                   (size_t)pixel_bytes);
-        } else if (full_copy) {
-            for (uint32_t y = 0; y < buffer->height; y++) {
-                const uint8_t *source = buffer->pool->mapping +
-                    buffer->offset + (size_t)y * buffer->stride;
-                uint32_t *destination =
-                    copy + (size_t)y * buffer->width;
-
-                memcpy(destination, source,
-                       (size_t)buffer->width * sizeof(uint32_t));
-            }
-        } else {
-            for (size_t index = 0u;
-                 index < surface->pending_damage_count; index++) {
-                struct wl_renderer_rect damage =
-                    surface->pending_damage[index];
-
-                if (wl_surface_clip_local_damage(surface, &damage))
-                    wl_surface_copy_damage(surface, buffer, &damage);
-            }
-        }
         surface->mapped = true;
         surface->opaque = buffer->format == WL_SHM_FORMAT_XRGB8888;
-        if (newly_attached && buffer->object_alive) {
-            (void)wl_client_send_words(client, buffer->object_id, 0,
-                                       NULL, 0);
-        }
     }
 
     if (content_changed) {
