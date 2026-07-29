@@ -268,6 +268,87 @@ static int hdmi_scroll_up(uint32_t rows, uint32_t clear_color,
     return 0;
 }
 
+static int hdmi_get_present_buffers(display_present_buffers_t *buffers)
+{
+    uint32_t visible_size;
+    uint32_t count;
+
+    if (!hdmi_ready || !buffers)
+        return -ENODEV;
+    visible_size = hdmi.pitch * hdmi.height;
+    count = hdmi.virtual_height / hdmi.height;
+    if (!visible_size || count == 0u)
+        return -ENOTSUP;
+
+    /*
+     * Console scrolling may leave the firmware at a line-granular offset.
+     * Normalize it before exposing page-sized scanout buffers to userspace.
+     */
+    if (hdmi_offset_y % hdmi.height != 0u) {
+        memmove(hdmi_allocation_virtual, hdmi.virtual_address, visible_size);
+        arch_clean_dcache_by_mva(hdmi_allocation_virtual, visible_size);
+        arch_data_sync_barrier();
+        if (!hdmi_set_virtual_offset(0u))
+            return -EIO;
+        hdmi_offset_y = 0u;
+        hdmi.physical = hdmi_allocation_physical;
+        hdmi.virtual_address = hdmi_allocation_virtual;
+    }
+
+    buffers->physical = hdmi_allocation_physical;
+    buffers->virtual_address = hdmi_allocation_virtual;
+    buffers->buffer_size = visible_size;
+    buffers->buffer_count = count;
+    buffers->front_buffer = hdmi_offset_y / hdmi.height;
+    return 0;
+}
+
+static int hdmi_present_buffer(uint32_t buffer_index,
+                               uint32_t x, uint32_t y,
+                               uint32_t width, uint32_t height,
+                               display_backend_mode_t *mode)
+{
+    uint32_t visible_size;
+    uint32_t count;
+    uint32_t offset_y;
+    uint8_t *buffer;
+
+    if (!hdmi_ready || !mode)
+        return -ENODEV;
+    visible_size = hdmi.pitch * hdmi.height;
+    count = hdmi.virtual_height / hdmi.height;
+    if (buffer_index >= count || x >= hdmi.width || y >= hdmi.height ||
+        width > hdmi.width - x || height > hdmi.height - y)
+        return -EINVAL;
+
+    offset_y = buffer_index * hdmi.height;
+    buffer = hdmi_allocation_virtual + buffer_index * visible_size;
+    if (x == 0u && width * 4u == hdmi.pitch) {
+        arch_clean_dcache_by_mva(buffer + y * hdmi.pitch,
+                                 (size_t)height * hdmi.pitch);
+    } else {
+        arch_clean_dcache_2d_by_mva(
+            buffer + y * hdmi.pitch + x * 4u,
+            hdmi.pitch, width * 4u, height);
+    }
+    arch_data_sync_barrier();
+    if (!hdmi_set_virtual_offset(offset_y))
+        return -EIO;
+
+    hdmi_offset_y = offset_y;
+    hdmi.physical = hdmi_allocation_physical +
+        buffer_index * visible_size;
+    hdmi.virtual_address = buffer;
+    mode->width = hdmi.width;
+    mode->height = hdmi.height;
+    mode->pitch = hdmi.pitch;
+    mode->bpp = hdmi.bpp;
+    mode->size = visible_size;
+    mode->physical = hdmi.physical;
+    mode->virtual_address = hdmi.virtual_address;
+    return 0;
+}
+
 static const display_backend_ops_t hdmi_backend = {
     .name = "raspberrypi-hdmi",
     .flush_rect = hdmi_flush_rect,
@@ -275,6 +356,8 @@ static const display_backend_ops_t hdmi_backend = {
     .set_orientation = NULL,
     .set_mode = hdmi_set_mode,
     .scroll_up = hdmi_scroll_up,
+    .get_present_buffers = hdmi_get_present_buffers,
+    .present_buffer = hdmi_present_buffer,
 };
 
 bool raspberrypi_hdmi_init(uint32_t width, uint32_t height)

@@ -1058,6 +1058,7 @@ static void tty_input_char_to(struct tty_struct *tty, char c)
     if (tty_handle_eof_locked(tty, &tio, c, &reader)) {
         spin_unlock_irqrestore(&tty->lock, flags);
         tty_wake_reader(reader);
+        task_poll_notify();
         return;
     }
 
@@ -1069,6 +1070,7 @@ static void tty_input_char_to(struct tty_struct *tty, char c)
     reader = tty_enqueue_input_char_locked(tty, &tio, c);
     spin_unlock_irqrestore(&tty->lock, flags);
     tty_wake_reader(reader);
+    task_poll_notify();
 }
 
 void tty_input_char_to_id(int tty_id, char c)

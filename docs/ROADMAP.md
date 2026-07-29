@@ -84,6 +84,34 @@ Later milestone:
 - add a VC4/V3D renderer backend without moving compositor policy into
   Raspberry-specific kernel or platform code.
 
+### ArmUI And Desktop Applications
+
+The graphical application toolkit will use Nuklear as an internal immediate
+mode engine while keeping the public ArmOS API independent from that
+implementation.
+
+Planned sequence:
+
+1. Port Nuklear and validate a native `armui-demo` Wayland client using SHM,
+   mouse, keyboard, UTF-8, resizing and double buffering.
+2. Build `libarmui` above the validated backend. Its small C API must not expose
+   Nuklear structures, so themes, widgets and the rendering engine remain
+   replaceable.
+3. Implement `armos-control-center` with initial resolution, network, process
+   and appearance panels. Privileged operations must cross explicit ArmOS
+   service interfaces rather than spreading direct kernel access through the
+   application.
+4. Add `xdg_popup` when embedded menus are no longer sufficient for combo
+   boxes, contextual menus and transient child surfaces.
+5. Implement `armos-shell` as a privileged Wayland client for the system bar
+   and launcher, with a narrow ArmOS protocol for reserved screen areas and
+   shell policy where standard Wayland protocols are insufficient.
+
+Nuklear applications must remain event driven: static windows sleep until
+input, state changes or an explicit animation deadline requires another frame.
+Client damage, compositor dirty tiles and framebuffer presentation must remain
+bounded throughout this stack.
+
 ## 0.7 ARM64 Baseline
 
 The 0.7 baseline is:

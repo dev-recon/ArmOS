@@ -75,7 +75,8 @@ void vm_release_vmas(vm_space_t *space)
     while (vma) {
         vma_t *next = vma->next;
 
-        if (vma->flags & VMA_SHARED)
+        if ((vma->flags & VMA_SHARED) &&
+            !(vma->flags & VMA_EXTERNAL))
             shm_release_mapping(vma->shm_id);
         kfree(vma);
         vma = next;
@@ -353,7 +354,8 @@ int vm_unmap_range(vm_space_t *space, vaddr_t start, size_t size)
                     get_physical_address(space->pgdir, page);
 
                 if (physical != 0 &&
-                    unmap_user_page(space->pgdir, page, space->asid) == 0)
+                    unmap_user_page(space->pgdir, page, space->asid) == 0 &&
+                    !(vma->flags & VMA_EXTERNAL))
                     free_page((void *)(uintptr_t)physical);
             }
             vma->end = cut_start;
@@ -367,7 +369,8 @@ int vm_unmap_range(vm_space_t *space, vaddr_t start, size_t size)
             paddr_t physical = get_physical_address(space->pgdir, page);
 
             if (physical != 0 &&
-                unmap_user_page(space->pgdir, page, space->asid) == 0)
+                unmap_user_page(space->pgdir, page, space->asid) == 0 &&
+                !(vma->flags & VMA_EXTERNAL))
                 free_page((void *)(uintptr_t)physical);
         }
 
@@ -376,7 +379,8 @@ int vm_unmap_range(vm_space_t *space, vaddr_t start, size_t size)
                 previous->next = next;
             else
                 space->vma_list = next;
-            if (vma->flags & VMA_SHARED)
+            if ((vma->flags & VMA_SHARED) &&
+                !(vma->flags & VMA_EXTERNAL))
                 shm_release_mapping(vma->shm_id);
             kfree(vma);
             vma = next;

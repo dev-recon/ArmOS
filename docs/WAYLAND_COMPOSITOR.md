@@ -60,7 +60,10 @@ native demos and the current Foot 1.9.2 port.
 - click-to-focus with an active blue title bar;
 - server-side close controls and client lifecycle isolation;
 - software cursors, keyboard focus and runtime keyboard-layout updates;
-- damage tracking for surfaces, window movement and framebuffer presentation;
+- a 32x32 dirty-tile bitmap spanning client damage through presentation;
+- tile-local composition, with lower layers skipped only when an opaque
+  surface completely covers the tile;
+- coalesced rectangular tile presentation to limit framebuffer operations;
 - a software renderer shared by QEMU and Raspberry Pi framebuffer targets.
 
 The `teapot-demo` client exercises continuous SHM updates and keyboard input.
@@ -111,15 +114,43 @@ when the platform reports a usable display and permits the compositor.
 
 The Raspberry Pi path is functional but remains limited by software
 composition and framebuffer bandwidth. Current optimizations use surface
-damage, partial presentation, word-at-a-time memory operations and batched
-cache maintenance.
+damage, tile-local composition, opaque-span copies, partial presentation and
+batched cache maintenance.
+
+Framebuffer presentation now uses one common userspace contract:
+
+- the compositor acquires `/dev/fb0`, queries its scanout buffers and maps
+  them once;
+- composition writes directly into a mapped buffer, so presentation no longer
+  copies pixels through `copy_from_user_2d`;
+- the Raspberry Pi HDMI backend exposes the firmware's two virtual pages and
+  presents a completed back buffer with a virtual-offset page flip;
+- the QEMU VirtIO-GPU path exposes one mapped resource and retains its
+  device-specific transfer/flush operation behind the same present request;
+- per-buffer dirty-tile history ensures that a reused back buffer receives all
+  damage accumulated since it was last displayed.
+
+The mapping lifecycle and ownership checks live in the common framebuffer and
+virtual-memory code. Firmware offsets and cache maintenance remain confined to
+the Raspberry Pi HDMI backend; VirtIO commands remain confined to the QEMU
+backend.
 
 ## Next Milestones
 
-The next performance milestone is to verify that damage remains bounded from
-client commit through final framebuffer presentation, then add architecture
-optimized copy and fill primitives where measurements justify them. This work
-is useful for both the software renderer and a future GPU backend.
+The software renderer isolates solid fill, opaque copy, alpha blend and
+framebuffer presentation behind small common primitives. This keeps scene and
+Wayland policy readable while allowing measured targets to substitute SIMD,
+DMA or device-specific presentation later. Client ARGB surfaces detect fully
+opaque spans and tiles: opaque spans are copied directly, and adjacent tiles
+with the same visibility are composed as one horizontal run instead of
+invoking the complete renderer for every 32x32 area.
+
+The next performance milestone is to measure the remaining time separately in
+surface upload, tile composition and backend presentation after mapped
+presentation. Large Raspberry Pi operations may then use DMA above a measured
+size threshold, with cache maintenance and a CPU fallback kept inside the
+platform backend. QEMU should instead batch VirtIO-GPU transfer and flush
+rectangles.
 
 Native VC4/V3D composition is a later backend milestone. It must not move
 Wayland policy into Raspberry-specific code: the common compositor will retain

@@ -37,6 +37,14 @@ typedef struct display_backend_mode {
     uint8_t *virtual_address;
 } display_backend_mode_t;
 
+typedef struct display_present_buffers {
+    paddr_t physical;
+    uint8_t *virtual_address;
+    uint32_t buffer_size;
+    uint32_t buffer_count;
+    uint32_t front_buffer;
+} display_present_buffers_t;
+
 typedef struct display_backend_ops {
     const char *name;
     int (*flush_rect)(const uint8_t *framebuffer, uint32_t pitch,
@@ -49,6 +57,11 @@ typedef struct display_backend_ops {
                     display_backend_mode_t *mode);
     int (*scroll_up)(uint32_t rows, uint32_t clear_color,
                      display_backend_mode_t *mode);
+    int (*get_present_buffers)(display_present_buffers_t *buffers);
+    int (*present_buffer)(uint32_t buffer_index,
+                          uint32_t x, uint32_t y,
+                          uint32_t width, uint32_t height,
+                          display_backend_mode_t *mode);
 } display_backend_ops_t;
 
 #endif /* _KERNEL_DISPLAY_BACKEND_H */

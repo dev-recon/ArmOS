@@ -430,8 +430,10 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
 
         restore_interrupts(irq_flags);
 
-        if (bytes_read > 0)
+        if (bytes_read > 0) {
+            task_poll_notify();
             return bytes_read;
+        }
 
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
@@ -475,6 +477,8 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
         }
 
         restore_interrupts(irq_flags);
+        if (bytes_written > 0)
+            task_poll_notify();
 
         if (bytes_written >= count)
             return bytes_written;
@@ -520,6 +524,7 @@ int pipe_close(file_t* file) {
     }
     
     kfree(pipe);
+    task_poll_notify();
     //KDEBUG("PIPE CLOSED\n");
 
     return 0;
@@ -975,6 +980,8 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     struct armos_fb_orientation fborientation;
     struct armos_fb_mode fbmode;
     struct armos_fb_blit fbblit;
+    struct armos_fb_map fbmap;
+    struct armos_fb_present fbpresent;
     int tty_id;
     int fbret;
     uint32_t keyboard_layout;
@@ -1074,6 +1081,27 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
         if (copy_from_user(&fbblit, (void *)arg, sizeof(fbblit)) < 0)
             return -EFAULT;
         return framebuffer_blit(file, &fbblit);
+
+    case ARMOS_FBIOGET_MAP:
+        if (file->type != FILE_TYPE_FRAMEBUFFER)
+            return -ENOTTY;
+        if (!arg)
+            return -EFAULT;
+        fbret = framebuffer_get_map(file, &fbmap);
+        if (fbret < 0)
+            return fbret;
+        return copy_to_user((void *)arg, &fbmap,
+                            sizeof(fbmap)) < 0 ? -EFAULT : 0;
+
+    case ARMOS_FBIOPRESENT:
+        if (file->type != FILE_TYPE_FRAMEBUFFER)
+            return -ENOTTY;
+        if (!arg)
+            return -EFAULT;
+        if (copy_from_user(&fbpresent, (void *)arg,
+                           sizeof(fbpresent)) < 0)
+            return -EFAULT;
+        return framebuffer_present(file, &fbpresent);
 
     case TIOCGWINSZ:
         if (!file_is_tty(file))
@@ -1515,6 +1543,9 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
         return -EFAULT;
 
     while (1) {
+        uint32_t generation = task_poll_generation();
+        uint32_t wait_deadline = deadline;
+
         ready = 0;
         for (uint32_t i = 0; i < nfds; i++) {
             file_t *file = NULL;
@@ -1532,6 +1563,14 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
                 local[i].revents |= ARMOS_POLLIN;
             if ((local[i].events & ARMOS_POLLOUT) && fd_write_ready(file))
                 local[i].revents |= ARMOS_POLLOUT;
+            if (file->type == FILE_TYPE_TIMERFD) {
+                uint32_t timer_deadline;
+
+                if (timerfd_poll_deadline(file, &timer_deadline) &&
+                    (wait_deadline == 0u ||
+                     (int32_t)(timer_deadline - wait_deadline) < 0))
+                    wait_deadline = timer_deadline;
+            }
             if (local[i].revents)
                 ready++;
         }
@@ -1542,7 +1581,8 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
             break;
         if (has_pending_signals(task))
             return -EINTR;
-        task_sleep_ms(1);
+        if (task_poll_wait(task, generation, wait_deadline) < 0)
+            return -EINTR;
     }
 
     if (nfds && copy_to_user(fds, local, nfds * sizeof(local[0])) < 0)
@@ -3354,6 +3394,18 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
     if (flags & ARMOS_MAP_SHARED) {
         if (is_anon || (prot & ARMOS_PROT_EXEC))
             return (void *)-ENOSYS;
+        {
+            file_t *file = vfs_get_file_from_fd(task, fd);
+            bool is_framebuffer =
+                file && file->type == FILE_TYPE_FRAMEBUFFER;
+
+            close_file(file);
+            if (is_framebuffer)
+                return framebuffer_map_fd(
+                    fd, addr, length,
+                    vma_flags | VMA_SHARED | VMA_DONTFORK |
+                    VMA_EXTERNAL);
+        }
         return shm_map_fd(fd, addr, length, vma_flags | VMA_SHARED);
     }
 

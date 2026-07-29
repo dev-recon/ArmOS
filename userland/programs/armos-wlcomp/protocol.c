@@ -453,9 +453,12 @@ static int wl_dispatch_xdg_toplevel(struct wl_server *server,
                     copy_length = sizeof(surface->title) - 1u;
                 memcpy(surface->title, text, copy_length);
                 surface->title[copy_length] = '\0';
-                if (surface->mapped &&
-                    wl_server_schedule_render(server, true) < 0)
-                    return -1;
+                if (surface->mapped) {
+                    wl_renderer_damage_surface_at(
+                        server, surface, surface->x, surface->y);
+                    if (wl_server_schedule_render(server, false) < 0)
+                        return -1;
+                }
             }
             return 0;
         }
@@ -550,10 +553,16 @@ static int wl_dispatch_xdg_toplevel_decoration(
 
     if (opcode == 0u && wl_request_complete(request)) {
         if (surface && surface->used) {
+            if (surface->mapped)
+                wl_renderer_damage_surface_at(
+                    server, surface, surface->x, surface->y);
             surface->server_decorated = true;
-            if (surface->mapped &&
-                wl_server_schedule_render(server, true) < 0)
-                return -1;
+            if (surface->mapped) {
+                wl_renderer_damage_surface_at(
+                    server, surface, surface->x, surface->y);
+                if (wl_server_schedule_render(server, false) < 0)
+                    return -1;
+            }
         }
         wl_client_remove_object(client, object->id, true);
         return 0;
@@ -576,10 +585,16 @@ static int wl_dispatch_xdg_toplevel_decoration(
                                 WL_PROTOCOL_ERROR_INVALID_METHOD,
                                 "unsupported decoration request");
     }
+    if (surface->mapped)
+        wl_renderer_damage_surface_at(
+            server, surface, surface->x, surface->y);
     surface->server_decorated = mode == 2u;
+    if (surface->mapped)
+        wl_renderer_damage_surface_at(
+            server, surface, surface->x, surface->y);
     if (wl_client_send_words(client, object->id, 0u, &mode, 1u) < 0)
         return -1;
-    return surface->mapped ? wl_server_schedule_render(server, true) : 0;
+    return surface->mapped ? wl_server_schedule_render(server, false) : 0;
 }
 
 static int wl_dispatch_compositor(struct wl_server *server,

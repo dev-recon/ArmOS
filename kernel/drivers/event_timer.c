@@ -83,6 +83,7 @@ static ssize_t eventfd_read(file_t *file, void *buffer, size_t count)
                 state->counter = 0;
             }
             spin_unlock(&state->lock);
+            task_poll_notify();
             memcpy(buffer, &value, sizeof(value));
             return (ssize_t)sizeof(value);
         }
@@ -113,6 +114,7 @@ static ssize_t eventfd_write(file_t *file, const void *buffer, size_t count)
         if (value <= EVENTFD_COUNTER_MAX - state->counter) {
             state->counter += value;
             spin_unlock(&state->lock);
+            task_poll_notify();
             return (ssize_t)sizeof(value);
         }
         spin_unlock(&state->lock);
@@ -234,6 +236,22 @@ bool timerfd_read_ready(file_t *file)
     ready = state->expirations != 0;
     spin_unlock(&state->lock);
     return ready;
+}
+
+bool timerfd_poll_deadline(file_t *file, uint32_t *deadline)
+{
+    struct timerfd_state *state = file ? file->private_data : NULL;
+    bool armed;
+
+    if (!state || !deadline)
+        return false;
+    spin_lock(&state->lock);
+    timerfd_update_locked(state, get_system_ticks());
+    armed = state->armed;
+    if (armed)
+        *deadline = state->deadline;
+    spin_unlock(&state->lock);
+    return armed;
 }
 
 static file_t *event_timer_create_file(file_operations_t *operations,
@@ -421,6 +439,7 @@ int sys_timerfd_settime(int fd, int flags,
         state->deadline = (flags & ARMOS_TFD_TIMER_ABSTIME) != 0 ?
             first : get_system_ticks() + first;
     spin_unlock(&state->lock);
+    task_poll_notify();
 
     if (old_value &&
         copy_to_user(old_value, &previous, sizeof(previous)) < 0)

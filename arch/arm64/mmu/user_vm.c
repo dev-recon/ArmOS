@@ -493,7 +493,7 @@ static int arm64_user_vm_flags_valid(unsigned int flags)
 {
     if ((flags & VMA_READ) == 0 ||
         (flags & ~(VMA_READ | VMA_WRITE | VMA_EXEC | VMA_SHARED |
-                   VMA_LAZY)) != 0)
+                   VMA_LAZY | VMA_DONTFORK | VMA_EXTERNAL)) != 0)
         return 0;
     return (flags & (VMA_WRITE | VMA_EXEC)) !=
            (VMA_WRITE | VMA_EXEC);
@@ -912,7 +912,8 @@ int arm64_user_vm_destroy(arm64_user_vm_t *vm)
         return -2;
 
     for (index = 0; index < vm->mapping_count; index++) {
-        if (vm->mappings[index].physical_address != 0)
+        if (vm->mappings[index].physical_address != 0 &&
+            !(vm->mappings[index].flags & VMA_EXTERNAL))
             arm64_vm_release_user_page(
                 vm->mappings[index].physical_address);
     }

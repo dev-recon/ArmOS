@@ -103,6 +103,7 @@ void armos_input_emit(uint16_t type, uint16_t code, int32_t value)
     event->value = value;
     input_head = next;
     spin_unlock(&input_lock);
+    task_poll_notify();
 }
 
 bool armos_input_tty_routing_enabled(void)

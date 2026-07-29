@@ -21,11 +21,11 @@ export PATH="/opt/homebrew/Cellar/arm-none-eabi-gcc/15.1.0/bin:/opt/homebrew/bin
 case "$TARGET" in
     arm-none-eabi)
         TARGET_ARCH="${TARGET_ARCH:-arm32}"
-        TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
+        TARGET_CFLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft -O2 -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     aarch64-elf)
         TARGET_ARCH="${TARGET_ARCH:-arm64}"
-        TARGET_CFLAGS="-mcpu=cortex-a53 -Os -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
+        TARGET_CFLAGS="-mcpu=cortex-a53 -O2 -D__DYNAMIC_REENT__ $REPRODUCIBLE_FLAGS"
         ;;
     *)
         echo "Error: unsupported newlib target: $TARGET" >&2

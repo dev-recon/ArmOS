@@ -102,12 +102,17 @@ static struct wl_server_surface *wl_surface_root(
     return depth <= WL_SERVER_MAX_SURFACES ? surface : NULL;
 }
 
+static void wl_damage_surface_group(struct wl_server *server,
+                                    struct wl_server_client *client,
+                                    struct wl_server_surface *root);
+
 static void wl_raise_surface_group(struct wl_server *server,
                                    struct wl_server_client *client,
                                    struct wl_server_surface *root)
 {
     if (!server || !client || !root)
         return;
+    wl_damage_surface_group(server, client, root);
     root->z_order = ++server->next_surface_z;
     for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
         struct wl_server_surface *surface = &client->surfaces[index];
@@ -116,7 +121,6 @@ static void wl_raise_surface_group(struct wl_server *server,
             wl_surface_root(surface) == root)
             surface->z_order = ++server->next_surface_z;
     }
-    server->scene_damage_pending = true;
 }
 
 static int wl_surface_origin(const struct wl_server_surface *surface,
@@ -149,6 +153,27 @@ static int wl_surface_origin(const struct wl_server_surface *surface,
         }
     }
     return depth <= WL_SERVER_MAX_SURFACES ? 0 : -1;
+}
+
+static void wl_damage_surface_group(struct wl_server *server,
+                                    struct wl_server_client *client,
+                                    struct wl_server_surface *root)
+{
+    for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
+        struct wl_server_surface *surface = &client->surfaces[index];
+        int32_t x;
+        int32_t y;
+
+        if (!surface->used || !surface->mapped ||
+            wl_surface_root(surface) != root ||
+            wl_surface_origin(surface, &x, &y) < 0)
+            continue;
+        if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+            x = surface->x;
+            y = surface->y;
+        }
+        wl_renderer_damage_surface_at(server, surface, x, y);
+    }
 }
 
 static struct wl_server_surface *wl_surface_at(
@@ -293,13 +318,14 @@ static void wl_focus_surface(struct wl_server *server,
 
     if (server->focus_client == client && server->focus_surface == surface)
         return;
-    /*
-     * Both the previous and new title bars change decoration.  A pointer-only
-     * or surface-local update cannot represent that focus transition.
-     */
-    server->scene_damage_pending = true;
     if (server->focus_client && server->focus_client->used &&
         server->focus_surface && server->focus_surface->used) {
+        struct wl_server_surface *old_root =
+            wl_surface_root(server->focus_surface);
+
+        if (old_root)
+            wl_damage_surface_group(
+                server, server->focus_client, old_root);
         old_keyboard = wl_find_input_object(server->focus_client,
                                             WL_SERVER_OBJECT_KEYBOARD);
         leave[1] = server->focus_surface->object_id;
@@ -313,6 +339,12 @@ static void wl_focus_surface(struct wl_server *server,
     server->focus_surface = surface;
     if (!client || !surface)
         return;
+    {
+        struct wl_server_surface *new_root = wl_surface_root(surface);
+
+        if (new_root)
+            wl_damage_surface_group(server, client, new_root);
+    }
     keyboard = wl_find_input_object(client, WL_SERVER_OBJECT_KEYBOARD);
     if (keyboard) {
         keyboard_enter[0] = ++server->serial;

@@ -44,6 +44,8 @@ extern paddr_t framebuffer_phys;   /* Physical/DMA address of framebuffer_base *
 #define ARMOS_FBIOACQUIRE       0x4604u
 #define ARMOS_FBIORELEASE       0x4605u
 #define ARMOS_FBIOBLIT          0x4606u
+#define ARMOS_FBIOGET_MAP       0x4607u
+#define ARMOS_FBIOPRESENT       0x4608u
 #define ARMOS_FB_FORMAT_ARGB8888 1u
 
 struct armos_fb_info {
@@ -71,6 +73,21 @@ struct armos_fb_blit {
     uint32_t height;
     uint32_t source_pitch;
     uint64_t source;
+};
+
+struct armos_fb_map {
+    uint32_t buffer_count;
+    uint32_t front_buffer;
+    uint32_t buffer_size;
+    uint32_t mapping_size;
+};
+
+struct armos_fb_present {
+    uint32_t buffer_index;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
 };
 
 typedef struct {
@@ -145,6 +162,11 @@ ssize_t framebuffer_write(file_t* file, const void* buffer, size_t count);
 bool is_framebuffer_device_path(const char* path);
 void fill_framebuffer_device_stat(const char *path, struct stat* st);
 int framebuffer_get_info(file_t *file, struct armos_fb_info* info);
+int framebuffer_get_map(file_t *file, struct armos_fb_map *map);
+void *framebuffer_map_fd(int fd, void *addr, size_t length,
+                         uint32_t vma_flags);
+int framebuffer_present(file_t *file,
+                        const struct armos_fb_present *present);
 int framebuffer_get_orientation(file_t *file,
                                 struct armos_fb_orientation *orientation);
 int framebuffer_set_orientation(file_t *file,

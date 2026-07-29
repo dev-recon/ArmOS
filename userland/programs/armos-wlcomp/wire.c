@@ -484,4 +484,13 @@ void wl_server_disconnect_client(struct wl_server *server,
         close(client->fd);
     memset(client, 0, sizeof(*client));
     client->fd = -1;
+
+    /*
+     * Removing a client changes the scene even when the process disappeared
+     * before destroying its Wayland objects.  Schedule this centrally so all
+     * disconnect paths (hangup, SIGKILL and failed frame callback) repaint the
+     * surfaces that were just removed.
+     */
+    if (server)
+        (void)wl_server_schedule_render(server, true);
 }

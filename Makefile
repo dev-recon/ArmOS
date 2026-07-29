@@ -380,6 +380,20 @@ $(KERNEL_OBJECT_DIR)/%.o: %.c $(BUILD_CONFIG_STAMP)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+#
+# Keep the diagnostic kernel at -O0, but optimize the two architecture-neutral
+# memory objects used to present userspace framebuffers.  At -O0, the generated
+# memcpy loop repeatedly spills its pointers and counters to the stack, making
+# every compositor frame prohibitively expensive on physical Cortex-A53 CPUs.
+#
+KERNEL_MEMORY_HOT_OBJS = \
+	$(KERNEL_OBJECT_DIR)/kernel/lib/string.o \
+	$(KERNEL_OBJECT_DIR)/kernel/memory/usercopy.o
+
+$(KERNEL_MEMORY_HOT_OBJS): $(KERNEL_OBJECT_DIR)/%.o: %.c $(BUILD_CONFIG_STAMP) Makefile
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -O0,$(CFLAGS)) -O2 -c $< -o $@
+
 $(KERNEL_OBJECT_DIR)/%.o: %.S $(ASM_OFFSETS_H) $(BUILD_CONFIG_STAMP)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@

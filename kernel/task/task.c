@@ -1280,6 +1280,7 @@ task_t* task_create_copy(task_t* parent, bool from_user)
     child->clear_child_tid = 0;
     child->futex_wait_address = 0;
     child->futex_wait_active = 0;
+    child->poll_wait_active = 0;
     child->magic = TASK_MAGIC_ALIVE;
 
     kernel_lifecycle_stats.tasks_created++;
@@ -1708,6 +1709,7 @@ task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint3
     task->clear_child_tid = 0;
     task->futex_wait_address = 0;
     task->futex_wait_active = 0;
+    task->poll_wait_active = 0;
     task->magic = TASK_MAGIC_ALIVE;
     task->process = NULL;  /* Par defaut, pas de processus associe */
 
@@ -1976,6 +1978,97 @@ uint32_t task_futex_wake(process_t* process, vaddr_t address,
     }
     spin_unlock_irqrestore(&task_lock, flags);
     return woken;
+}
+
+/*
+ * Descriptor readiness uses one common generation rather than periodic
+ * rescans. Producers publish state before calling task_poll_notify(); the
+ * generation comparison in task_poll_wait() then closes the race between a
+ * caller's readiness scan and the transition to TASK_INTERRUPTIBLE.
+ */
+static uint32_t poll_generation = 1u;
+
+uint32_t task_poll_generation(void)
+{
+    unsigned long flags;
+    uint32_t generation;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    generation = poll_generation;
+    spin_unlock_irqrestore(&task_lock, flags);
+    return generation;
+}
+
+int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline)
+{
+    task_t* leader;
+    unsigned long flags;
+
+    if (!task || !task_get_process(task))
+        return -EINVAL;
+    leader = task_get_process_leader(task);
+
+    spin_lock_irqsave(&task_lock, &flags);
+    if (poll_generation != generation ||
+        (deadline != 0u &&
+         (int32_t)(get_system_ticks() - deadline) >= 0)) {
+        spin_unlock_irqrestore(&task_lock, flags);
+        return 0;
+    }
+    if (leader && has_pending_signals(leader)) {
+        spin_unlock_irqrestore(&task_lock, flags);
+        return -EINTR;
+    }
+
+    runqueue_remove_locked(task);
+    scheduler_clear_nonrunnable_debt_locked(task, TASK_INTERRUPTIBLE);
+    task->poll_wait_active = 1u;
+    task->wakeup_time = deadline;
+    task->state = TASK_INTERRUPTIBLE;
+    if (task->process)
+        task->process->state = (proc_state_t)PROC_INTERRUPTIBLE;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    yield();
+
+    spin_lock_irqsave(&task_lock, &flags);
+    task->poll_wait_active = 0u;
+    task->wakeup_time = 0u;
+    spin_unlock_irqrestore(&task_lock, flags);
+
+    return leader && has_pending_signals(leader) ? -EINTR : 0;
+}
+
+void task_poll_notify(void)
+{
+    task_t* task;
+    task_t* start;
+    uint32_t scanned = 0u;
+    unsigned long flags;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    poll_generation++;
+    if (poll_generation == 0u)
+        poll_generation = 1u;
+
+    start = task_list_head;
+    task = start;
+    while (task && scanned < MAX_TASKS) {
+        task_t* next = task->next;
+
+        if (task->poll_wait_active &&
+            task->state == TASK_INTERRUPTIBLE) {
+            task->poll_wait_active = 0u;
+            task->wakeup_time = 0u;
+            task_make_ready_under_lock(task);
+        }
+
+        task = next;
+        scanned++;
+        if (task == start)
+            break;
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
 }
 
 void task_publish_user_thread(task_t* thread)

@@ -43,6 +43,16 @@ void* memset(void* dest, int val, size_t len)
     for (size_t shift = 8u;
          shift < sizeof(string_word_t) * 8u; shift <<= 1u)
         word |= word << shift;
+    while (len >= sizeof(string_word_t) * 4u) {
+        string_word_t *words = (string_word_t *)(void *)d;
+
+        words[0] = word;
+        words[1] = word;
+        words[2] = word;
+        words[3] = word;
+        d += sizeof(string_word_t) * 4u;
+        len -= sizeof(string_word_t) * 4u;
+    }
     while (len >= sizeof(string_word_t)) {
         *(string_word_t *)(void *)d = word;
         d += sizeof(string_word_t);
@@ -65,6 +75,20 @@ void* memcpy(void* dest, const void* src, size_t len)
                ((uintptr_t)d & (sizeof(string_word_t) - 1u)) != 0u) {
             *d++ = *s++;
             len--;
+        }
+        while (len >= sizeof(string_word_t) * 4u) {
+            string_word_t *destination =
+                (string_word_t *)(void *)d;
+            const string_word_t *source =
+                (const string_word_t *)(const void *)s;
+
+            destination[0] = source[0];
+            destination[1] = source[1];
+            destination[2] = source[2];
+            destination[3] = source[3];
+            d += sizeof(string_word_t) * 4u;
+            s += sizeof(string_word_t) * 4u;
+            len -= sizeof(string_word_t) * 4u;
         }
         while (len >= sizeof(string_word_t)) {
             *(string_word_t *)(void *)d =

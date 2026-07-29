@@ -22,5 +22,6 @@
 bool eventfd_read_ready(file_t *file);
 bool eventfd_write_ready(file_t *file);
 bool timerfd_read_ready(file_t *file);
+bool timerfd_poll_deadline(file_t *file, uint32_t *deadline);
 
 #endif /* KERNEL_EVENT_TIMER_H */

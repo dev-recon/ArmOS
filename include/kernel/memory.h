@@ -124,6 +124,7 @@ static inline bool memory_is_kernel_address(vaddr_t addr)
 #define VMA_SHARED  (1 << 4)
 #define VMA_LAZY    (1 << 5)
 #define VMA_DONTFORK (1 << 6)
+#define VMA_EXTERNAL (1 << 7)
 
 /* The active MMU backend owns concrete ASID width and reserved slots. */
 #define ASID_KERNEL     ARCH_ASID_KERNEL

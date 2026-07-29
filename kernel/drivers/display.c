@@ -1512,6 +1512,192 @@ int framebuffer_get_info(file_t *file, struct armos_fb_info* info)
     return 0;
 }
 
+static int framebuffer_present_buffers(display_present_buffers_t *buffers)
+{
+    uint32_t visible_size;
+
+    if (!buffers || !framebuffer_base || !framebuffer_phys)
+        return -ENODEV;
+    if (display_backend && display_backend->get_present_buffers)
+        return display_backend->get_present_buffers(buffers);
+
+    visible_size = framebuffer_size_bytes();
+    if (!visible_size)
+        return -ENODEV;
+    buffers->physical = framebuffer_phys;
+    buffers->virtual_address = framebuffer_base;
+    buffers->buffer_size = visible_size;
+    buffers->buffer_count = 1u;
+    buffers->front_buffer = 0u;
+    return 0;
+}
+
+int framebuffer_get_map(file_t *file, struct armos_fb_map *map)
+{
+    display_present_buffers_t buffers;
+    uint64_t mapping_size;
+    int result;
+
+    if (!file || !map)
+        return -EINVAL;
+    if (framebuffer_index(file) != 0)
+        return -ENOTSUP;
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return framebuffer_owner ? -EBUSY : -EPERM;
+    }
+    spin_unlock(&framebuffer_owner_lock);
+
+    result = framebuffer_present_buffers(&buffers);
+    if (result < 0)
+        return result;
+    mapping_size = (uint64_t)buffers.buffer_size * buffers.buffer_count;
+    if (!buffers.buffer_count ||
+        buffers.front_buffer >= buffers.buffer_count ||
+        !IS_ALIGNED(buffers.physical, PAGE_SIZE) ||
+        !IS_ALIGNED(buffers.buffer_size, PAGE_SIZE) ||
+        mapping_size == 0u || mapping_size > 0xffffffffu)
+        return -ENOTSUP;
+
+    map->buffer_count = buffers.buffer_count;
+    map->front_buffer = buffers.front_buffer;
+    map->buffer_size = buffers.buffer_size;
+    map->mapping_size = (uint32_t)mapping_size;
+    return 0;
+}
+
+void *framebuffer_map_fd(int fd, void *addr, size_t length,
+                         uint32_t vma_flags)
+{
+    task_t *task = task_current_local();
+    display_present_buffers_t buffers;
+    struct armos_fb_map map;
+    vm_space_t *vm;
+    file_t *file;
+    vaddr_t vaddr;
+    vma_t *vma;
+    uint32_t mapped = 0u;
+    int result;
+
+    if (!task || !task->process || !task->process->vm ||
+        fd < 0 || fd >= MAX_FILES)
+        return (void *)-EBADF;
+    file = task->process->files[fd];
+    if (!file || file->type != FILE_TYPE_FRAMEBUFFER)
+        return (void *)-EBADF;
+    if ((vma_flags & (VMA_READ | VMA_WRITE)) !=
+        (VMA_READ | VMA_WRITE))
+        return (void *)-EACCES;
+    result = framebuffer_get_map(file, &map);
+    if (result < 0)
+        return (void *)(intptr_t)result;
+    if (length != map.mapping_size)
+        return (void *)-EINVAL;
+    result = framebuffer_present_buffers(&buffers);
+    if (result < 0)
+        return (void *)(intptr_t)result;
+
+    vm = task->process->vm;
+    if (addr) {
+        vaddr = (vaddr_t)addr;
+        if (!IS_ALIGNED(vaddr, PAGE_SIZE) ||
+            vaddr < USER_MMAP_START ||
+            vaddr >= USER_MMAP_END ||
+            (vaddr_t)map.mapping_size > USER_MMAP_END - vaddr)
+            return (void *)-EINVAL;
+    } else {
+        vaddr = vm_find_free_range(vm, 0u, map.mapping_size,
+                                   USER_MMAP_START, USER_MMAP_END);
+        if (!vaddr)
+            return (void *)-ENOMEM;
+    }
+    vma = create_vma(vm, vaddr, map.mapping_size, vma_flags);
+    if (!vma)
+        return (void *)-ENOMEM;
+
+    while (mapped < map.mapping_size) {
+        if (map_user_page(vm->pgdir, vaddr + mapped,
+                          buffers.physical + mapped,
+                          vma_flags, vm->asid) < 0)
+            goto failed;
+        mapped += PAGE_SIZE;
+    }
+    return (void *)vaddr;
+
+failed:
+    while (mapped != 0u) {
+        mapped -= PAGE_SIZE;
+        (void)unmap_user_page(vm->pgdir, vaddr + mapped, vm->asid);
+    }
+    (void)remove_vma(vm, vaddr, vaddr + map.mapping_size);
+    return (void *)-ENOMEM;
+}
+
+int framebuffer_present(file_t *file,
+                        const struct armos_fb_present *present)
+{
+    display_present_buffers_t buffers;
+    display_backend_mode_t mode;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    int result;
+
+    if (!file || !present)
+        return -EINVAL;
+    if (framebuffer_index(file) != 0)
+        return -ENOTSUP;
+    spin_lock(&framebuffer_owner_lock);
+    if (framebuffer_owner != file) {
+        spin_unlock(&framebuffer_owner_lock);
+        return framebuffer_owner ? -EBUSY : -EPERM;
+    }
+    spin_unlock(&framebuffer_owner_lock);
+    result = framebuffer_present_buffers(&buffers);
+    if (result < 0)
+        return result;
+
+    spin_lock(&display_geometry_lock);
+    width = display.width;
+    height = display.height;
+    pitch = display.pitch;
+    spin_unlock(&display_geometry_lock);
+    if (present->buffer_index >= buffers.buffer_count ||
+        !present->width || !present->height ||
+        present->x >= width || present->y >= height ||
+        present->width > width - present->x ||
+        present->height > height - present->y)
+        return -EINVAL;
+
+    if (display_backend && display_backend->present_buffer) {
+        result = display_backend->present_buffer(
+            present->buffer_index, present->x, present->y,
+            present->width, present->height, &mode);
+        if (result < 0)
+            return result;
+        if (mode.width != width || mode.height != height ||
+            mode.pitch != pitch || mode.bpp != 32u ||
+            (uint64_t)mode.size <
+                (uint64_t)mode.pitch * mode.height ||
+            !mode.physical || !mode.virtual_address)
+            return -EIO;
+        spin_lock(&display_geometry_lock);
+        framebuffer_phys = mode.physical;
+        framebuffer_base = mode.virtual_address;
+        framebuffer_capacity = mode.size;
+        display.framebuffer = mode.virtual_address;
+        spin_unlock(&display_geometry_lock);
+        return 0;
+    }
+    if (present->buffer_index != 0u || !display_backend ||
+        !display_backend->flush_rect)
+        return -ENOTSUP;
+    return display_backend->flush_rect(
+        buffers.virtual_address, pitch,
+        present->x, present->y, present->width, present->height);
+}
+
 int framebuffer_get_orientation(file_t *file,
                                 struct armos_fb_orientation *orientation)
 {

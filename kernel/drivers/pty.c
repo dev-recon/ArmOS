@@ -65,6 +65,7 @@ static bool pty_slave_putc(void *context, char character)
     pair->output[pair->head] = character;
     pair->head = next;
     spin_unlock(&pair->lock);
+    task_poll_notify();
     return true;
 }
 
@@ -88,6 +89,8 @@ static ssize_t pty_master_read(file_t *file, void *buffer, size_t count)
         pair->tail = pty_next(pair->tail);
     }
     spin_unlock(&pair->lock);
+    if (copied != 0u)
+        task_poll_notify();
     tty_drain_output_for_id(PTY_TTY_BASE + (int)pair->index);
     return (ssize_t)copied;
 }
@@ -115,6 +118,7 @@ static int pty_master_close(file_t *file)
     pair->used = false;
     tty_unregister_virtual(PTY_TTY_BASE + (int)pair->index);
     spin_unlock(&pty_table_lock);
+    task_poll_notify();
     return 0;
 }
 

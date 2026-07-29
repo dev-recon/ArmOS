@@ -226,6 +226,7 @@ static void armos_socket_destroy(armos_socket_t *socket)
     }
     socket->state = ARMOS_SOCKET_CLOSED;
     spin_unlock_irqrestore(&armos_socket_lock, flags);
+    task_poll_notify();
 
     while (pending) {
         armos_socket_t *next = pending->accept_next;
@@ -312,6 +313,7 @@ armos_socket_channel_read(armos_socket_t *socket, void *buffer, size_t length,
                 *received_control = control;
             else
                 armos_socket_control_free(control);
+            task_poll_notify();
             return (ssize_t)read;
         }
         if (channel->write_closed[peer]) {
@@ -382,6 +384,8 @@ armos_socket_channel_write(armos_socket_t *socket, const void *buffer,
             channel->write_sequence[peer]++;
         }
         spin_unlock_irqrestore(&armos_socket_lock, flags);
+        if (written != 0u)
+            task_poll_notify();
         if (written == length)
             return (ssize_t)written;
         if (task_poll_wait_once() != 0)
@@ -736,6 +740,7 @@ int armos_socket_connect(int fd, const void *user_address, uint32_t length)
     listener->accept_tail = server;
     listener->pending++;
     spin_unlock_irqrestore(&armos_socket_lock, flags);
+    task_poll_notify();
     return 0;
 }
 
@@ -762,6 +767,7 @@ int armos_socket_accept(int fd, void *user_address, uint32_t *user_length)
             accepted->accept_next = NULL;
             listener->pending--;
             spin_unlock_irqrestore(&armos_socket_lock, flags);
+            task_poll_notify();
             break;
         }
         spin_unlock_irqrestore(&armos_socket_lock, flags);
@@ -1230,6 +1236,7 @@ int armos_socket_shutdown(int fd, int how)
     if (how == 1 || how == 2)
         channel->write_closed[socket->side] = 1u;
     spin_unlock_irqrestore(&armos_socket_lock, flags);
+    task_poll_notify();
     armos_socket_control_free(discard_control);
     return 0;
 }

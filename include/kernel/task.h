@@ -480,6 +480,7 @@ typedef struct task {
     vaddr_t clear_child_tid;                 /* User TID word cleared on thread exit */
     vaddr_t futex_wait_address;              /* Active userspace wait key */
     uint32_t futex_wait_active;
+    uint32_t poll_wait_active;               /* Waiting for descriptor state change */
 
 } __attribute__((aligned(8))) task_t;
 
@@ -504,6 +505,9 @@ int task_futex_wait(task_t* task, vaddr_t address, uint32_t expected,
                     uint32_t deadline);
 uint32_t task_futex_wake(process_t* process, vaddr_t address,
                          uint32_t max_count);
+uint32_t task_poll_generation(void);
+int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline);
+void task_poll_notify(void);
 void task_destroy(task_t* task);
 void task_free_kernel_stack(task_t* task);
 

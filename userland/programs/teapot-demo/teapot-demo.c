@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
@@ -112,7 +113,61 @@ struct app {
     float yaw_speed;
     float pitch_speed;
     struct teapot_mesh mesh;
+    int profile_enabled;
+    uint64_t profile_started_us;
+    uint64_t profile_last_frame_us;
+    uint64_t profile_render_us;
+    uint64_t profile_frame_us;
+    uint64_t profile_frames;
+    uint64_t profile_intervals;
 };
+
+static uint64_t monotonic_us(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return 0u;
+    return (uint64_t)now.tv_sec * 1000000u +
+           (uint64_t)now.tv_nsec / 1000u;
+}
+
+static void profile_frame(struct app *app, uint64_t render_started_us)
+{
+    uint64_t now_us;
+
+    if (!app->profile_enabled || render_started_us == 0u)
+        return;
+    now_us = monotonic_us();
+    if (now_us == 0u || now_us < render_started_us)
+        return;
+    app->profile_render_us += now_us - render_started_us;
+    if (app->profile_last_frame_us != 0u &&
+        now_us >= app->profile_last_frame_us) {
+        app->profile_frame_us += now_us - app->profile_last_frame_us;
+        app->profile_intervals++;
+    }
+    app->profile_last_frame_us = now_us;
+    app->profile_frames++;
+    if (app->profile_started_us == 0u)
+        app->profile_started_us = now_us;
+    if (now_us - app->profile_started_us < 1000000u)
+        return;
+    fprintf(stderr,
+            "TEAPOTPROFILE frames=%llu render_avg_us=%llu "
+            "frame_avg_us=%llu\n",
+            (unsigned long long)app->profile_frames,
+            (unsigned long long)(app->profile_render_us /
+                                 app->profile_frames),
+            (unsigned long long)(app->profile_frame_us /
+                                 (app->profile_intervals != 0u ?
+                                  app->profile_intervals : 1u)));
+    app->profile_started_us = now_us;
+    app->profile_render_us = 0u;
+    app->profile_frame_us = 0u;
+    app->profile_frames = 0u;
+    app->profile_intervals = 0u;
+}
 
 static struct vec3 vec3_add(struct vec3 left, struct vec3 right)
 {
@@ -563,6 +618,8 @@ static const struct wl_callback_listener frame_listener = {
 
 static int present_frame(struct app *app)
 {
+    uint64_t render_started_us;
+
     if (!app->configured || !app->frame_ready || app->buffer_busy)
         return 0;
 
@@ -570,7 +627,9 @@ static int present_frame(struct app *app)
     app->yaw += app->yaw_speed;
     app->pitch += app->pitch_speed;
     app->pitch_speed *= 0.92f;
+    render_started_us = app->profile_enabled ? monotonic_us() : 0u;
     render_frame(app);
+    profile_frame(app, render_started_us);
 
     app->frame_callback = wl_surface_frame(app->surface);
     if (!app->frame_callback ||
@@ -891,9 +950,17 @@ static void destroy_app(struct app *app)
     free(app->depth);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     struct app app;
+    int profile = 0;
+
+    if (argc == 2 && strcmp(argv[1], "--profile") == 0) {
+        profile = 1;
+    } else if (argc != 1) {
+        fprintf(stderr, "usage: %s [--profile]\n", argv[0]);
+        return 2;
+    }
 
     /*
      * This diagnostic renderer is intentionally CPU-heavy. Let the compositor
@@ -906,6 +973,8 @@ int main(void)
     app.yaw = -0.45f;
     app.pitch = -0.18f;
     app.yaw_speed = 0.030f;
+    app.profile_enabled =
+        profile || getenv("ARMOS_TEAPOT_PROFILE") != NULL;
 
     if (mesh_build_teapot(&app.mesh) < 0) {
         fprintf(stderr, "teapot-demo: geometry exceeds triangle budget\n");

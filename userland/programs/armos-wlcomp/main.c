@@ -42,6 +42,52 @@ static volatile sig_atomic_t wl_terminal_changed;
 
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
+static uint64_t wl_monotonic_us(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return 0u;
+    return (uint64_t)now.tv_sec * 1000000u +
+           (uint64_t)now.tv_nsec / 1000u;
+}
+
+static void wl_server_profile_frame(struct wl_server *server,
+                                    uint64_t started_us)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    uint64_t now_us;
+    uint64_t compose_us;
+
+    if (!renderer->profile_enabled || started_us == 0u)
+        return;
+    now_us = wl_monotonic_us();
+    if (now_us == 0u || now_us < started_us)
+        return;
+    server->profile_render_us += now_us - started_us;
+    server->profile_frames++;
+    if (server->profile_started_us == 0u)
+        server->profile_started_us = now_us;
+    if (now_us - server->profile_started_us < 1000000u)
+        return;
+    compose_us = server->profile_render_us;
+    if (compose_us >= renderer->profile_present_us)
+        compose_us -= renderer->profile_present_us;
+    fprintf(stderr,
+            "WLPROFILE frames=%llu compose_avg_us=%llu "
+            "present_avg_us=%llu present_pixels=%llu\n",
+            (unsigned long long)server->profile_frames,
+            (unsigned long long)(compose_us / server->profile_frames),
+            (unsigned long long)(renderer->profile_present_us /
+                                 server->profile_frames),
+            (unsigned long long)renderer->profile_present_pixels);
+    server->profile_started_us = now_us;
+    server->profile_render_us = 0u;
+    server->profile_frames = 0u;
+    renderer->profile_present_us = 0u;
+    renderer->profile_present_pixels = 0u;
+}
+
 static void wl_server_terminal_signal(int signal_number)
 {
     (void)signal_number;
@@ -51,7 +97,8 @@ static void wl_server_terminal_signal(int signal_number)
 static void wl_server_usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s [--headless] [--quiet] [--socket path]\n", program);
+            "usage: %s [--headless] [--quiet] [--profile] "
+            "[--socket path]\n", program);
 }
 
 static int wl_server_open_socket(const char *path)
@@ -137,6 +184,8 @@ static int wl_server_listen_event(int fd, uint32_t mask, void *data)
 static int wl_server_render_event(void *data)
 {
     struct wl_server *server = data;
+    uint64_t started_us = server->renderer.profile_enabled ?
+        wl_monotonic_us() : 0u;
     int result;
 
     server->render_pending = false;
@@ -178,6 +227,7 @@ static int wl_server_render_event(void *data)
         server->fatal_error = true;
         return -1;
     }
+    wl_server_profile_frame(server, started_us);
     return 0;
 }
 
@@ -254,7 +304,7 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
         if (wl_server_schedule_render(server, true) < 0)
             fprintf(stderr,
                     "armos-wlcomp: cannot schedule client removal repaint\n");
-        return -1;
+        return 0;
     }
     return 0;
 }
@@ -340,6 +390,7 @@ int main(int argc, char **argv)
     const char *socket_path = ARMOS_WLCOMP_SOCKET_PATH;
     bool headless = false;
     bool quiet = false;
+    bool profile = false;
     pid_t terminal_pid = -1;
 
     (void)signal(SIGPIPE, SIG_IGN);
@@ -354,6 +405,8 @@ int main(int argc, char **argv)
             headless = true;
         } else if (strcmp(argv[index], "--quiet") == 0) {
             quiet = true;
+        } else if (strcmp(argv[index], "--profile") == 0) {
+            profile = true;
         } else if (strcmp(argv[index], "--socket") == 0 &&
                    index + 1 < argc) {
             socket_path = argv[++index];
@@ -372,6 +425,8 @@ int main(int argc, char **argv)
         perror("armos-wlcomp: renderer");
         return 1;
     }
+    server.renderer.profile_enabled =
+        profile || getenv("ARMOS_WL_PROFILE") != NULL;
     server.pointer_x = (int32_t)server.renderer.framebuffer.width / 2;
     server.pointer_y = (int32_t)server.renderer.framebuffer.height / 2;
     if (!headless) {

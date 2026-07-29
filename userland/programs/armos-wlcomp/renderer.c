@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #define WL_HEADLESS_WIDTH  800u
@@ -57,30 +58,55 @@ static const char *const wl_pointer_shape[] = {
 #define WL_POINTER_WIDTH  12u
 #define WL_POINTER_HEIGHT 16u
 
-static int wl_write_full(int fd, const void *buffer, size_t size)
+struct wl_renderer_scene {
+    struct wl_server_surface *ordered[
+        WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
+    size_t count;
+};
+
+static void wl_renderer_select_draw_buffer(
+    struct wl_server_renderer *renderer)
 {
-    const uint8_t *cursor = (const uint8_t *)buffer;
-    size_t done = 0;
+    if (!renderer || !renderer->direct_present ||
+        renderer->present_buffer_count == 0u)
+        return;
+    renderer->present_draw_buffer =
+        renderer->present_buffer_count > 1u ?
+        (renderer->present_front_buffer + 1u) %
+            renderer->present_buffer_count :
+        renderer->present_front_buffer;
+    renderer->canvas = (uint32_t *)(void *)(
+        (uint8_t *)(void *)renderer->mapped_buffers +
+        (size_t)renderer->present_draw_buffer * renderer->canvas_size);
+    renderer->dirty_tiles = renderer->dirty_tile_storage +
+        (size_t)renderer->present_draw_buffer *
+        renderer->dirty_tile_word_count;
+}
 
-    while (done < size) {
-        ssize_t count = write(fd, cursor + done, size - done);
-
-        if (count < 0 && errno == EINTR)
-            continue;
-        if (count <= 0)
-            return -1;
-        done += (size_t)count;
-    }
-    return 0;
+static void wl_renderer_mark_all_buffers_dirty(
+    struct wl_server_renderer *renderer)
+{
+    if (!renderer || !renderer->dirty_tile_storage)
+        return;
+    memset(renderer->dirty_tile_storage, 0xff,
+           renderer->dirty_tile_word_count *
+           renderer->present_buffer_count *
+           sizeof(*renderer->dirty_tile_storage));
 }
 
 int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
 {
+    struct armos_fb_map map = {0};
+    uint64_t tile_count;
+    uint64_t tile_word_count;
+    uint64_t dirty_word_count;
+
     if (!renderer)
         return -1;
     memset(renderer, 0, sizeof(*renderer));
     renderer->framebuffer_fd = -1;
     renderer->headless = headless;
+    renderer->present_buffer_count = 1u;
 
     if (headless) {
         renderer->framebuffer.width = WL_HEADLESS_WIDTH;
@@ -107,12 +133,68 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
             errno = ENOTSUP;
             goto fail;
         }
+        if (ioctl(renderer->framebuffer_fd, ARMOS_FBIOGET_MAP, &map) == 0 &&
+            map.buffer_count != 0u &&
+            map.front_buffer < map.buffer_count &&
+            map.buffer_size == renderer->framebuffer.size &&
+            (uint64_t)map.mapping_size ==
+                (uint64_t)map.buffer_size * map.buffer_count) {
+            renderer->mapped_buffers = mmap(
+                NULL, map.mapping_size, PROT_READ | PROT_WRITE,
+                MAP_SHARED, renderer->framebuffer_fd, 0);
+            if (renderer->mapped_buffers != MAP_FAILED) {
+                renderer->mapped_buffers_size = map.mapping_size;
+                renderer->present_buffer_count = map.buffer_count;
+                renderer->present_front_buffer = map.front_buffer;
+                renderer->present_draw_buffer = map.front_buffer;
+                renderer->direct_present = true;
+                renderer->canvas = (uint32_t *)(void *)(
+                    (uint8_t *)(void *)renderer->mapped_buffers +
+                    (size_t)map.front_buffer * map.buffer_size);
+            } else {
+                renderer->mapped_buffers = NULL;
+            }
+        }
     }
 
     renderer->canvas_size = renderer->framebuffer.size;
-    renderer->canvas = malloc(renderer->canvas_size);
-    if (!renderer->canvas)
+    if (!renderer->direct_present) {
+        renderer->canvas = malloc(renderer->canvas_size);
+        if (!renderer->canvas)
+            goto fail;
+    }
+    renderer->tile_columns =
+        (renderer->framebuffer.width + WL_RENDER_TILE_SIZE - 1u) /
+        WL_RENDER_TILE_SIZE;
+    renderer->tile_rows =
+        (renderer->framebuffer.height + WL_RENDER_TILE_SIZE - 1u) /
+        WL_RENDER_TILE_SIZE;
+    tile_count = (uint64_t)renderer->tile_columns * renderer->tile_rows;
+    tile_word_count = (tile_count + 63u) / 64u;
+    if (tile_count == 0u ||
+        tile_word_count > SIZE_MAX / sizeof(uint64_t)) {
+        errno = EOVERFLOW;
         goto fail;
+    }
+    renderer->dirty_tile_word_count = (size_t)tile_word_count;
+    dirty_word_count = tile_word_count * renderer->present_buffer_count;
+    if (renderer->present_buffer_count != 0u &&
+        dirty_word_count / renderer->present_buffer_count !=
+            tile_word_count) {
+        errno = EOVERFLOW;
+        goto fail;
+    }
+    if (dirty_word_count > SIZE_MAX / sizeof(uint64_t)) {
+        errno = EOVERFLOW;
+        goto fail;
+    }
+    renderer->dirty_tile_storage = calloc(
+        (size_t)dirty_word_count, sizeof(*renderer->dirty_tile_storage));
+    if (!renderer->dirty_tile_storage)
+        goto fail;
+    renderer->dirty_tiles = renderer->dirty_tile_storage +
+        (size_t)renderer->present_draw_buffer *
+        renderer->dirty_tile_word_count;
     return 0;
 
 fail:
@@ -124,34 +206,24 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
 {
     if (!renderer)
         return;
-    free(renderer->canvas);
+    free(renderer->dirty_tile_storage);
+    renderer->dirty_tile_storage = NULL;
+    renderer->dirty_tiles = NULL;
+    renderer->dirty_tile_word_count = 0u;
+    renderer->tile_columns = 0u;
+    renderer->tile_rows = 0u;
+    if (renderer->mapped_buffers) {
+        (void)munmap(renderer->mapped_buffers,
+                     renderer->mapped_buffers_size);
+    } else {
+        free(renderer->canvas);
+    }
+    renderer->mapped_buffers = NULL;
+    renderer->mapped_buffers_size = 0u;
     renderer->canvas = NULL;
     if (renderer->framebuffer_fd >= 0)
         close(renderer->framebuffer_fd);
     renderer->framebuffer_fd = -1;
-}
-
-static uint32_t wl_blend_pixel(uint32_t destination, uint32_t source)
-{
-    uint32_t alpha = source >> 24;
-    uint32_t inverse;
-    uint32_t red;
-    uint32_t green;
-    uint32_t blue;
-
-    if (alpha == 255u)
-        return source;
-    if (alpha == 0u)
-        return destination;
-
-    inverse = 255u - alpha;
-    red = ((((source >> 16) & 0xffu) * alpha) +
-           (((destination >> 16) & 0xffu) * inverse)) / 255u;
-    green = ((((source >> 8) & 0xffu) * alpha) +
-             (((destination >> 8) & 0xffu) * inverse)) / 255u;
-    blue = (((source & 0xffu) * alpha) +
-            ((destination & 0xffu) * inverse)) / 255u;
-    return 0xff000000u | (red << 16) | (green << 8) | blue;
 }
 
 static void wl_renderer_put_pixel(struct wl_server_renderer *renderer,
@@ -168,7 +240,7 @@ static void wl_renderer_put_pixel(struct wl_server_renderer *renderer,
          x >= renderer->clip_x1 || y >= renderer->clip_y1))
         return;
     renderer->canvas[(uint32_t)y * canvas_width + (uint32_t)x] =
-        wl_blend_pixel(
+        wl_render_blend_pixel(
             renderer->canvas[(uint32_t)y * canvas_width + (uint32_t)x],
             color);
 }
@@ -378,9 +450,51 @@ static void wl_renderer_title(struct wl_server_renderer *renderer,
     }
 }
 
+static bool wl_renderer_surface_clip_opaque(
+    const struct wl_server_renderer *renderer,
+    const struct wl_server_surface *surface)
+{
+    int32_t content_x;
+    int32_t content_y;
+    uint32_t source_x0;
+    uint32_t source_y0;
+    uint32_t width;
+    uint32_t height;
+
+    if (!renderer->clip_enabled || !surface->pixels ||
+        surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE)
+        return false;
+    content_x = surface->x;
+    content_y = surface->y +
+        (surface->server_decorated ?
+         (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
+    if (renderer->clip_x0 < content_x ||
+        renderer->clip_y0 < content_y ||
+        renderer->clip_x1 > content_x + (int32_t)surface->width ||
+        renderer->clip_y1 > content_y + (int32_t)surface->height)
+        return false;
+    if (surface->opaque)
+        return true;
+
+    source_x0 = (uint32_t)(renderer->clip_x0 - content_x);
+    source_y0 = (uint32_t)(renderer->clip_y0 - content_y);
+    width = (uint32_t)(renderer->clip_x1 - renderer->clip_x0);
+    height = (uint32_t)(renderer->clip_y1 - renderer->clip_y0);
+    for (uint32_t row = 0u; row < height; row++) {
+        const uint32_t *source = surface->pixels +
+            (size_t)(source_y0 + row) * surface->width + source_x0;
+
+        for (uint32_t column = 0u; column < width; column++) {
+            if ((source[column] >> 24) != 255u)
+                return false;
+        }
+    }
+    return true;
+}
+
 static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
                                      const struct wl_server_surface *surface,
-    bool active)
+                                     bool active, bool opaque_clip)
 {
     uint32_t title_height =
         surface->role == WL_SERVER_SURFACE_ROLE_TOPLEVEL &&
@@ -417,11 +531,12 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
         goto draw_content;
     }
 
-    if (renderer->clip_enabled && surface->opaque &&
-        renderer->clip_x0 >= content_x &&
-        renderer->clip_y0 >= content_y &&
-        renderer->clip_x1 <= content_x + (int32_t)surface->width &&
-        renderer->clip_y1 <= content_y + (int32_t)surface->height)
+    if (opaque_clip ||
+        (renderer->clip_enabled && surface->opaque &&
+         renderer->clip_x0 >= content_x &&
+         renderer->clip_y0 >= content_y &&
+         renderer->clip_x1 <= content_x + (int32_t)surface->width &&
+         renderer->clip_y1 <= content_y + (int32_t)surface->height))
         content_only_damage = true;
 
     if (!content_only_damage && title_height != 0u) {
@@ -481,70 +596,22 @@ draw_content:
         }
         if (source_x0 >= source_x1 || source_y0 >= source_y1)
             return;
-        for (int32_t source_y = source_y0;
-             source_y < source_y1; source_y++) {
+        {
             uint32_t *destination = renderer->canvas +
-                (uint32_t)(content_y + source_y) * canvas_width +
+                (uint32_t)(content_y + source_y0) * canvas_width +
                 (uint32_t)(content_x + source_x0);
             const uint32_t *source = surface->pixels +
-                (size_t)(uint32_t)source_y * surface->width +
+                (size_t)(uint32_t)source_y0 * surface->width +
                 (uint32_t)source_x0;
-            size_t count = (size_t)(source_x1 - source_x0);
+            uint32_t width = (uint32_t)(source_x1 - source_x0);
+            uint32_t height = (uint32_t)(source_y1 - source_y0);
 
-            if (surface->opaque) {
-                memcpy(destination, source, count * sizeof(*source));
-            } else {
-                for (size_t index = 0u; index < count; index++) {
-                    destination[index] = wl_blend_pixel(
-                        destination[index], source[index]);
-                }
-            }
-        }
-    }
-}
-
-static void wl_renderer_capture_pointer(struct wl_server *server)
-{
-    struct wl_server_renderer *renderer = &server->renderer;
-    uint32_t canvas_width = renderer->framebuffer.pitch / sizeof(uint32_t);
-
-    for (uint32_t row = 0u; row < WL_POINTER_HEIGHT; row++) {
-        for (uint32_t column = 0u; column < WL_POINTER_WIDTH; column++) {
-            int32_t x = server->pointer_x + (int32_t)column;
-            int32_t y = server->pointer_y + (int32_t)row;
-            uint32_t pixel = WL_BACKGROUND;
-
-            if (x >= 0 && y >= 0 &&
-                (uint32_t)x < renderer->framebuffer.width &&
-                (uint32_t)y < renderer->framebuffer.height)
-                pixel = renderer->canvas[(uint32_t)y * canvas_width +
-                                         (uint32_t)x];
-            renderer->pointer_backing[row * WL_POINTER_WIDTH + column] =
-                pixel;
-        }
-    }
-    renderer->pointer_backing_valid = true;
-}
-
-static void wl_renderer_restore_pointer(struct wl_server *server)
-{
-    struct wl_server_renderer *renderer = &server->renderer;
-    uint32_t canvas_width = renderer->framebuffer.pitch / sizeof(uint32_t);
-
-    if (!renderer->pointer_backing_valid)
-        return;
-    for (uint32_t row = 0u; row < WL_POINTER_HEIGHT; row++) {
-        for (uint32_t column = 0u; column < WL_POINTER_WIDTH; column++) {
-            int32_t x = server->presented_pointer_x + (int32_t)column;
-            int32_t y = server->presented_pointer_y + (int32_t)row;
-
-            if (x >= 0 && y >= 0 &&
-                (uint32_t)x < renderer->framebuffer.width &&
-                (uint32_t)y < renderer->framebuffer.height) {
-                renderer->canvas[(uint32_t)y * canvas_width + (uint32_t)x] =
-                    renderer->pointer_backing[
-                        row * WL_POINTER_WIDTH + column];
-            }
+            if (surface->opaque || opaque_clip)
+                wl_render_copy_rect(destination, canvas_width,
+                                    source, surface->width, width, height);
+            else
+                wl_render_blend_rect(destination, canvas_width,
+                                     source, surface->width, width, height);
         }
     }
 }
@@ -555,7 +622,6 @@ static void wl_renderer_draw_pointer(struct wl_server *server)
     int32_t x = server->pointer_x;
     int32_t y = server->pointer_y;
 
-    wl_renderer_capture_pointer(server);
     for (size_t row = 0;
          row < sizeof(wl_pointer_shape) / sizeof(wl_pointer_shape[0]);
          row++) {
@@ -571,112 +637,80 @@ static void wl_renderer_draw_pointer(struct wl_server *server)
     }
 }
 
-static bool wl_renderer_clip_has_opaque_cover(
-    const struct wl_server *server)
+static void wl_renderer_build_scene(struct wl_server *server,
+                                    struct wl_renderer_scene *scene)
 {
-    const struct wl_server_renderer *renderer = &server->renderer;
-
-    if (!renderer->clip_enabled)
-        return false;
     for (size_t client_index = 0u;
-         client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
-        const struct wl_server_client *client =
-            &server->clients[client_index];
-
-        if (!client->used)
-            continue;
-        for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
-            const struct wl_server_surface *surface =
-                &client->surfaces[index];
-            int32_t content_y;
-
-            if (!surface->used || !surface->mapped ||
-                surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
-                !surface->pixels ||
-                surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE ||
-                !surface->opaque)
-                continue;
-            content_y = surface->y +
-                (surface->server_decorated ?
-                 (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
-            if (renderer->clip_x0 >= surface->x &&
-                renderer->clip_y0 >= content_y &&
-                renderer->clip_x1 <=
-                    surface->x + (int32_t)surface->width &&
-                renderer->clip_y1 <=
-                    content_y + (int32_t)surface->height)
-                return true;
-        }
-    }
-    return false;
-}
-
-static void wl_renderer_draw_surfaces(struct wl_server *server)
-{
-    struct wl_server_surface *ordered[
-        WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
-    size_t count = 0u;
-    size_t first = 0u;
-
-    for (size_t client_index = 0;
          client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
         struct wl_server_client *client = &server->clients[client_index];
 
         if (!client->used)
             continue;
-        for (size_t index = 0; index < WL_SERVER_MAX_SURFACES; index++) {
+        for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
             struct wl_server_surface *surface = &client->surfaces[index];
+            size_t position;
 
             if (!surface->used || !surface->mapped ||
                 surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
                 !surface->pixels)
                 continue;
-            size_t position = count;
-
+            position = scene->count;
             while (position > 0u &&
-                   ordered[position - 1u]->z_order > surface->z_order) {
-                ordered[position] = ordered[position - 1u];
+                   scene->ordered[position - 1u]->z_order >
+                       surface->z_order) {
+                scene->ordered[position] =
+                    scene->ordered[position - 1u];
                 position--;
             }
-            ordered[position] = surface;
-            count++;
+            scene->ordered[position] = surface;
+            scene->count++;
         }
     }
+}
+
+static size_t wl_renderer_scene_first_visible(
+    const struct wl_server *server,
+    const struct wl_renderer_scene *scene,
+    bool *opaque_cover)
+{
+    const struct wl_server_renderer *renderer = &server->renderer;
+
+    *opaque_cover = false;
+    if (!renderer->clip_enabled)
+        return 0u;
     /*
      * If an opaque top-level content area completely covers the clip, every
      * surface below it is invisible. Starting there avoids rebuilding an
      * entire hidden scene for animated opaque clients such as teapot-demo.
      */
-    if (server->renderer.clip_enabled) {
-        for (size_t index = count; index > 0u; index--) {
-            struct wl_server_surface *surface = ordered[index - 1u];
-            int32_t content_y =
-                surface->y + (surface->server_decorated ?
-                              (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
+    for (size_t index = scene->count; index > 0u; index--) {
+        const struct wl_server_surface *surface =
+            scene->ordered[index - 1u];
 
-            if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
-                surface->opaque &&
-                server->renderer.clip_x0 >= surface->x &&
-                server->renderer.clip_y0 >= content_y &&
-                server->renderer.clip_x1 <=
-                    surface->x + (int32_t)surface->width &&
-                server->renderer.clip_y1 <=
-                    content_y + (int32_t)surface->height) {
-                first = index - 1u;
-                break;
-            }
+        if (wl_renderer_surface_clip_opaque(renderer, surface)) {
+            *opaque_cover = true;
+            return index - 1u;
         }
     }
-    for (size_t index = first; index < count; index++) {
+    return 0u;
+}
+
+static void wl_renderer_draw_scene(
+    struct wl_server *server, const struct wl_renderer_scene *scene,
+    size_t first, bool first_opaque)
+{
+    for (size_t index = first; index < scene->count; index++) {
         wl_renderer_draw_surface(
-            &server->renderer, ordered[index],
-            ordered[index] == server->focus_surface);
+            &server->renderer, scene->ordered[index],
+            scene->ordered[index] == server->focus_surface,
+            first_opaque && index == first);
     }
 }
 
 static int wl_renderer_build_canvas(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
+    struct wl_renderer_scene scene = {0};
     uint32_t canvas_width;
 
     if (!server || !server->renderer.canvas)
@@ -684,74 +718,15 @@ static int wl_renderer_build_canvas(struct wl_server *server)
     renderer = &server->renderer;
     renderer->clip_enabled = false;
     canvas_width = renderer->framebuffer.pitch / 4u;
-    for (uint32_t x = 0; x < canvas_width; x++)
-        renderer->canvas[x] = WL_BACKGROUND;
-    for (uint32_t y = 1; y < renderer->framebuffer.height; y++)
-        memcpy(renderer->canvas + (size_t)y * canvas_width,
-               renderer->canvas,
-               (size_t)canvas_width * sizeof(uint32_t));
+    wl_render_fill_rect(renderer->canvas, canvas_width, canvas_width,
+                        renderer->framebuffer.height, WL_BACKGROUND);
 
-    wl_renderer_draw_surfaces(server);
+    wl_renderer_build_scene(server, &scene);
+    wl_renderer_draw_scene(server, &scene, 0u, false);
 
     if (!renderer->headless)
         wl_renderer_draw_pointer(server);
 
-    return 0;
-}
-
-static int wl_renderer_present_rect(struct wl_server_renderer *renderer,
-                                    int32_t x, int32_t y,
-                                    uint32_t width, uint32_t height)
-{
-    struct armos_fb_blit blit;
-    int32_t x1;
-    int32_t y1;
-
-    if (!renderer || renderer->headless || width == 0u || height == 0u)
-        return 0;
-    x1 = x + (int32_t)width;
-    y1 = y + (int32_t)height;
-    if (x < 0)
-        x = 0;
-    if (y < 0)
-        y = 0;
-    if (x1 > (int32_t)renderer->framebuffer.width)
-        x1 = (int32_t)renderer->framebuffer.width;
-    if (y1 > (int32_t)renderer->framebuffer.height)
-        y1 = (int32_t)renderer->framebuffer.height;
-    if (x >= x1 || y >= y1)
-        return 0;
-    width = (uint32_t)(x1 - x);
-    height = (uint32_t)(y1 - y);
-    blit.x = (uint32_t)x;
-    blit.y = (uint32_t)y;
-    blit.width = width;
-    blit.height = height;
-    blit.source_pitch = renderer->framebuffer.pitch;
-    blit.source = (uint64_t)(uintptr_t)(
-        (const uint8_t *)renderer->canvas +
-        (uint32_t)y * renderer->framebuffer.pitch +
-        (uint32_t)x * sizeof(uint32_t));
-    if (ioctl(renderer->framebuffer_fd, ARMOS_FBIOBLIT, &blit) == 0)
-        return 0;
-    if (errno != ENOTTY && errno != ENOSYS)
-        return -1;
-
-    /*
-     * Compatibility path for kernels predating ARMOS_FBIOBLIT. Keep precise
-     * rows: writing complete scanline bands can multiply the transferred
-     * bytes for narrow damage rectangles on physical framebuffers.
-     */
-    for (int32_t row = y; row < y1; row++) {
-        off_t offset = (off_t)(uint32_t)row * renderer->framebuffer.pitch +
-            (off_t)(uint32_t)x * sizeof(uint32_t);
-        const uint8_t *source = (const uint8_t *)renderer->canvas + offset;
-
-        if (lseek(renderer->framebuffer_fd, offset, SEEK_SET) < 0 ||
-            wl_write_full(renderer->framebuffer_fd, source,
-                          (size_t)width * sizeof(uint32_t)) < 0)
-            return -1;
-    }
     return 0;
 }
 
@@ -760,28 +735,31 @@ int wl_renderer_compose(struct wl_server *server)
     struct wl_server_renderer *renderer;
     int result;
 
+    if (!server)
+        return -1;
+    wl_renderer_mark_all_buffers_dirty(&server->renderer);
+    wl_renderer_select_draw_buffer(&server->renderer);
     if (wl_renderer_build_canvas(server) < 0)
         return -1;
     renderer = &server->renderer;
     server->pointer_presented = true;
     server->presented_pointer_x = server->pointer_x;
     server->presented_pointer_y = server->pointer_y;
-    if (renderer->headless) {
-        result = 0;
-    } else {
-        if (lseek(renderer->framebuffer_fd, 0, SEEK_SET) < 0)
-            return -1;
-        result = wl_write_full(renderer->framebuffer_fd, renderer->canvas,
-                               renderer->canvas_size);
-    }
+    result = wl_renderer_backend_present_rect(
+        renderer, 0, 0, renderer->framebuffer.width,
+        renderer->framebuffer.height);
     if (result == 0) {
+        renderer->present_front_buffer =
+            renderer->present_draw_buffer;
         /*
          * A complete composition subsumes every queued partial update.
          * Keeping an older damage rectangle would repaint stale geometry on
          * the next timer tick.
          */
         server->damage_pending = false;
-        server->damage_count = 0u;
+        memset(renderer->dirty_tiles, 0,
+               renderer->dirty_tile_word_count *
+               sizeof(*renderer->dirty_tiles));
     }
     return result;
 }
@@ -797,128 +775,92 @@ int wl_renderer_compose_pointer(struct wl_server *server)
         return wl_renderer_compose(server);
     old_x = server->presented_pointer_x;
     old_y = server->presented_pointer_y;
-    wl_renderer_restore_pointer(server);
-    wl_renderer_draw_pointer(server);
-    if (wl_renderer_present_rect(&server->renderer, old_x, old_y,
-                                 WL_POINTER_WIDTH,
-                                 WL_POINTER_HEIGHT) < 0)
-        return -1;
-    if ((old_x != server->pointer_x || old_y != server->pointer_y) &&
-        wl_renderer_present_rect(&server->renderer,
-                                 server->pointer_x, server->pointer_y,
-                                 WL_POINTER_WIDTH,
-                                 WL_POINTER_HEIGHT) < 0)
-        return -1;
-    server->presented_pointer_x = server->pointer_x;
-    server->presented_pointer_y = server->pointer_y;
-    return 0;
+    wl_renderer_damage_rect(server, old_x, old_y,
+                            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+    wl_renderer_damage_rect(server, server->pointer_x, server->pointer_y,
+                            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+    return wl_renderer_compose_damage(server);
 }
 
-static void wl_renderer_rect_add(struct wl_renderer_rect *damage,
-                                 int32_t x, int32_t y,
-                                 uint32_t width, uint32_t height)
+static size_t wl_renderer_tile_index(
+    const struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row)
 {
-    int32_t x1 = x + (int32_t)width;
-    int32_t y1 = y + (int32_t)height;
-
-    if (x < damage->x0)
-        damage->x0 = x;
-    if (y < damage->y0)
-        damage->y0 = y;
-    if (x1 > damage->x1)
-        damage->x1 = x1;
-    if (y1 > damage->y1)
-        damage->y1 = y1;
+    return (size_t)row * renderer->tile_columns + column;
 }
 
-static bool wl_renderer_rects_touch(const struct wl_renderer_rect *left,
-                                    const struct wl_renderer_rect *right)
+static bool wl_renderer_tile_dirty(
+    const struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row)
 {
-    return left->x0 <= right->x1 && left->x1 >= right->x0 &&
-           left->y0 <= right->y1 && left->y1 >= right->y0;
+    size_t index = wl_renderer_tile_index(renderer, column, row);
+
+    return (renderer->dirty_tiles[index / 64u] &
+            (1ull << (index % 64u))) != 0u;
 }
 
-static void wl_renderer_region_add(struct wl_renderer_rect *regions,
-                                   size_t *count, size_t capacity,
-                                   struct wl_renderer_rect damage)
+static void wl_renderer_mark_tile(
+    struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row)
 {
-    size_t index = 0u;
+    size_t index = wl_renderer_tile_index(renderer, column, row);
 
-    while (index < *count) {
-        struct wl_renderer_rect *region = &regions[index];
+    for (uint32_t buffer = 0u;
+         buffer < renderer->present_buffer_count; buffer++) {
+        uint64_t *tiles = renderer->dirty_tile_storage +
+            (size_t)buffer * renderer->dirty_tile_word_count;
 
-        if (!wl_renderer_rects_touch(region, &damage)) {
-            index++;
-            continue;
-        }
-        if (region->x0 < damage.x0)
-            damage.x0 = region->x0;
-        if (region->y0 < damage.y0)
-            damage.y0 = region->y0;
-        if (region->x1 > damage.x1)
-            damage.x1 = region->x1;
-        if (region->y1 > damage.y1)
-            damage.y1 = region->y1;
-        regions[index] = regions[--(*count)];
-        index = 0u;
-    }
-    if (*count < capacity) {
-        regions[(*count)++] = damage;
-        return;
-    }
-
-    /*
-     * Region overflow remains bounded: merge with the rectangle whose union
-     * grows the least instead of collapsing the complete scene immediately.
-     */
-    {
-        size_t best = 0u;
-        uint64_t best_growth = ~(uint64_t)0;
-
-        for (index = 0u; index < *count; index++) {
-            struct wl_renderer_rect *region = &regions[index];
-            int32_t x0 = region->x0 < damage.x0 ?
-                region->x0 : damage.x0;
-            int32_t y0 = region->y0 < damage.y0 ?
-                region->y0 : damage.y0;
-            int32_t x1 = region->x1 > damage.x1 ?
-                region->x1 : damage.x1;
-            int32_t y1 = region->y1 > damage.y1 ?
-                region->y1 : damage.y1;
-            uint64_t old_area =
-                (uint64_t)(uint32_t)(region->x1 - region->x0) *
-                (uint32_t)(region->y1 - region->y0);
-            uint64_t new_area =
-                (uint64_t)(uint32_t)(x1 - x0) *
-                (uint32_t)(y1 - y0);
-            uint64_t growth = new_area - old_area;
-
-            if (growth < best_growth) {
-                best = index;
-                best_growth = growth;
-            }
-        }
-        wl_renderer_rect_add(
-            &regions[best], damage.x0, damage.y0,
-            (uint32_t)(damage.x1 - damage.x0),
-            (uint32_t)(damage.y1 - damage.y0));
+        tiles[index / 64u] |= 1ull << (index % 64u);
     }
 }
 
 void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
                              uint32_t width, uint32_t height)
 {
-    struct wl_renderer_rect damage;
+    struct wl_server_renderer *renderer;
+    int64_t x1;
+    int64_t y1;
+    uint32_t column0;
+    uint32_t column1;
+    uint32_t row0;
+    uint32_t row1;
 
     if (!server || width == 0u || height == 0u)
         return;
-    damage.x0 = x;
-    damage.y0 = y;
-    damage.x1 = x + (int32_t)width;
-    damage.y1 = y + (int32_t)height;
-    wl_renderer_region_add(server->damage, &server->damage_count,
-                           WL_SERVER_MAX_DAMAGE_RECTS, damage);
-    server->damage_pending = server->damage_count != 0u;
+    renderer = &server->renderer;
+    x1 = (int64_t)x + width;
+    y1 = (int64_t)y + height;
+    if (x1 <= 0 || y1 <= 0 ||
+        x >= (int32_t)renderer->framebuffer.width ||
+        y >= (int32_t)renderer->framebuffer.height)
+        return;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x1 > renderer->framebuffer.width)
+        x1 = renderer->framebuffer.width;
+    if (y1 > renderer->framebuffer.height)
+        y1 = renderer->framebuffer.height;
+
+    column0 = (uint32_t)x / WL_RENDER_TILE_SIZE;
+    column1 = ((uint32_t)x1 - 1u) / WL_RENDER_TILE_SIZE;
+    row0 = (uint32_t)y / WL_RENDER_TILE_SIZE;
+    row1 = ((uint32_t)y1 - 1u) / WL_RENDER_TILE_SIZE;
+    for (uint32_t row = row0; row <= row1; row++) {
+        for (uint32_t column = column0; column <= column1; column++)
+            wl_renderer_mark_tile(renderer, column, row);
+    }
+    server->damage_pending = true;
+}
+
+static void wl_renderer_damage_surface_extent_at(
+    struct wl_server *server, int32_t x, int32_t y,
+    uint32_t width, uint32_t height, bool server_decorated)
+{
+    wl_renderer_damage_rect(
+        server, x - 8, y - 4, width + 16u,
+        height + (server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0u) + 16u);
 }
 
 void wl_renderer_damage_surface_at(
@@ -927,132 +869,214 @@ void wl_renderer_damage_surface_at(
 {
     if (!surface)
         return;
-    wl_renderer_damage_rect(
-        server, x - 8, y - 4, surface->width + 16u,
-        surface->height +
-        (surface->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0u) + 16u);
+    wl_renderer_damage_surface_extent_at(
+        server, x, y, surface->width, surface->height,
+        surface->server_decorated);
 }
 
-static int wl_renderer_clip_rect(struct wl_server_renderer *renderer,
-                                 struct wl_renderer_rect *damage)
+static struct wl_renderer_rect wl_renderer_tile_rect(
+    const struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row)
 {
-    if (damage->x0 < 0)
-        damage->x0 = 0;
-    if (damage->y0 < 0)
-        damage->y0 = 0;
-    if (damage->x1 > (int32_t)renderer->framebuffer.width)
-        damage->x1 = (int32_t)renderer->framebuffer.width;
-    if (damage->y1 > (int32_t)renderer->framebuffer.height)
-        damage->y1 = (int32_t)renderer->framebuffer.height;
-    return damage->x0 < damage->x1 && damage->y0 < damage->y1;
+    struct wl_renderer_rect tile;
+
+    tile.x0 = (int32_t)(column * WL_RENDER_TILE_SIZE);
+    tile.y0 = (int32_t)(row * WL_RENDER_TILE_SIZE);
+    tile.x1 = tile.x0 + (int32_t)WL_RENDER_TILE_SIZE;
+    tile.y1 = tile.y0 + (int32_t)WL_RENDER_TILE_SIZE;
+    if (tile.x1 > (int32_t)renderer->framebuffer.width)
+        tile.x1 = (int32_t)renderer->framebuffer.width;
+    if (tile.y1 > (int32_t)renderer->framebuffer.height)
+        tile.y1 = (int32_t)renderer->framebuffer.height;
+    return tile;
 }
 
 static void wl_renderer_clear_rect(struct wl_server_renderer *renderer,
                                    const struct wl_renderer_rect *damage)
 {
     uint32_t canvas_width = renderer->framebuffer.pitch / sizeof(uint32_t);
+    uint32_t *destination = renderer->canvas +
+        (uint32_t)damage->y0 * canvas_width + (uint32_t)damage->x0;
 
-    for (int32_t y = damage->y0; y < damage->y1; y++) {
-        uint32_t *row = renderer->canvas +
-            (uint32_t)y * canvas_width + (uint32_t)damage->x0;
-
-        for (int32_t x = damage->x0; x < damage->x1; x++)
-            *row++ = WL_BACKGROUND;
-    }
+    wl_render_fill_rect(
+        destination, canvas_width,
+        (uint32_t)(damage->x1 - damage->x0),
+        (uint32_t)(damage->y1 - damage->y0), WL_BACKGROUND);
 }
 
-static bool wl_renderer_rect_intersects(
-    const struct wl_renderer_rect *damage, int32_t x, int32_t y,
-    uint32_t width, uint32_t height)
+static bool wl_renderer_dirty_intersects_rect(
+    const struct wl_server_renderer *renderer,
+    int32_t x, int32_t y, uint32_t width, uint32_t height)
 {
-    int32_t x1 = x + (int32_t)width;
-    int32_t y1 = y + (int32_t)height;
+    int64_t x1 = (int64_t)x + width;
+    int64_t y1 = (int64_t)y + height;
+    uint32_t column0;
+    uint32_t column1;
+    uint32_t row0;
+    uint32_t row1;
 
-    return x < damage->x1 && x1 > damage->x0 &&
-           y < damage->y1 && y1 > damage->y0;
+    if (width == 0u || height == 0u || x1 <= 0 || y1 <= 0 ||
+        x >= (int32_t)renderer->framebuffer.width ||
+        y >= (int32_t)renderer->framebuffer.height)
+        return false;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x1 > renderer->framebuffer.width)
+        x1 = renderer->framebuffer.width;
+    if (y1 > renderer->framebuffer.height)
+        y1 = renderer->framebuffer.height;
+    column0 = (uint32_t)x / WL_RENDER_TILE_SIZE;
+    column1 = ((uint32_t)x1 - 1u) / WL_RENDER_TILE_SIZE;
+    row0 = (uint32_t)y / WL_RENDER_TILE_SIZE;
+    row1 = ((uint32_t)y1 - 1u) / WL_RENDER_TILE_SIZE;
+    for (uint32_t row = row0; row <= row1; row++) {
+        for (uint32_t column = column0; column <= column1; column++) {
+            if (wl_renderer_tile_dirty(renderer, column, row))
+                return true;
+        }
+    }
+    return false;
 }
 
 int wl_renderer_compose_damage(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
-    struct wl_renderer_rect damage[
-        WL_SERVER_MAX_DAMAGE_RECTS + 2u];
-    size_t damage_count;
+    struct wl_renderer_scene scene = {0};
     bool pointer_damage;
 
     if (!server || !server->renderer.canvas)
         return -1;
     renderer = &server->renderer;
     if (!server->damage_pending)
-        return wl_renderer_compose(server);
+        return 0;
+    wl_renderer_select_draw_buffer(renderer);
 
-    damage_count = server->damage_count;
-    memcpy(damage, server->damage,
-           damage_count * sizeof(damage[0]));
     pointer_damage = !server->pointer_presented ||
         server->presented_pointer_x != server->pointer_x ||
-        server->presented_pointer_y != server->pointer_y;
-    if (!pointer_damage) {
-        for (size_t index = 0u; index < damage_count; index++) {
-            if (wl_renderer_rect_intersects(
-                    &damage[index], server->presented_pointer_x,
-                    server->presented_pointer_y,
-                    WL_POINTER_WIDTH, WL_POINTER_HEIGHT)) {
-                pointer_damage = true;
-                break;
-            }
-        }
-    }
+        server->presented_pointer_y != server->pointer_y ||
+        wl_renderer_dirty_intersects_rect(
+            renderer, server->presented_pointer_x,
+            server->presented_pointer_y,
+            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
     if (pointer_damage) {
-        struct wl_renderer_rect pointer;
-
-        pointer.x0 = server->presented_pointer_x;
-        pointer.y0 = server->presented_pointer_y;
-        pointer.x1 = pointer.x0 + (int32_t)WL_POINTER_WIDTH;
-        pointer.y1 = pointer.y0 + (int32_t)WL_POINTER_HEIGHT;
-        wl_renderer_region_add(
-            damage, &damage_count,
-            WL_SERVER_MAX_DAMAGE_RECTS + 2u, pointer);
-        pointer.x0 = server->pointer_x;
-        pointer.y0 = server->pointer_y;
-        pointer.x1 = pointer.x0 + (int32_t)WL_POINTER_WIDTH;
-        pointer.y1 = pointer.y0 + (int32_t)WL_POINTER_HEIGHT;
-        wl_renderer_region_add(
-            damage, &damage_count,
-            WL_SERVER_MAX_DAMAGE_RECTS + 2u, pointer);
+        wl_renderer_damage_rect(
+            server, server->presented_pointer_x,
+            server->presented_pointer_y,
+            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
+        wl_renderer_damage_rect(
+            server, server->pointer_x, server->pointer_y,
+            WL_POINTER_WIDTH, WL_POINTER_HEIGHT);
     }
 
-    if (pointer_damage)
-        wl_renderer_restore_pointer(server);
-    for (size_t index = 0u; index < damage_count; index++) {
-        if (!wl_renderer_clip_rect(renderer, &damage[index]))
-            continue;
-        renderer->clip_enabled = true;
-        renderer->clip_x0 = damage[index].x0;
-        renderer->clip_y0 = damage[index].y0;
-        renderer->clip_x1 = damage[index].x1;
-        renderer->clip_y1 = damage[index].y1;
-        if (!wl_renderer_clip_has_opaque_cover(server))
-            wl_renderer_clear_rect(renderer, &damage[index]);
-        wl_renderer_draw_surfaces(server);
+    wl_renderer_build_scene(server, &scene);
+    /*
+     * Determine occlusion per tile, then merge adjacent tiles that share the
+     * same first visible surface. This preserves conservative tile coverage
+     * while avoiding hundreds of renderer invocations for a large update.
+     */
+    for (uint32_t row = 0u; row < renderer->tile_rows; row++) {
+        uint32_t column = 0u;
+
+        while (column < renderer->tile_columns) {
+            struct wl_renderer_rect run;
+            bool opaque_cover;
+            size_t first;
+            uint32_t run_end;
+
+            if (!wl_renderer_tile_dirty(renderer, column, row)) {
+                column++;
+                continue;
+            }
+            run = wl_renderer_tile_rect(renderer, column, row);
+            renderer->clip_enabled = true;
+            renderer->clip_x0 = run.x0;
+            renderer->clip_y0 = run.y0;
+            renderer->clip_x1 = run.x1;
+            renderer->clip_y1 = run.y1;
+            first = wl_renderer_scene_first_visible(
+                server, &scene, &opaque_cover);
+            run_end = column;
+            while (run_end + 1u < renderer->tile_columns &&
+                   wl_renderer_tile_dirty(renderer, run_end + 1u, row)) {
+                struct wl_renderer_rect candidate =
+                    wl_renderer_tile_rect(renderer, run_end + 1u, row);
+                bool candidate_opaque;
+                size_t candidate_first;
+
+                renderer->clip_x0 = candidate.x0;
+                renderer->clip_y0 = candidate.y0;
+                renderer->clip_x1 = candidate.x1;
+                renderer->clip_y1 = candidate.y1;
+                candidate_first = wl_renderer_scene_first_visible(
+                    server, &scene, &candidate_opaque);
+                if (candidate_first != first ||
+                    candidate_opaque != opaque_cover)
+                    break;
+                run.x1 = candidate.x1;
+                run_end++;
+            }
+            renderer->clip_x0 = run.x0;
+            renderer->clip_y0 = run.y0;
+            renderer->clip_x1 = run.x1;
+            renderer->clip_y1 = run.y1;
+            if (!opaque_cover)
+                wl_renderer_clear_rect(renderer, &run);
+            wl_renderer_draw_scene(
+                server, &scene, first, opaque_cover);
+            column = run_end + 1u;
+        }
     }
     renderer->clip_enabled = false;
     if (pointer_damage)
         wl_renderer_draw_pointer(server);
 
-    for (size_t index = 0u; index < damage_count; index++) {
-        uint32_t width;
-        uint32_t height;
+    {
+        struct wl_renderer_rect presentation = {0};
+        bool have_damage = false;
 
-        if (damage[index].x0 >= damage[index].x1 ||
-            damage[index].y0 >= damage[index].y1)
-            continue;
-        width = (uint32_t)(damage[index].x1 - damage[index].x0);
-        height = (uint32_t)(damage[index].y1 - damage[index].y0);
-        if (wl_renderer_present_rect(
-                renderer, damage[index].x0, damage[index].y0,
-                width, height) < 0)
+        /*
+         * Composition remains tile-local, but publish one final rectangle.
+         * Multiple FBIOBLIT calls allowed displayd to expose intermediate
+         * cache-clean states on a scanout framebuffer, producing visible
+         * stripes and trails on Raspberry Pi.
+         */
+        for (uint32_t row = 0u; row < renderer->tile_rows; row++) {
+            for (uint32_t column = 0u;
+                 column < renderer->tile_columns; column++) {
+                struct wl_renderer_rect tile;
+
+                if (!wl_renderer_tile_dirty(renderer, column, row))
+                    continue;
+                tile = wl_renderer_tile_rect(renderer, column, row);
+                if (!have_damage) {
+                    presentation = tile;
+                    have_damage = true;
+                } else {
+                    if (tile.x0 < presentation.x0)
+                        presentation.x0 = tile.x0;
+                    if (tile.y0 < presentation.y0)
+                        presentation.y0 = tile.y0;
+                    if (tile.x1 > presentation.x1)
+                        presentation.x1 = tile.x1;
+                    if (tile.y1 > presentation.y1)
+                        presentation.y1 = tile.y1;
+                }
+            }
+        }
+        if (have_damage &&
+            wl_renderer_backend_present_rect(
+                renderer, presentation.x0, presentation.y0,
+                (uint32_t)(presentation.x1 - presentation.x0),
+                (uint32_t)(presentation.y1 - presentation.y0)) < 0)
             return -1;
+        if (have_damage)
+            renderer->present_front_buffer =
+                renderer->present_draw_buffer;
+        memset(renderer->dirty_tiles, 0,
+               renderer->dirty_tile_word_count *
+               sizeof(*renderer->dirty_tiles));
     }
     if (pointer_damage) {
         server->pointer_presented = true;
@@ -1060,7 +1084,6 @@ int wl_renderer_compose_damage(struct wl_server *server)
         server->presented_pointer_y = server->pointer_y;
     }
     server->damage_pending = false;
-    server->damage_count = 0u;
     return 0;
 }
 
@@ -1160,6 +1183,9 @@ int wl_surface_commit(struct wl_server *server,
     bool full_copy;
     bool newly_attached;
     bool callback_pending = false;
+    bool previous_origin_valid = false;
+    int32_t previous_origin_x = 0;
+    int32_t previous_origin_y = 0;
     int32_t content_x = 0;
     int32_t content_y = 0;
 
@@ -1168,6 +1194,18 @@ int wl_surface_commit(struct wl_server *server,
     previous_width = surface->width;
     previous_height = surface->height;
     previous_mapped = surface->mapped;
+    if (previous_mapped) {
+        if (surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+            previous_origin_valid =
+                wl_surface_content_origin(
+                    surface, &previous_origin_x,
+                    &previous_origin_y) == 0;
+        } else {
+            previous_origin_x = surface->x;
+            previous_origin_y = surface->y;
+            previous_origin_valid = true;
+        }
+    }
     newly_attached = surface->pending_attach;
     content_changed = surface->pending_attach ||
         surface->pending_damage_count != 0u;
@@ -1273,8 +1311,26 @@ int wl_surface_commit(struct wl_server *server,
             }
             if (wl_server_schedule_render(server, false) < 0)
                 return -1;
-        } else if (wl_server_schedule_render(server, true) < 0) {
-            return -1;
+        } else {
+            if (previous_mapped && previous_origin_valid) {
+                wl_renderer_damage_surface_extent_at(
+                    server, previous_origin_x, previous_origin_y,
+                    previous_width, previous_height,
+                    surface->server_decorated);
+            }
+            if (surface->mapped) {
+                int32_t current_x = surface->x;
+                int32_t current_y = surface->y;
+
+                if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE ||
+                    wl_surface_content_origin(
+                        surface, &current_x, &current_y) == 0) {
+                    wl_renderer_damage_surface_at(
+                        server, surface, current_x, current_y);
+                }
+            }
+            if (wl_server_schedule_render(server, false) < 0)
+                return -1;
         }
     }
     surface->pending_damage_count = 0u;
@@ -1297,6 +1353,7 @@ int wl_server_complete_frame_callbacks(struct wl_server *server)
     for (size_t client_index = 0u;
          client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
         struct wl_server_client *client = &server->clients[client_index];
+        bool disconnected = false;
 
         if (!client->used)
             continue;
@@ -1318,11 +1375,22 @@ int wl_server_complete_frame_callbacks(struct wl_server *server)
                     continue;
                 done = ++server->serial;
                 if (wl_client_send_words(client, callback->object_id,
-                                         0u, &done, 1u) < 0)
-                    return -1;
+                                         0u, &done, 1u) < 0) {
+                    /*
+                     * An abruptly terminated client may leave a frame
+                     * callback pending until its socket reports the hangup.
+                     * A broken client connection must not stop the compositor
+                     * or disconnect unrelated clients.
+                     */
+                    wl_server_disconnect_client(server, client);
+                    disconnected = true;
+                    break;
+                }
                 wl_client_remove_object(client, callback->object_id, true);
                 memset(callback, 0, sizeof(*callback));
             }
+            if (disconnected)
+                break;
         }
     }
     return 0;

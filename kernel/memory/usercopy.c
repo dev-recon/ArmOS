@@ -85,6 +85,25 @@ static int prepare_user_page(vm_space_t *space, vaddr_t page, bool write)
     return 0;
 }
 
+/*
+ * Resolve an already validated user page with one page-table lookup on the
+ * common read path. Lazy faults and write-side COW still use the complete
+ * preparation path.
+ */
+static paddr_t resolve_user_page(vm_space_t *space, vaddr_t page, bool write)
+{
+    paddr_t physical;
+
+    if (!space)
+        return 0;
+    physical = get_physical_address(space->pgdir, page) & PAGE_MASK;
+    if (physical && !write)
+        return physical;
+    if (prepare_user_page(space, page, write) != 0)
+        return 0;
+    return get_physical_address(space->pgdir, page) & PAGE_MASK;
+}
+
 static int copy_user_pages(void *kernel_buffer, vaddr_t user_address,
                            size_t length, bool to_user)
 {
@@ -108,9 +127,7 @@ static int copy_user_pages(void *kernel_buffer, vaddr_t user_address,
 
         if (chunk > length - copied)
             chunk = length - copied;
-        if (prepare_user_page(vm, page, to_user) != 0)
-            return -1;
-        physical = get_physical_address(vm->pgdir, page);
+        physical = resolve_user_page(vm, page, to_user);
         if (!physical)
             return -1;
         mapped = (uint8_t *)(uintptr_t)phys_to_virt(physical + offset);
@@ -161,6 +178,8 @@ int copy_from_user_2d(void *to, size_t to_stride,
     vm_space_t *vm = current_user_vm();
     uint8_t *destination = to;
     vaddr_t source = (vaddr_t)(uintptr_t)from;
+    vaddr_t cached_page = (vaddr_t)-1;
+    paddr_t cached_physical = 0;
     size_t span;
 
     if (!vm || !to || !from || !row_bytes || !rows ||
@@ -185,9 +204,13 @@ int copy_from_user_2d(void *to, size_t to_stride,
 
             if (chunk > row_bytes - copied)
                 chunk = row_bytes - copied;
-            if (prepare_user_page(vm, page, false) != 0)
-                return -1;
-            physical = get_physical_address(vm->pgdir, page);
+            if (page == cached_page) {
+                physical = cached_physical;
+            } else {
+                physical = resolve_user_page(vm, page, false);
+                cached_page = page;
+                cached_physical = physical;
+            }
             if (!physical)
                 return -1;
             mapped = (uint8_t *)(uintptr_t)phys_to_virt(physical + offset);

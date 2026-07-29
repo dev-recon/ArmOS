@@ -331,7 +331,8 @@ void destroy_vm_space(vm_space_t *vm)
         for (vaddr = page_start; vaddr < page_end; vaddr += PAGE_SIZE)
         {
             phys_addr = get_physical_address(vm->pgdir, vaddr);
-            if (vm_phys_page_is_freeable(phys_addr, "user"))
+            if (!(vma->flags & VMA_EXTERNAL) &&
+                vm_phys_page_is_freeable(phys_addr, "user"))
             {
                 //KDEBUG("destroy_vm_space: Freeing page 0x%08X\n", phys_addr);
                 free_page((void *)phys_addr);

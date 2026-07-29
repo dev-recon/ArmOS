@@ -46,6 +46,8 @@
 #define WL_SERVER_MAX_MIME_LENGTH   64u
 #define WL_SERVER_MAX_TITLE_LENGTH  96u
 
+#define WL_RENDER_TILE_SIZE 32u
+
 #define WL_DISPLAY_ID 1u
 
 #define WL_GLOBAL_COMPOSITOR 1u
@@ -204,17 +206,29 @@ struct wl_server_client {
 
 struct wl_server_renderer {
     bool headless;
+    bool profile_enabled;
     int framebuffer_fd;
     struct armos_fb_info framebuffer;
     uint32_t *canvas;
     size_t canvas_size;
+    uint32_t *mapped_buffers;
+    size_t mapped_buffers_size;
+    uint32_t present_buffer_count;
+    uint32_t present_front_buffer;
+    uint32_t present_draw_buffer;
+    bool direct_present;
+    uint64_t *dirty_tiles;
+    uint64_t *dirty_tile_storage;
+    size_t dirty_tile_word_count;
+    uint32_t tile_columns;
+    uint32_t tile_rows;
     bool clip_enabled;
     int32_t clip_x0;
     int32_t clip_y0;
     int32_t clip_x1;
     int32_t clip_y1;
-    uint32_t pointer_backing[12u * 16u];
-    bool pointer_backing_valid;
+    uint64_t profile_present_us;
+    uint64_t profile_present_pixels;
 };
 
 struct wl_server {
@@ -245,8 +259,9 @@ struct wl_server {
     int32_t drag_offset_x;
     int32_t drag_offset_y;
     bool damage_pending;
-    size_t damage_count;
-    struct wl_renderer_rect damage[WL_SERVER_MAX_DAMAGE_RECTS];
+    uint64_t profile_started_us;
+    uint64_t profile_render_us;
+    uint64_t profile_frames;
     struct wl_server_client *focus_client;
     struct wl_server_surface *focus_surface;
     struct wl_server_client *pointer_client;
@@ -304,6 +319,18 @@ void wl_server_disconnect_client(struct wl_server *server,
 
 int wl_renderer_init(struct wl_server_renderer *renderer, bool headless);
 void wl_renderer_destroy(struct wl_server_renderer *renderer);
+void wl_render_fill_rect(uint32_t *destination, uint32_t destination_pitch,
+                         uint32_t width, uint32_t height, uint32_t color);
+void wl_render_copy_rect(uint32_t *destination, uint32_t destination_pitch,
+                         const uint32_t *source, uint32_t source_pitch,
+                         uint32_t width, uint32_t height);
+void wl_render_blend_rect(uint32_t *destination, uint32_t destination_pitch,
+                          const uint32_t *source, uint32_t source_pitch,
+                          uint32_t width, uint32_t height);
+uint32_t wl_render_blend_pixel(uint32_t destination, uint32_t source);
+int wl_renderer_backend_present_rect(
+    struct wl_server_renderer *renderer, int32_t x, int32_t y,
+    uint32_t width, uint32_t height);
 int wl_renderer_compose(struct wl_server *server);
 int wl_renderer_compose_pointer(struct wl_server *server);
 void wl_renderer_damage_surface_at(
