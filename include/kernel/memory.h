@@ -41,6 +41,8 @@ typedef struct vma {
     vaddr_t end;
     uint32_t flags;
     uint32_t shm_id;
+    void (*release)(uintptr_t cookie);
+    uintptr_t release_cookie;
     struct vma* next;
 } __attribute__((aligned(8))) vma_t;
 
@@ -172,6 +174,8 @@ void destroy_vm_space(vm_space_t* vm);
 vm_space_t* fork_vm_space(vm_space_t* parent_vm);
 void vm_release_vmas(vm_space_t* vm);
 vma_t* create_vma(vm_space_t* vm, vaddr_t start, size_t size, uint32_t flags);
+void vm_set_vma_release(vma_t *vma, void (*release)(uintptr_t),
+                        uintptr_t cookie);
 int remove_vma(vm_space_t* vm, vaddr_t start, vaddr_t end);
 vaddr_t vm_find_free_range(vm_space_t* vm, vaddr_t hint, size_t size,
                            vaddr_t base, vaddr_t limit);

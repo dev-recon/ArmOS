@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <sys/fb.h>
 #include <sys/input.h>
+#include <uapi/armos/drm.h>
 #include <wayland-server-core.h>
 
 #define ARMOS_WLCOMP_SOCKET_PATH "/tmp/wayland-0"
@@ -328,10 +329,19 @@ struct wl_server_client {
     struct wl_server_positioner positioners[WL_SERVER_MAX_POSITIONERS];
 };
 
+enum wl_renderer_output_backend {
+    WL_RENDERER_OUTPUT_HEADLESS = 0,
+    WL_RENDERER_OUTPUT_FRAMEBUFFER,
+    WL_RENDERER_OUTPUT_DRM
+};
+
 struct wl_server_renderer {
     bool headless;
     bool profile_enabled;
+    enum wl_renderer_output_backend output_backend;
     int framebuffer_fd;
+    int drm_fd;
+    uint32_t drm_handle;
     struct armos_fb_info framebuffer;
     uint32_t *canvas;
     size_t canvas_size;

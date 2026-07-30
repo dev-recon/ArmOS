@@ -83,6 +83,29 @@ int wl_renderer_backend_present_rect(
     height = (uint32_t)(y1 - y);
     started_us = renderer->profile_enabled ?
         wl_backend_monotonic_us() : 0u;
+    if (renderer->output_backend == WL_RENDERER_OUTPUT_DRM) {
+        armos_drm_bo_present_t present_drm = {
+            .handle = renderer->drm_handle,
+            .scanout_id = 0u,
+            .x = (uint32_t)x,
+            .y = (uint32_t)y,
+            .width = width,
+            .height = height,
+        };
+
+        if (ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_PRESENT,
+                  &present_drm) < 0)
+            return -1;
+        if (started_us != 0u) {
+            uint64_t finished_us = wl_backend_monotonic_us();
+
+            if (finished_us >= started_us)
+                renderer->profile_present_us += finished_us - started_us;
+            renderer->profile_present_pixels +=
+                (uint64_t)width * height;
+        }
+        return 0;
+    }
     if (renderer->direct_present) {
         present.buffer_index = renderer->present_draw_buffer;
         present.x = (uint32_t)x;

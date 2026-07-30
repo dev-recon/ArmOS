@@ -597,10 +597,16 @@ int main(int argc, char **argv)
     wl_render_profile_set_enabled(server.renderer.profile_enabled);
 
     if (!quiet) {
+        const char *output =
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_DRM ?
+                ", drm" :
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_FRAMEBUFFER ?
+                ", framebuffer" : ", headless";
+
         printf("armos-wlcomp: ready on %s (%ux%u%s)\n", socket_path,
                (unsigned)server.renderer.framebuffer.width,
                (unsigned)server.renderer.framebuffer.height,
-               headless ? ", headless" : "");
+               output);
     }
     if (!headless) {
         wl_child_changed = 0;

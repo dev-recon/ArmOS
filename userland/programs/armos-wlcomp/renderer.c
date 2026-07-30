@@ -96,6 +96,85 @@ static void wl_renderer_mark_all_buffers_dirty(
            sizeof(*renderer->dirty_tile_storage));
 }
 
+static int wl_renderer_try_drm(struct wl_server_renderer *renderer)
+{
+    const unsigned long long required =
+        ARMOS_DRM_CAP_SCANOUT |
+        ARMOS_DRM_CAP_TRANSFER_2D |
+        ARMOS_DRM_CAP_BUFFER_OBJECTS |
+        ARMOS_DRM_CAP_CPU_MAPPABLE;
+    armos_drm_info_t info;
+    armos_drm_bo_create_t create;
+    uint64_t size;
+    void *mapping;
+    int fd;
+
+    fd = open("/dev/dri/card0", O_RDWR, 0);
+    if (fd < 0)
+        return -1;
+    memset(&info, 0, sizeof(info));
+    if (ioctl(fd, ARMOS_DRM_IOCTL_GET_INFO, &info) < 0 ||
+        info.abi_version != ARMOS_DRM_ABI_VERSION ||
+        info.struct_size < sizeof(info) ||
+        (info.capabilities & required) != required ||
+        info.scanout_count == 0u ||
+        info.scanout_width == 0u || info.scanout_height == 0u ||
+        info.scanout_width > UINT32_MAX / sizeof(uint32_t)) {
+        close(fd);
+        errno = ENOTSUP;
+        return -1;
+    }
+    size = (uint64_t)info.scanout_width * sizeof(uint32_t) *
+           info.scanout_height;
+    if (size == 0u || size > SIZE_MAX || size > UINT32_MAX) {
+        close(fd);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    memset(&create, 0, sizeof(create));
+    create.abi_version = ARMOS_DRM_ABI_VERSION;
+    create.flags = ARMOS_DRM_BO_CPU_READ |
+                   ARMOS_DRM_BO_CPU_WRITE |
+                   ARMOS_DRM_BO_SCANOUT;
+    create.size = size;
+    create.width = info.scanout_width;
+    create.height = info.scanout_height;
+    create.stride = info.scanout_width * sizeof(uint32_t);
+    create.format = ARMOS_DRM_FORMAT_BGRA8888;
+    if (ioctl(fd, ARMOS_DRM_IOCTL_BO_CREATE, &create) < 0) {
+        close(fd);
+        return -1;
+    }
+    mapping = mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, (off_t)create.map_offset);
+    if (mapping == MAP_FAILED) {
+        armos_drm_bo_destroy_t destroy = {
+            .handle = create.handle,
+        };
+
+        (void)ioctl(fd, ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
+        close(fd);
+        return -1;
+    }
+    renderer->drm_fd = fd;
+    renderer->drm_handle = create.handle;
+    renderer->output_backend = WL_RENDERER_OUTPUT_DRM;
+    renderer->framebuffer.width = info.scanout_width;
+    renderer->framebuffer.height = info.scanout_height;
+    renderer->framebuffer.pitch = create.stride;
+    renderer->framebuffer.bpp = 32u;
+    renderer->framebuffer.size = (uint32_t)size;
+    renderer->framebuffer.format = ARMOS_FB_FORMAT_ARGB8888;
+    renderer->mapped_buffers = mapping;
+    renderer->mapped_buffers_size = (size_t)size;
+    renderer->present_buffer_count = 1u;
+    renderer->present_front_buffer = 0u;
+    renderer->present_draw_buffer = 0u;
+    renderer->direct_present = true;
+    renderer->canvas = mapping;
+    return 0;
+}
+
 int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
 {
     struct armos_fb_map map = {0};
@@ -107,10 +186,12 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
         return -1;
     memset(renderer, 0, sizeof(*renderer));
     renderer->framebuffer_fd = -1;
+    renderer->drm_fd = -1;
     renderer->headless = headless;
     renderer->present_buffer_count = 1u;
 
     if (headless) {
+        renderer->output_backend = WL_RENDERER_OUTPUT_HEADLESS;
         renderer->framebuffer.width = WL_HEADLESS_WIDTH;
         renderer->framebuffer.height = WL_HEADLESS_HEIGHT;
         renderer->framebuffer.pitch = WL_HEADLESS_WIDTH * 4u;
@@ -119,6 +200,9 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
             renderer->framebuffer.pitch * WL_HEADLESS_HEIGHT;
         renderer->framebuffer.format = ARMOS_FB_FORMAT_ARGB8888;
     } else {
+        if (wl_renderer_try_drm(renderer) == 0)
+            goto output_ready;
+        renderer->output_backend = WL_RENDERER_OUTPUT_FRAMEBUFFER;
         renderer->framebuffer_fd = open("/dev/fb0", O_RDWR, 0);
         if (renderer->framebuffer_fd < 0)
             return -1;
@@ -159,6 +243,7 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
         }
     }
 
+output_ready:
     renderer->canvas_size = renderer->framebuffer.size;
     if (!renderer->direct_present) {
         renderer->canvas = malloc(renderer->canvas_size);
@@ -223,6 +308,19 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
     renderer->mapped_buffers = NULL;
     renderer->mapped_buffers_size = 0u;
     renderer->canvas = NULL;
+    if (renderer->drm_fd >= 0) {
+        if (renderer->drm_handle != 0u) {
+            armos_drm_bo_destroy_t destroy = {
+                .handle = renderer->drm_handle,
+            };
+
+            (void)ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_DESTROY,
+                        &destroy);
+        }
+        close(renderer->drm_fd);
+    }
+    renderer->drm_fd = -1;
+    renderer->drm_handle = 0u;
     if (renderer->framebuffer_fd >= 0)
         close(renderer->framebuffer_fd);
     renderer->framebuffer_fd = -1;

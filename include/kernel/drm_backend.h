@@ -35,10 +35,37 @@ typedef struct armos_drm_backend_info {
     uint8_t command_set[16];
 } armos_drm_backend_info_t;
 
+typedef struct armos_drm_buffer_desc {
+    uint64_t size;
+    uint32_t flags;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t format;
+} armos_drm_buffer_desc_t;
+
+typedef struct armos_drm_memory_segment {
+    paddr_t address;
+    uint32_t length;
+} armos_drm_memory_segment_t;
+
 typedef struct armos_drm_backend_ops {
     int (*get_info)(void *context, armos_drm_backend_info_t *info);
     int (*context_create)(void *context, uint32_t context_id);
     int (*context_destroy)(void *context, uint32_t context_id);
+    int (*buffer_create)(void *context, uint32_t resource_id,
+                         const armos_drm_buffer_desc_t *desc,
+                         const armos_drm_memory_segment_t *segments,
+                         uint32_t segment_count);
+    int (*buffer_destroy)(void *context, uint32_t resource_id);
+    int (*resource_attach)(void *context, uint32_t context_id,
+                           uint32_t resource_id);
+    int (*resource_detach)(void *context, uint32_t context_id,
+                           uint32_t resource_id);
+    int (*buffer_present)(void *context, uint32_t resource_id,
+                          const armos_drm_buffer_desc_t *desc,
+                          uint32_t scanout_id, uint32_t x, uint32_t y,
+                          uint32_t width, uint32_t height);
     int (*submit)(void *context, uint32_t context_id,
                   const void *commands, uint32_t command_size,
                   uint64_t fence_id);

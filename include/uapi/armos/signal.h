@@ -23,5 +23,6 @@
 #define ARMOS_SA_RESTART    0x01u
 #define ARMOS_SA_NODEFER    0x02u
 #define ARMOS_SA_RESETHAND  0x04u
+#define ARMOS_SA_NOCLDWAIT  0x08u
 
 #endif /* UAPI_ARMOS_SIGNAL_H */

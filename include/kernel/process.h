@@ -84,5 +84,7 @@ bool has_children(task_t* parent, pid_t pid);
 task_t* find_zombie_child(task_t* parent, pid_t pid);
 task_t* find_zombie_child_locked(task_t* parent, pid_t pid);
 void remove_child_from_parent(task_t* parent, task_t* child_to_remove);
+bool remove_child_from_parent_locked(task_t* parent,
+                                     task_t* child_to_remove);
 
 #endif

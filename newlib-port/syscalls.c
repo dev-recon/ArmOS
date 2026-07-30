@@ -230,7 +230,8 @@ extern long sys_timerfd_settime(int fd, int flags,
 extern long sys_timerfd_gettime(int fd,
                                 struct armos_itimerspec *current_value);
 extern long sys_mknod(const char *pathname, int mode, unsigned long dev);
-extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int fd);
+extern long sys_mmap(void *addr, unsigned long length, int prot, int flags,
+                     int fd, unsigned long offset);
 extern long sys_munmap(void *addr, unsigned long length);
 extern long sys_mprotect(void *addr, unsigned long length, int prot);
 extern long sys_select(int nfds, void *readfds, void *writefds, void *exceptfds, void *timeout);
@@ -784,6 +785,10 @@ static int signal_flags_newlib_to_os(int flags)
         output |= ARMOS_SA_NODEFER;
     if ((input & (unsigned int)SA_RESETHAND) != 0)
         output |= ARMOS_SA_RESETHAND;
+#ifdef SA_NOCLDWAIT
+    if ((input & (unsigned int)SA_NOCLDWAIT) != 0)
+        output |= ARMOS_SA_NOCLDWAIT;
+#endif
 
     return (int)output;
 }
@@ -799,6 +804,10 @@ static int signal_flags_os_to_newlib(int flags)
         output |= (unsigned int)SA_NODEFER;
     if ((input & ARMOS_SA_RESETHAND) != 0)
         output |= (unsigned int)SA_RESETHAND;
+#ifdef SA_NOCLDWAIT
+    if ((input & ARMOS_SA_NOCLDWAIT) != 0)
+        output |= (unsigned int)SA_NOCLDWAIT;
+#endif
 
     return (int)output;
 }
@@ -3173,7 +3182,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         return (void *)-1;
     }
 
-    ret = sys_mmap(addr, length, prot, flags, fd);
+    ret = sys_mmap(addr, length, prot, flags, fd, (unsigned long)offset);
     if (ret < 0) {
         errno = (int)-ret;
         return (void *)-1;

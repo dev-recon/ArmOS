@@ -67,11 +67,43 @@ backend. It negotiates VirGL when the device offers it and inventories the
 standard VirGL/VirGL2 capability sets. The generic `render-3d`, `contexts`,
 `command-submit` and `fences` capabilities and opaque command-set name are
 published only after both the feature and a supported capability set have been
-confirmed. Context creation, bounded submission, synchronous fence completion
-and close-time cleanup then flow through the common DRM lifecycle. Buffer
-objects and CPU mappings remain disabled until their complete lifecycle is
-implemented. Raspberry Pi continues to use the firmware framebuffer and
-therefore does not expose DRM nodes until its native backend is present.
+confirmed. Context creation and bounded submission flow through the common DRM
+lifecycle. Per-file buffer objects use page-backed storage, validated formats
+and permissions, explicit resource/context attachment and
+descriptor-independent mapping references. A BO mapping uses the opaque
+page-aligned offset returned by `BO_CREATE` or `BO_MAP`; mappings survive
+descriptor closure and release their pages through the generic VMA lifecycle.
+
+VirtIO-GPU translates the generic objects into VirGL resources and keeps all
+Gallium/VirtIO constants inside the qemu-virt backend. Submissions are queued
+without waiting for the control ring. The device IRQ completes a common fence,
+wakes scheduler waiters and releases the queue for the next operation. Fences
+remain file-owned until `FENCE_DESTROY` or final descriptor closure, including
+after a successful wait. Context and file teardown detach resources before
+destroying their backend objects.
+
+`drm-info` validates context creation, submits a valid VirGL NOP through
+`SUBMIT_3D`, waits for its asynchronous fence, then exercises the BO
+create/map/attach/detach/destroy lifecycle when the backend advertises it.
+The expected accelerated smoke line is:
+
+```text
+submit-smoke: SUBMIT_3D fence=N signaled
+```
+
+The compositor first tries the architecture-neutral card-node contract. It
+creates a CPU-mappable scanout BO, composes directly into that mapping and
+presents only its damaged rectangle through `BO_PRESENT`. The common DRM core
+validates ownership and bounds and performs architecture-neutral cache
+maintenance; the qemu-virt backend translates presentation into
+`TRANSFER_TO_HOST_2D`, `SET_SCANOUT` and `RESOURCE_FLUSH`. If those
+capabilities are unavailable, the compositor retains its framebuffer backend.
+This connects display presentation to DRM but does not yet make the compositor
+render its UI with VirGL: `SUBMIT_3D` is currently validated by the smoke test,
+and the real userspace 3D command encoder remains the next milestone.
+
+Raspberry Pi continues to use the firmware framebuffer and therefore does not
+expose DRM nodes until its native backend is present.
 
 QEMU boots remain 2D by default. An explicitly VirGL-enabled QEMU can be used
 with:
@@ -101,15 +133,11 @@ lifecycle and is deliberately not emulated by rewriting framebuffer geometry.
 
 ## Next milestones
 
-1. Add common, per-file buffer objects with validated create, map and destroy
-   operations.
-2. Extend qemu-virt with host-visible resources and resource/context
-   attachment.
-3. Make fences asynchronous once the common scheduler wait object is wired to
-   VirtIO completion interrupts.
-4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
+1. Add a bounded userspace command encoder and validate real VirGL rendering
+   through the completed object/attachment/fence contract.
+2. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend.
-5. Build a small EGL/OpenGL ES compatibility layer in userland, then port
+3. Build a small EGL/OpenGL ES compatibility layer in userland, then port
    Raylib above it while preserving a software fallback.
 
 Every milestone must retain the same UAPI on ARM32 and ARM64. Unsupported

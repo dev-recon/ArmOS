@@ -103,6 +103,14 @@ platform_devices_state_t platform_devices_init(void)
     return state;
 }
 
+bool platform_device_irq_dispatch(uint32_t irq)
+{
+    if (!virtio_gpu_is_initialized() || irq != virtio_gpu_get_irq())
+        return false;
+    virtio_gpu_irq_handler();
+    return true;
+}
+
 bool platform_block_init(void)
 {
     uint64_t disk_sectors;

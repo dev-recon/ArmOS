@@ -18,9 +18,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <uapi/armos/drm.h>
 
@@ -59,6 +61,14 @@ int main(void)
     armos_drm_info_t info;
     armos_drm_context_create_t create;
     armos_drm_context_destroy_t destroy;
+    armos_drm_bo_create_t bo_create;
+    armos_drm_bo_destroy_t bo_destroy;
+    armos_drm_resource_attachment_t attachment;
+    armos_drm_submit_t submit;
+    armos_drm_fence_wait_t wait;
+    armos_drm_fence_destroy_t fence_destroy;
+    unsigned int virgl_noop = 0u;
+    void *mapping;
     unsigned int index;
     int fd;
 
@@ -114,6 +124,106 @@ int main(void)
                create.context_id,
                create.command_set[0] ?
                    (const char *)create.command_set : "none");
+        if ((info.capabilities &
+             (ARMOS_DRM_CAP_COMMAND_SUBMIT |
+              ARMOS_DRM_CAP_FENCES)) ==
+            (ARMOS_DRM_CAP_COMMAND_SUBMIT |
+             ARMOS_DRM_CAP_FENCES) &&
+            strncmp((const char *)create.command_set,
+                    "virgl", sizeof("virgl") - 1u) == 0) {
+            /*
+             * VIRGL_CMD0(VIRGL_CCMD_NOP, VIRGL_OBJECT_NULL, 0).
+             * A one-dword no-op validates SUBMIT_3D and asynchronous fence
+             * completion without depending on a rendering state tracker.
+             */
+            memset(&submit, 0, sizeof(submit));
+            submit.context_id = create.context_id;
+            submit.command_address =
+                (unsigned long long)(uintptr_t)&virgl_noop;
+            submit.command_size = sizeof(virgl_noop);
+            if (ioctl(fd, ARMOS_DRM_IOCTL_SUBMIT, &submit) < 0) {
+                fprintf(stderr, "drm-info: SUBMIT_3D: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            memset(&wait, 0, sizeof(wait));
+            wait.fence_id = submit.fence_id;
+            wait.timeout_ns = 2000000000LL;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_FENCE_WAIT, &wait) < 0) {
+                fprintf(stderr, "drm-info: fence wait: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            memset(&fence_destroy, 0, sizeof(fence_destroy));
+            fence_destroy.fence_id = submit.fence_id;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_FENCE_DESTROY,
+                      &fence_destroy) < 0) {
+                fprintf(stderr, "drm-info: fence destroy: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            printf("submit-smoke: SUBMIT_3D fence=%llu signaled\n",
+                   submit.fence_id);
+        }
+        if ((info.capabilities &
+             (ARMOS_DRM_CAP_BUFFER_OBJECTS |
+              ARMOS_DRM_CAP_CPU_MAPPABLE)) ==
+            (ARMOS_DRM_CAP_BUFFER_OBJECTS |
+             ARMOS_DRM_CAP_CPU_MAPPABLE)) {
+            memset(&bo_create, 0, sizeof(bo_create));
+            bo_create.abi_version = ARMOS_DRM_ABI_VERSION;
+            bo_create.flags = ARMOS_DRM_BO_CPU_READ |
+                              ARMOS_DRM_BO_CPU_WRITE |
+                              ARMOS_DRM_BO_COMMAND;
+            bo_create.size = 4096;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_BO_CREATE, &bo_create) < 0) {
+                fprintf(stderr, "drm-info: BO create: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            mapping = mmap(NULL, (size_t)bo_create.size,
+                           PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                           (off_t)bo_create.map_offset);
+            if (mapping == MAP_FAILED) {
+                fprintf(stderr, "drm-info: BO mmap: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            memset(mapping, 0xa5, (size_t)bo_create.size);
+            if (munmap(mapping, (size_t)bo_create.size) < 0) {
+                fprintf(stderr, "drm-info: BO munmap: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            memset(&attachment, 0, sizeof(attachment));
+            attachment.context_id = create.context_id;
+            attachment.handle = bo_create.handle;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_RESOURCE_ATTACH,
+                      &attachment) < 0 ||
+                ioctl(fd, ARMOS_DRM_IOCTL_RESOURCE_DETACH,
+                      &attachment) < 0) {
+                fprintf(stderr, "drm-info: BO attachment: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            memset(&bo_destroy, 0, sizeof(bo_destroy));
+            bo_destroy.handle = bo_create.handle;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_BO_DESTROY, &bo_destroy) < 0) {
+                fprintf(stderr, "drm-info: BO destroy: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            printf("buffer-smoke: handle=%u mmap attach detach destroy\n",
+                   bo_create.handle);
+        }
         memset(&destroy, 0, sizeof(destroy));
         destroy.context_id = create.context_id;
         if (ioctl(fd, ARMOS_DRM_IOCTL_CONTEXT_DESTROY, &destroy) < 0) {

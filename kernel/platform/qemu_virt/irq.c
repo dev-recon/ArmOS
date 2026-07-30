@@ -21,6 +21,7 @@
 #include <kernel/arch_platform.h>
 #include <kernel/interrupt.h>
 #include <kernel/kprintf.h>
+#include <kernel/platform_devices.h>
 #include <kernel/smp.h>
 #include <kernel/timer.h>
 #include <kernel/tlb.h>
@@ -161,6 +162,7 @@ void irq_c_handler(void)
     if (irq == IRQ_SGI_TLB_SHOOTDOWN) {
         smp_note_ipi(cpu);
         tlb_handle_remote_ipi(cpu);
+    } else if (platform_device_irq_dispatch(irq)) {
     } else if (irq == virtio_blk_get_irq()) {
         virtio_block_irq_handler();
     } else if (irq == virtio_input_get_irq() ||

@@ -1540,6 +1540,63 @@ static void test_fork_wait_kill(void)
            "waitpid collects killed child", status);
 }
 
+static void test_sigchld_discard_reaps_children(void)
+{
+    enum { CHILDREN = 24 };
+    void (*old_handler)(int);
+    int pids[CHILDREN];
+    int created = 0;
+    int unreaped = 0;
+
+    old_handler = signal(SIGCHLD, SIG_IGN);
+    if (expect(old_handler != SIG_ERR,
+               "SIGCHLD ignore installs auto-reap", errno) < 0)
+        return;
+
+    for (int i = 0; i < CHILDREN; i++) {
+        int pid = fork();
+
+        if (pid == 0)
+            _exit(i & 0x7f);
+        if (pid < 0)
+            break;
+        pids[created++] = pid;
+    }
+
+    for (int round = 0; round < 200; round++) {
+        unreaped = 0;
+        for (int i = 0; i < created; i++) {
+            int status = 0;
+            int waited;
+
+            if (pids[i] < 0)
+                continue;
+            errno = 0;
+            waited = waitpid(pids[i], &status, WNOHANG);
+            if (waited == 0) {
+                unreaped++;
+            } else if (waited == pids[i]) {
+                fail("SIGCHLD ignore exposed waitable zombie", pids[i]);
+                pids[i] = -1;
+            } else if (waited < 0 && errno == ECHILD) {
+                pids[i] = -1;
+            } else if (pids[i] >= 0) {
+                fail("SIGCHLD ignore waitpid result", errno);
+                pids[i] = -1;
+            }
+        }
+        if (unreaped == 0)
+            break;
+        usleep(1000);
+    }
+
+    expect(created == CHILDREN,
+           "SIGCHLD ignore created child batch", created);
+    expect(unreaped == 0,
+           "SIGCHLD ignore auto-reaps child batch", unreaped);
+    (void)signal(SIGCHLD, old_handler);
+}
+
 static void test_process_groups(void)
 {
     int pids[2] = {-1, -1};
@@ -2925,6 +2982,7 @@ int main(int argc, char **argv)
     test_ext2_write_edges();
     test_rm_recursive_utility();
     test_fork_wait_kill();
+    test_sigchld_discard_reaps_children();
     test_process_groups();
     test_waitpid_process_group();
     test_waitpid_wuntraced_continue();

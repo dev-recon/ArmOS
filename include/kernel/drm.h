@@ -39,5 +39,8 @@ void fill_armos_drm_device_stat(struct stat *st, armos_drm_node_t node);
 file_t *create_armos_drm_device_file(const char *name, int flags,
                                      armos_drm_node_t node);
 int armos_drm_device_ioctl(file_t *file, uint32_t request, uintptr_t arg);
+void *armos_drm_map_fd(int fd, void *hint, size_t length,
+                       uint32_t vma_flags, uint64_t offset);
+void armos_drm_fence_complete(uint64_t fence_id, int status);
 
 #endif /* _KERNEL_DRM_H */

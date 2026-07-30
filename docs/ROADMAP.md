@@ -95,8 +95,13 @@ The GPU and Raylib workstream is specified in
 [`DRM_ARCHITECTURE.md`](DRM_ARCHITECTURE.md). Its first milestone provides
 versioned `/dev/dri/card0` and `/dev/dri/renderD128` discovery nodes plus a
 qemu-virt VirtIO-GPU backend.
-Buffer objects, contexts, submissions and fences come next; VirGL and VC4/V3D
-remain platform implementations behind that common contract.
+Buffer objects, CPU mappings, explicit context/resource attachments and
+interrupt-completed asynchronous fences now share the same common contract on
+ARM32 and ARM64. The VirGL `SUBMIT_3D` path has a fenced NOP smoke test and the
+software compositor presents its scanout buffer through DRM, with framebuffer
+fallback. A bounded VirGL userspace command encoder and real accelerated
+rendering come next; VC4/V3D remains a platform implementation behind that
+object and synchronization model.
 
 ### ArmUI And Desktop Applications
 

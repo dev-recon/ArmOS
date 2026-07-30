@@ -46,6 +46,25 @@
 #define ARMOS_DRM_IOCTL_CONTEXT_DESTROY  0x4402u
 #define ARMOS_DRM_IOCTL_SUBMIT           0x4403u
 #define ARMOS_DRM_IOCTL_FENCE_WAIT       0x4404u
+#define ARMOS_DRM_IOCTL_BO_CREATE        0x4405u
+#define ARMOS_DRM_IOCTL_BO_DESTROY       0x4406u
+#define ARMOS_DRM_IOCTL_BO_MAP           0x4407u
+#define ARMOS_DRM_IOCTL_RESOURCE_ATTACH  0x4408u
+#define ARMOS_DRM_IOCTL_RESOURCE_DETACH  0x4409u
+#define ARMOS_DRM_IOCTL_FENCE_DESTROY    0x440au
+#define ARMOS_DRM_IOCTL_BO_PRESENT       0x440bu
+
+#define ARMOS_DRM_BO_CPU_READ            (1u << 0)
+#define ARMOS_DRM_BO_CPU_WRITE           (1u << 1)
+#define ARMOS_DRM_BO_COMMAND             (1u << 2)
+#define ARMOS_DRM_BO_RENDER_TARGET       (1u << 3)
+#define ARMOS_DRM_BO_TEXTURE             (1u << 4)
+#define ARMOS_DRM_BO_SCANOUT             (1u << 5)
+#define ARMOS_DRM_BO_VALID_FLAGS         0x3fu
+
+#define ARMOS_DRM_FORMAT_NONE            0u
+#define ARMOS_DRM_FORMAT_BGRA8888        1u
+#define ARMOS_DRM_FORMAT_RGBA8888        2u
 
 typedef struct armos_drm_info {
     unsigned int abi_version;
@@ -93,5 +112,57 @@ typedef struct armos_drm_fence_wait {
     unsigned int flags;
     unsigned int reserved[5];
 } armos_drm_fence_wait_t;
+
+typedef struct armos_drm_fence_destroy {
+    unsigned long long fence_id;
+    unsigned int flags;
+    unsigned int reserved[5];
+} armos_drm_fence_destroy_t;
+
+typedef struct armos_drm_bo_create {
+    unsigned int abi_version;
+    unsigned int flags;
+    unsigned long long size;
+    unsigned int width;
+    unsigned int height;
+    unsigned int stride;
+    unsigned int format;
+    unsigned int handle;
+    unsigned int reserved0;
+    unsigned long long map_offset;
+    unsigned int reserved[4];
+} armos_drm_bo_create_t;
+
+typedef struct armos_drm_bo_destroy {
+    unsigned int handle;
+    unsigned int flags;
+    unsigned int reserved[4];
+} armos_drm_bo_destroy_t;
+
+typedef struct armos_drm_bo_map {
+    unsigned int handle;
+    unsigned int flags;
+    unsigned long long map_offset;
+    unsigned long long size;
+    unsigned int reserved[4];
+} armos_drm_bo_map_t;
+
+typedef struct armos_drm_resource_attachment {
+    unsigned int context_id;
+    unsigned int handle;
+    unsigned int flags;
+    unsigned int reserved[5];
+} armos_drm_resource_attachment_t;
+
+typedef struct armos_drm_bo_present {
+    unsigned int handle;
+    unsigned int scanout_id;
+    unsigned int x;
+    unsigned int y;
+    unsigned int width;
+    unsigned int height;
+    unsigned int flags;
+    unsigned int reserved[5];
+} armos_drm_bo_present_t;
 
 #endif /* _UAPI_ARMOS_DRM_H */

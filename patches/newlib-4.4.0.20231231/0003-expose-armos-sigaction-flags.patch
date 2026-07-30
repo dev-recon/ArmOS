@@ -1,7 +1,7 @@
 diff --git a/newlib/libc/include/sys/signal.h b/newlib/libc/include/sys/signal.h
 --- a/newlib/libc/include/sys/signal.h
 +++ b/newlib/libc/include/sys/signal.h
-@@ -120,6 +120,15 @@ struct sigaction
+@@ -120,6 +120,16 @@ struct sigaction
  
  #define SA_NOCLDSTOP 1  /* only value supported now for sa_flags */
  
@@ -11,6 +11,7 @@ diff --git a/newlib/libc/include/sys/signal.h b/newlib/libc/include/sys/signal.h
 + * stable, compact kernel ABI representation.
 + */
 +#define SA_RESTART    0x10000000
++#define SA_NOCLDWAIT  0x20000000
 +#define SA_NODEFER    0x40000000
 +#define SA_RESETHAND  0x80000000
 +

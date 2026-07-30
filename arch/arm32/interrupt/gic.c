@@ -24,6 +24,7 @@
 #include <kernel/virtio_net.h>
 #include <kernel/uart.h>
 #include <kernel/kprintf.h>
+#include <kernel/platform_devices.h>
 #include <kernel/smp.h>
 #include <kernel/tlb.h>
 #include <kernel/arch_platform.h>
@@ -279,6 +280,11 @@ void irq_c_handler(void)
          */
         smp_note_ipi(cpu_id);
         tlb_handle_remote_ipi(cpu_id);
+        gicc[0x010/4] = irq_id;  /* GICC_EOIR */
+        return;
+    }
+
+    if (platform_device_irq_dispatch(int_id)) {
         gicc[0x010/4] = irq_id;  /* GICC_EOIR */
         return;
     }

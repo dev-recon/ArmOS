@@ -3354,7 +3354,8 @@ out:
     return ret;
 }
 
-void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
+void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd,
+               uintptr_t offset)
 {
     task_t *task = task_current_local();
     vm_space_t *vm;
@@ -3377,7 +3378,7 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
     if (flags & ARMOS_MAP_FIXED)
         return (void *)-ENOSYS;
     is_anon = (flags & ARMOS_MAP_ANON) != 0;
-    if (is_anon && fd != -1)
+    if (is_anon && (fd != -1 || offset != 0))
         return (void *)-EINVAL;
     if (!is_anon && (fd < 0 || fd >= MAX_FILES))
         return (void *)-EBADF;
@@ -3406,8 +3407,16 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
             file_t *file = vfs_get_file_from_fd(task, fd);
             bool is_framebuffer =
                 file && file->type == FILE_TYPE_FRAMEBUFFER;
+            bool is_drm = file && file->type == FILE_TYPE_DRM;
 
             close_file(file);
+            if (is_drm)
+                return armos_drm_map_fd(
+                    fd, addr, length,
+                    vma_flags | VMA_SHARED | VMA_DONTFORK |
+                    VMA_EXTERNAL, offset);
+            if (offset != 0)
+                return (void *)-EINVAL;
             if (is_framebuffer)
                 return framebuffer_map_fd(
                     fd, addr, length,
@@ -3422,6 +3431,8 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
         bool is_shm = file && file->type == FILE_TYPE_SHM;
 
         close_file(file);
+        if (offset != 0)
+            return (void *)-EINVAL;
         if (is_shm)
             return shm_map_fd(fd, addr, length, vma_flags);
     }

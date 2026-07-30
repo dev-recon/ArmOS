@@ -451,7 +451,8 @@ int sys_shm_unlink(const char *name);
 void *sys_shm_map(int fd, void *addr, int flags);
 int sys_shm_unmap(void *addr, size_t size);
 int sys_shutdown(void);
-void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd);
+void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd,
+               uintptr_t offset);
 int sys_munmap(void* addr, size_t length);
 int sys_mprotect(void* addr, size_t length, int prot);
 ssize_t sys_readv(int fd, const struct iovec_kernel* iov, int iovcnt);
