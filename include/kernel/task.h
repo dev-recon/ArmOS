@@ -189,6 +189,7 @@ typedef enum file_type {
     FILE_TYPE_PTY_MASTER,
     FILE_TYPE_EVENTFD,
     FILE_TYPE_TIMERFD,
+    FILE_TYPE_DRM,
 } file_type_t;
 typedef struct inode_operations inode_operations_t;
 

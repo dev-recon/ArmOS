@@ -41,6 +41,15 @@ unprivileged graphical terminal. If the graphical session terminates,
 the kernel launcher restores console ownership but does not automatically
 restart the compositor.
 
+The initial terminal is a bootstrap client, not a session owner. Closing it,
+killing it or losing its Wayland connection removes only that client's
+surfaces; `armos-wlcomp` keeps serving the desktop and the system bar may
+launch another terminal. Programs started by the bar receive the same bounded
+desktop environment as the initial terminal, including
+`SHELL=/sbin/mash`, `LANG=C.UTF-8` and the Wayland socket identity. A client
+exit must never close the listening socket or satisfy the compositor's exit
+condition.
+
 Platform and architecture code provide framebuffer and input backends only.
 Wayland protocol handling, focus, stacking, decorations, clipping and layout
 policy stay in userland.

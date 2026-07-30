@@ -66,6 +66,7 @@ static volatile int cow_shared_value = 11;
 static volatile int sleep_signal_seen = 0;
 static volatile int winch_signal_seen = 0;
 static volatile int compat_signal_seen = 0;
+static volatile sig_atomic_t compat_sigchld_value = 0;
 static struct sysinfo_response sysinfo_scratch;
 static char systest_tmp_root[64];
 
@@ -140,6 +141,11 @@ static void systest_compat_signal_handler(int sig)
 {
     (void)sig;
     compat_signal_seen++;
+}
+
+static void systest_sigchld_handler(int sig)
+{
+    compat_sigchld_value = sig;
 }
 
 static int read_file(const char *path, char *buf, int size)
@@ -1203,6 +1209,20 @@ static void test_posix_compat_syscalls(void)
         expect(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 33,
                "wait4 status reports exit code", child_status);
     }
+
+    compat_sigchld_value = 0;
+    signal(SIGCHLD, systest_sigchld_handler);
+    child = fork();
+    if (child == 0)
+        _exit(34);
+    if (expect(child > 0, "SIGCHLD translation fork child", child) == 0) {
+        expect(waitpid(child, &child_status, 0) == child,
+               "SIGCHLD translation collects child", errno);
+        expect(compat_sigchld_value == SIGCHLD,
+               "SIGCHLD handler receives newlib signal number",
+               compat_sigchld_value);
+    }
+    signal(SIGCHLD, SIG_DFL);
 
     if (!stdin_is_foreground_tty()) {
         skip("tty ioctl/termios mutation (not foreground job)");

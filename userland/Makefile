@@ -482,6 +482,11 @@ install: $(TARGETS)
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
+	mkdir -p $(USERFS_ROOT)/usr/include/uapi/armos
+	rm -f $(USERFS_ROOT)/usr/include/uapi/armos/gpu.h
+	cp ../include/uapi/armos/drm.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/drm.h
+	rm -f $(USERFS_USR_BIN)/gpu-info
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
 ifeq ($(BUILD_NUKLEAR),1)

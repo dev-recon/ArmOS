@@ -103,6 +103,16 @@ if [ "$REBUILD_NEWLIB" -eq 1 ]; then
         "$ROOT_DIR/tools/build_newlib.sh"
 fi
 
+# ArmOS UAPI headers evolve independently from newlib itself. Keep the cached
+# sysroot current without forcing a complete libc rebuild for header-only
+# changes.
+mkdir -p "$SYSROOT/include/uapi/armos"
+rm -f "$SYSROOT/include/uapi/armos/gpu.h"
+cp "$ROOT_DIR/include/uapi/armos/input.h" \
+    "$SYSROOT/include/uapi/armos/input.h"
+cp "$ROOT_DIR/include/uapi/armos/drm.h" \
+    "$SYSROOT/include/uapi/armos/drm.h"
+
 make -C "$ROOT_DIR/newlib-port" \
     TARGET_ARCH=arm64 \
     TARGET_PLATFORM="$TARGET_PLATFORM" \

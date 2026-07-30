@@ -221,8 +221,8 @@ The production AArch64 path now provides:
 - ELF64 `execve`, process lifecycle, signals and core dumps;
 - a newlib AArch64 sysroot and the same installed userland paths as ARM32;
 - QEMU VirtIO block storage and Raspberry Pi SD/eMMC through common drivers;
-- QEMU VirtIO network, GPU and keyboard through the same common drivers as
-  ARM32;
+- QEMU VirtIO network and keyboard through the same drivers as ARM32, with
+  VirtIO-GPU shared by both architectures inside the qemu-virt platform layer;
 - common init, mash, kernel tasks, timer accounting and shutdown;
 - artifacts isolated by architecture and platform.
 

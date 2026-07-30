@@ -190,8 +190,11 @@ fi
 # Keep ArmOS-owned UAPI headers available to every cross-built bundle and to
 # the native TCC sysroot even when the cached newlib binaries remain valid.
 mkdir -p "$NEWLIB_SYSROOT/include/uapi/armos"
+rm -f "$NEWLIB_SYSROOT/include/uapi/armos/gpu.h"
 cp "$ROOT_DIR/include/uapi/armos/input.h" \
     "$NEWLIB_SYSROOT/include/uapi/armos/input.h"
+cp "$ROOT_DIR/include/uapi/armos/drm.h" \
+    "$NEWLIB_SYSROOT/include/uapi/armos/drm.h"
 
 echo "=== Building userland incrementally ==="
 USERLAND_CONTRACT_STAMP="$TARGET_BUILD_ROOT/userland/.armos-build.contract"

@@ -747,6 +747,27 @@ static int signal_os_to_newlib(int sig)
     }
 }
 
+static uint32_t sigset_newlib_to_os(sigset_t set);
+static sigset_t sigset_os_to_newlib(uint32_t set);
+
+/*
+ * The ArmOS kernel and bare-metal newlib profiles do not assign the same
+ * numbers to every signal.  Keep the POSIX-facing handler here and translate
+ * the signal number supplied by the kernel before invoking it.
+ */
+static void (*newlib_signal_handlers[32])(int);
+
+static void signal_dispatch_from_os(int os_sig)
+{
+    void (*handler)(int);
+
+    if (os_sig <= 0 || os_sig >= 32)
+        return;
+    handler = newlib_signal_handlers[os_sig];
+    if (handler && handler != SIG_IGN)
+        handler(signal_os_to_newlib(os_sig));
+}
+
 static int signal_flags_newlib_to_os(int flags)
 {
     unsigned int input = (unsigned int)flags;
@@ -2673,12 +2694,23 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
 {
     struct os_sigaction os_act;
     struct os_sigaction os_old;
+    void (*previous_handler)(int);
+    int os_sig;
     long ret;
 
-    ret = sys_sigaction(signal_newlib_to_os(sig),
+    os_sig = signal_newlib_to_os(sig);
+    if (os_sig <= 0 || os_sig >= 32) {
+        errno = EINVAL;
+        return -1;
+    }
+    previous_handler = newlib_signal_handlers[os_sig];
+    ret = sys_sigaction(os_sig,
                         act ? (void *)&(struct os_sigaction) {
-                            .sa_handler = act->sa_handler,
-                            .sa_mask = (uint32_t)act->sa_mask,
+                            .sa_handler =
+                                act->sa_handler == SIG_DFL ||
+                                act->sa_handler == SIG_IGN ?
+                                act->sa_handler : signal_dispatch_from_os,
+                            .sa_mask = sigset_newlib_to_os(act->sa_mask),
                             .sa_flags = signal_flags_newlib_to_os(act->sa_flags),
                             .sa_restorer = __signal_return_trampoline,
                         } : NULL,
@@ -2688,9 +2720,13 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
         return -1;
     }
 
+    if (act)
+        newlib_signal_handlers[os_sig] = act->sa_handler;
     if (oldact) {
-        oldact->sa_handler = os_old.sa_handler;
-        oldact->sa_mask = (sigset_t)os_old.sa_mask;
+        oldact->sa_handler =
+            os_old.sa_handler == signal_dispatch_from_os ?
+            previous_handler : os_old.sa_handler;
+        oldact->sa_mask = sigset_os_to_newlib(os_old.sa_mask);
         oldact->sa_flags = signal_flags_os_to_newlib(os_old.sa_flags);
     }
 

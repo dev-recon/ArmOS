@@ -143,7 +143,8 @@ iobench -f /tmp/iobench.dat -m 8 -b 64
 nano /tmp/arm64-smoke.c
 ```
 
-QEMU VirtIO network and graphics use the same common drivers as ARM32. The
+QEMU VirtIO network uses the same driver as ARM32. Graphics uses one
+architecture-independent VirtIO-GPU backend owned by the qemu-virt platform. The
 ARM64 platform supplies only its MMIO aliases, DTB discovery inputs and GIC
 interrupt routing. Validate each optional profile independently:
 

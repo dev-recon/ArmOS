@@ -32,7 +32,6 @@ PLATFORM_OBJS = \
 	kernel/drivers/mmc/bcm2835_emmc.o \
 	kernel/drivers/keyboard.o \
 	kernel/drivers/display.o \
-	kernel/drivers/virtio_gpu.o \
 	kernel/drivers/virtio_input.o \
 	kernel/drivers/virtio_net.o \
 	kernel/drivers/virtio_block.o

@@ -40,6 +40,7 @@
 #include <kernel/null.h>
 #include <kernel/keyboard.h>
 #include <kernel/display.h>
+#include <kernel/drm.h>
 #include <kernel/virtio_net.h>
 #include <kernel/mount.h>
 #include <kernel/virtio_block.h>
@@ -994,6 +995,9 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     file = task->process->files[fd];
     if (!file)
         return -EBADF;
+
+    if (file->type == FILE_TYPE_DRM)
+        return armos_drm_device_ioctl(file, request, arg);
 
     if (file->type == FILE_TYPE_PTY_MASTER &&
         (request == ARMOS_TIOCGPTN || request == ARMOS_TIOCSPTLCK))

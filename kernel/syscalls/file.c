@@ -35,6 +35,7 @@
 #include <kernel/net/control.h>
 #include <kernel/spinlock.h>
 #include <kernel/input.h>
+#include <kernel/drm.h>
 #include <kernel/pty.h>
 
 #define SYSCALL_IO_BOUNCE_SIZE     (64u * 1024u)
@@ -991,6 +992,7 @@ static int sys_open_resolved(task_t *task, char *full_path,
     file_t* tty_file;
     file_t* null_file;
     file_t* fb_file;
+    file_t* drm_file;
     file_t* net_echo_file;
     file_t* net_control_file;
 
@@ -1119,6 +1121,38 @@ static int sys_open_resolved(task_t *task, char *full_path,
         task->process->fd_flags[fd] = flags & O_CLOEXEC;
         kfree(full_path);
         return fd;
+    }
+
+    {
+        armos_drm_node_t drm_node = armos_drm_node_from_path(full_path);
+
+        if (drm_node != ARMOS_DRM_NODE_INVALID) {
+            if (flags & O_DIRECTORY) {
+                kfree(full_path);
+                return -ENOTDIR;
+            }
+            if (drm_node == ARMOS_DRM_NODE_CARD && current_uid() != 0) {
+                kfree(full_path);
+                return -EACCES;
+            }
+            fd = allocate_fd(task);
+            if (fd < 0) {
+                kfree(full_path);
+                return fd;
+            }
+            drm_file = create_armos_drm_device_file(
+                drm_node == ARMOS_DRM_NODE_CARD ? "card0" : "renderD128",
+                flags & ~O_CLOEXEC, drm_node);
+            if (!drm_file) {
+                free_fd(task, fd);
+                kfree(full_path);
+                return -ENODEV;
+            }
+            task->process->files[fd] = drm_file;
+            task->process->fd_flags[fd] = flags & O_CLOEXEC;
+            kfree(full_path);
+            return fd;
+        }
     }
 
     if (is_input_device_path(full_path)) {
@@ -1384,6 +1418,20 @@ static int stat_resolved_path(char *full_path, struct stat *kstat,
         fill_framebuffer_device_stat(full_path, kstat);
         kfree(full_path);
         return 0;
+    }
+
+    {
+        armos_drm_node_t drm_node = armos_drm_node_from_path(full_path);
+
+        if (drm_node != ARMOS_DRM_NODE_INVALID) {
+            if (!armos_drm_device_available()) {
+                kfree(full_path);
+                return -ENOENT;
+            }
+            fill_armos_drm_device_stat(kstat, drm_node);
+            kfree(full_path);
+            return 0;
+        }
     }
 
     if (is_input_device_path(full_path)) {

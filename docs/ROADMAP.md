@@ -91,6 +91,13 @@ Later milestone:
 - add a VC4/V3D renderer backend without moving compositor policy into
   Raspberry-specific kernel or platform code.
 
+The GPU and Raylib workstream is specified in
+[`DRM_ARCHITECTURE.md`](DRM_ARCHITECTURE.md). Its first milestone provides
+versioned `/dev/dri/card0` and `/dev/dri/renderD128` discovery nodes plus a
+qemu-virt VirtIO-GPU backend.
+Buffer objects, contexts, submissions and fences come next; VirGL and VC4/V3D
+remain platform implementations behind that common contract.
+
 ### ArmUI And Desktop Applications
 
 The graphical application toolkit will use Nuklear as an internal immediate

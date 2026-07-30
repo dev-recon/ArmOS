@@ -28,6 +28,10 @@ the common kernel implementation.
   as implemented.
 - Optional POSIX facilities must be reported honestly through `<unistd.h>`,
   `sysconf()`, `pathconf()` and `fpathconf()`.
+- Kernel signal numbers remain an internal ArmOS UAPI. The newlib boundary
+  translates signal arguments, masks, wait status and the number delivered to
+  application handlers in both directions. A handler must always observe the
+  constants from the libc against which it was compiled.
 - Every new contract must be tested on the reference `arm32/qemu-virt` target
   and then on `arm64/qemu-virt` and `arm64/raspi3` where applicable.
 
@@ -40,7 +44,7 @@ The following families are already connected to the common kernel:
 | Processes | `fork`, `execve`, `_exit`, `waitpid`, `wait4`, process groups and sessions |
 | Descriptors | `open`, `openat`, `close`, `read`, `write`, `pread`, `pwrite`, `readv`, `writev`, `lseek`, `dup`, `dup2`, partial `fcntl` |
 | VFS | `stat`, `lstat`, `fstat`, `fstatat`, `getdents`, links, directories, `mkdirat`, `unlinkat`, `renameat`, ownership, permissions and truncation |
-| Signals | `kill`, `sigaction`, `sigprocmask`, `sigpending`, `sigsuspend` and signal return |
+| Signals | `kill`, `sigaction`, `sigprocmask`, `sigpending`, `sigsuspend`, signal return and ArmOS/newlib number translation |
 | Memory | `brk`, private `mmap`, `munmap`, partial `mprotect` and ArmOS shared-memory calls |
 | Waiting | `select`, `poll`, `nanosleep`, pipes and blocking TTY I/O |
 | Time and accounting | `time`, `gettimeofday`, `clock_gettime`, `clock_getres`, `times`, `getrusage`, priorities and capability-aware `sysconf` |

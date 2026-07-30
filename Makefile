@@ -196,6 +196,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/event_timer.o \
 	kernel/drivers/null.o \
 	kernel/drivers/input.o \
+	kernel/drivers/drm.o \
 	kernel/drivers/power.o \
 	kernel/drivers/usb/core.o \
 	kernel/timer/timer.o \

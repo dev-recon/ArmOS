@@ -11,7 +11,7 @@
  * Responsibilities:
  * - Own the Wayland local socket and accept bounded client connections.
  * - Drive protocol dispatch through the shared Wayland server event loop.
- * - Own the initial Foot terminal for the lifetime of the graphical session.
+ * - Launch an initial Foot terminal without tying compositor lifetime to it.
  * - Provide a headless mode for deterministic protocol validation.
  * - Support silent supervised startup without writing over shell prompts.
  *
@@ -36,7 +36,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static volatile sig_atomic_t wl_terminal_changed;
+static volatile sig_atomic_t wl_child_changed;
 
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
@@ -105,10 +105,10 @@ static void wl_server_profile_frame(struct wl_server *server,
     renderer->profile_present_pixels = 0u;
 }
 
-static void wl_server_terminal_signal(int signal_number)
+static void wl_server_child_signal(int signal_number)
 {
     (void)signal_number;
-    wl_terminal_changed = 1;
+    wl_child_changed = 1;
 }
 
 static void wl_server_usage(const char *program)
@@ -486,10 +486,10 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
             return -1;
     }
     while (!server->fatal_error && !server->exit_requested) {
-        if (wl_terminal_changed) {
+        if (wl_child_changed) {
             int status;
 
-            wl_terminal_changed = 0;
+            wl_child_changed = 0;
             if (shell_pid && *shell_pid > 0 &&
                 waitpid(*shell_pid, &status, WNOHANG) == *shell_pid) {
                 *shell_pid = -1;
@@ -501,7 +501,6 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
                 waitpid(*terminal_pid, &status, WNOHANG) ==
                     *terminal_pid) {
                 *terminal_pid = -1;
-                return 0;
             }
         }
         if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
@@ -604,8 +603,8 @@ int main(int argc, char **argv)
                headless ? ", headless" : "");
     }
     if (!headless) {
-        wl_terminal_changed = 0;
-        if (signal(SIGCHLD, wl_server_terminal_signal) == SIG_ERR) {
+        wl_child_changed = 0;
+        if (signal(SIGCHLD, wl_server_child_signal) == SIG_ERR) {
             perror("armos-wlcomp: SIGCHLD");
             server.fatal_error = true;
         } else {
