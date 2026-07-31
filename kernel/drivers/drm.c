@@ -41,6 +41,7 @@
 
 typedef struct armos_drm_buffer {
     uint32_t handle;
+    uint32_t command_handle;
     armos_drm_buffer_desc_t desc;
     paddr_t *pages;
     uint32_t page_count;
@@ -531,6 +532,9 @@ static int armos_drm_get_info(uintptr_t arg)
     info.scanout_height = backend_info.scanout_height;
     info.max_resource_width = backend_info.max_resource_width;
     info.max_resource_height = backend_info.max_resource_height;
+    info.command_caps_max_version =
+        backend_info.command_caps_max_version;
+    info.command_caps_size = backend_info.command_caps_size;
     if (backend_info.driver_name) {
         strncpy(info.driver_name, backend_info.driver_name,
                 sizeof(info.driver_name) - 1u);
@@ -539,6 +543,55 @@ static int armos_drm_get_info(uintptr_t arg)
            sizeof(info.command_set));
     return copy_to_user((void *)arg, &info, sizeof(info)) < 0 ?
         -EFAULT : 0;
+}
+
+static int armos_drm_get_command_caps(uintptr_t arg)
+{
+    const armos_drm_backend_ops_t *ops;
+    armos_drm_backend_info_t info;
+    armos_drm_command_caps_t request;
+    void *backend_context;
+    void *caps = NULL;
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if (request.abi_version != ARMOS_DRM_ABI_VERSION ||
+        request.flags != 0 || request.address == 0)
+        return -EINVAL;
+    drm_backend_snapshot(&ops, &backend_context);
+    if (!ops || !ops->get_info || !ops->get_command_caps)
+        return -ENOTSUP;
+    memset(&info, 0, sizeof(info));
+    result = ops->get_info(backend_context, &info);
+    if (result < 0)
+        return result;
+    if (info.command_caps_size == 0 ||
+        info.command_caps_size > ARMOS_DRM_MAX_COMMAND_CAPS_SIZE ||
+        request.version > info.command_caps_max_version)
+        return -EINVAL;
+    if (request.size < info.command_caps_size)
+        return -ENOSPC;
+    caps = kmalloc(info.command_caps_size);
+    if (!caps)
+        return -ENOMEM;
+    memset(caps, 0, info.command_caps_size);
+    result = ops->get_command_caps(backend_context, request.version,
+                                   caps, info.command_caps_size);
+    if (result < 0)
+        goto out;
+    if (copy_to_user((void *)(uintptr_t)request.address, caps,
+                     info.command_caps_size) < 0) {
+        result = -EFAULT;
+        goto out;
+    }
+    request.size = info.command_caps_size;
+    memset(request.reserved, 0, sizeof(request.reserved));
+    result = copy_to_user((void *)arg, &request, sizeof(request)) < 0 ?
+        -EFAULT : 0;
+out:
+    kfree(caps);
+    return result;
 }
 
 static int armos_drm_context_create(file_t *file, uintptr_t arg)
@@ -762,14 +815,19 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
                 (uint64_t)index * PAGE_SIZE) : PAGE_SIZE;
     }
     result = ops->buffer_create(context, buffer->handle, &buffer->desc,
-                                segments, buffer->page_count);
+                                segments, buffer->page_count,
+                                &buffer->command_handle);
     if (result < 0)
         goto failed;
     buffer->backend_created = true;
+    if (buffer->command_handle == 0) {
+        result = -EIO;
+        goto failed;
+    }
     state->buffers[state->buffer_count++] = buffer;
     request.handle = buffer->handle;
+    request.command_handle = buffer->command_handle;
     request.map_offset = (uint64_t)buffer->handle * PAGE_SIZE;
-    request.reserved0 = 0;
     memset(request.reserved, 0, sizeof(request.reserved));
     if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
         state->buffer_count--;
@@ -784,6 +842,10 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     return 0;
 
 failed:
+    if (buffer && buffer->backend_created && ops && ops->buffer_destroy) {
+        (void)ops->buffer_destroy(context, buffer->handle);
+        buffer->backend_created = false;
+    }
     drm_unregister_buffer(buffer);
     kfree(segments);
     drm_buffer_free(buffer);
@@ -957,6 +1019,115 @@ static void drm_buffer_clean_rect(const armos_drm_buffer_t *buffer,
             remaining -= chunk;
         }
     }
+}
+
+static void drm_buffer_cache_all(const armos_drm_buffer_t *buffer,
+                                 bool invalidate)
+{
+    uint64_t remaining;
+
+    if (!buffer)
+        return;
+    remaining = buffer->desc.size;
+    for (uint32_t index = 0;
+         index < buffer->page_count && remaining != 0; index++) {
+        size_t length = remaining > PAGE_SIZE ? PAGE_SIZE : (size_t)remaining;
+        void *address = (void *)phys_to_virt(buffer->pages[index]);
+
+        if (invalidate)
+            arch_invalidate_dcache_by_mva(address, length);
+        else
+            arch_clean_dcache_by_mva(address, length);
+        remaining -= length;
+    }
+}
+
+static int armos_drm_bo_transfer(file_t *file, uintptr_t arg)
+{
+    armos_drm_file_state_t *state = file->private_data;
+    const armos_drm_backend_ops_t *ops;
+    armos_drm_bo_transfer_t request;
+    armos_drm_buffer_t *buffer;
+    void *context;
+    uint64_t last_byte;
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if (request.flags != 0 ||
+        (request.direction != ARMOS_DRM_TRANSFER_CPU_TO_DEVICE &&
+         request.direction != ARMOS_DRM_TRANSFER_DEVICE_TO_CPU) ||
+        request.context_id == 0 || request.width == 0 ||
+        request.height == 0 || request.depth == 0)
+        return -EINVAL;
+
+    result = drm_state_acquire(state);
+    if (result < 0)
+        return result;
+    buffer = drm_state_find_buffer(state, request.handle, NULL);
+    if (!buffer ||
+        !drm_state_has_context(state, request.context_id, NULL) ||
+        drm_find_attachment(state, request.context_id,
+                            request.handle) < 0) {
+        result = -ENOENT;
+        goto out;
+    }
+    if (request.direction == ARMOS_DRM_TRANSFER_CPU_TO_DEVICE &&
+        !(buffer->desc.flags & ARMOS_DRM_BO_CPU_WRITE)) {
+        result = -EACCES;
+        goto out;
+    }
+    if (request.direction == ARMOS_DRM_TRANSFER_DEVICE_TO_CPU &&
+        !(buffer->desc.flags & ARMOS_DRM_BO_CPU_READ)) {
+        result = -EACCES;
+        goto out;
+    }
+    if (buffer->desc.width != 0) {
+        if (request.level != 0 || request.z != 0 || request.depth != 1 ||
+            request.x >= buffer->desc.width ||
+            request.y >= buffer->desc.height ||
+            request.width > buffer->desc.width - request.x ||
+            request.height > buffer->desc.height - request.y ||
+            request.stride < buffer->desc.stride ||
+            (uint64_t)request.layer_stride <
+                (uint64_t)request.stride * request.height) {
+            result = -EINVAL;
+            goto out;
+        }
+        last_byte = request.offset +
+                    (uint64_t)(request.height - 1u) * request.stride +
+                    (uint64_t)request.width * sizeof(uint32_t);
+    } else {
+        if (request.level != 0 || request.y != 0 || request.z != 0 ||
+            request.height != 1 || request.depth != 1 ||
+            request.stride != 0 || request.layer_stride != 0) {
+            result = -EINVAL;
+            goto out;
+        }
+        last_byte = request.offset + request.width;
+    }
+    if (last_byte < request.offset || last_byte > buffer->desc.size) {
+        result = -EINVAL;
+        goto out;
+    }
+    drm_backend_snapshot(&ops, &context);
+    if (!ops || !ops->buffer_transfer) {
+        result = -ENOTSUP;
+        goto out;
+    }
+    if (request.direction == ARMOS_DRM_TRANSFER_CPU_TO_DEVICE)
+        drm_buffer_cache_all(buffer, false);
+    result = ops->buffer_transfer(
+        context, request.context_id, buffer->handle, request.direction,
+        request.level, request.x, request.y, request.z, request.width,
+        request.height, request.depth, request.offset, request.stride,
+        request.layer_stride);
+    if (result == 0 &&
+        request.direction == ARMOS_DRM_TRANSFER_DEVICE_TO_CPU)
+        drm_buffer_cache_all(buffer, true);
+out:
+    drm_state_release(state);
+    return result;
 }
 
 static int armos_drm_bo_present(file_t *file, uintptr_t arg)
@@ -1295,6 +1466,10 @@ int armos_drm_device_ioctl(file_t *file, uint32_t request, uintptr_t arg)
         return armos_drm_resource_change(file, arg, false);
     case ARMOS_DRM_IOCTL_BO_PRESENT:
         return armos_drm_bo_present(file, arg);
+    case ARMOS_DRM_IOCTL_GET_COMMAND_CAPS:
+        return armos_drm_get_command_caps(arg);
+    case ARMOS_DRM_IOCTL_BO_TRANSFER:
+        return armos_drm_bo_transfer(file, arg);
     default:
         return -ENOTTY;
     }

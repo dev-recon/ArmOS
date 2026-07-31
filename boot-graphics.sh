@@ -26,7 +26,17 @@ select_display() {
 
     case "$(uname -s)" in
         Darwin)
-            printf '%s\n' "cocoa,show-cursor=off"
+            if [ "${QEMU_GPU_ACCEL:-2d}" = "virgl" ]; then
+                display_help="$("$QEMU" -display help 2>/dev/null || true)"
+                if ! printf '%s\n' "$display_help" | grep -qx sdl; then
+                    echo "Error: VirGL on macOS requires QEMU's SDL display backend." >&2
+                    echo "Rebuild QEMU with SDL support, or use QEMU_GPU_ACCEL=2d." >&2
+                    return 1
+                fi
+                printf '%s\n' "sdl,show-cursor=off"
+            else
+                printf '%s\n' "cocoa,show-cursor=off"
+            fi
             ;;
         Linux)
             display_help="$("$QEMU" -display help 2>/dev/null || true)"
@@ -49,8 +59,19 @@ select_display() {
 
 . "$ROOT_DIR/tools/qemu_platform_env.sh"
 QEMU="$(select_arm_qemu "${1:-}" "$ROOT_DIR" "$TARGET_ARCH")"
+if ! command -v "$QEMU" >/dev/null 2>&1; then
+    echo "Error: QEMU binary '$QEMU' not found" >&2
+    exit 1
+fi
+if ! QEMU_VERSION_OUTPUT="$("$QEMU" --version 2>&1)"; then
+    echo "Error: QEMU '$QEMU' cannot start." >&2
+    printf '%s\n' "$QEMU_VERSION_OUTPUT" >&2
+    echo "Check its host dynamic-library dependencies." >&2
+    exit 1
+fi
 QEMU_DISPLAY="$(select_display)"
 SMP_CPUS="${SMP_CPUS:-${QEMU_SMP}}"
+QEMU_DATA_DIR="$(cd "$(dirname "$QEMU")/../share/qemu" 2>/dev/null && pwd || true)"
 
 case "${QEMU_GPU_ACCEL}" in
     2d)
@@ -72,7 +93,13 @@ case "${QEMU_GPU_ACCEL}" in
         fi
         case "${QEMU_DISPLAY}" in
             *,gl=*) ;;
-            *) QEMU_DISPLAY="${QEMU_DISPLAY},gl=on" ;;
+            *)
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    QEMU_DISPLAY="${QEMU_DISPLAY},gl=core"
+                else
+                    QEMU_DISPLAY="${QEMU_DISPLAY},gl=on"
+                fi
+                ;;
         esac
         ;;
     *)
@@ -111,10 +138,6 @@ if [ "${QEMU_BLOCK_ENABLED}" != "0" ] && [ ! -f "${QEMU_DISK_IMAGE}" ]; then
     exit 1
 fi
 
-if ! command -v "$QEMU" >/dev/null 2>&1; then
-    echo "Error: QEMU binary '$QEMU' not found"
-    exit 1
-fi
 require_qemu_version "$QEMU"
 
 if [ -z "${GPU_DEVICE}" ]; then
@@ -134,7 +157,7 @@ fi
 
 echo "=== Booting existing ${QEMU_KERNEL_IMAGE} with virtio-gpu ==="
 echo "UART console stays on this terminal; graphics output opens in a QEMU window."
-echo "QEMU: $("$QEMU" --version | head -n 1)"
+echo "QEMU: $(printf '%s\n' "$QEMU_VERSION_OUTPUT" | head -n 1)"
 echo "Platform: ${TARGET_ARCH}/${TARGET_PLATFORM}"
 echo "Machine: ${QEMU_MACHINE}, CPU: ${QEMU_CPU}"
 echo "Memory: ${QEMU_MEMORY}"
@@ -166,6 +189,9 @@ if [ -n "${QEMU_KERNEL_LOADER_ADDR}" ]; then
 fi
 
 QEMU_ARGS=(-M "${QEMU_MACHINE}" -cpu "${QEMU_CPU}" -m "${QEMU_MEMORY}" -smp "${SMP_CPUS}")
+if [ -n "${QEMU_DATA_DIR}" ]; then
+    QEMU_ARGS+=(-L "${QEMU_DATA_DIR}")
+fi
 if [ "${QEMU_BLOCK_ENABLED}" != "0" ]; then
     case "${QEMU_BLOCK_IF}" in
         sd)

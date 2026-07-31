@@ -95,13 +95,18 @@ The GPU and Raylib workstream is specified in
 [`DRM_ARCHITECTURE.md`](DRM_ARCHITECTURE.md). Its first milestone provides
 versioned `/dev/dri/card0` and `/dev/dri/renderD128` discovery nodes plus a
 qemu-virt VirtIO-GPU backend.
-Buffer objects, CPU mappings, explicit context/resource attachments and
-interrupt-completed asynchronous fences now share the same common contract on
-ARM32 and ARM64. The VirGL `SUBMIT_3D` path has a fenced NOP smoke test and the
-software compositor presents its scanout buffer through DRM, with framebuffer
-fallback. A bounded VirGL userspace command encoder and real accelerated
-rendering come next; VC4/V3D remains a platform implementation behind that
-object and synchronization model.
+Buffer objects, CPU mappings, typed resource usage, explicit
+context/resource attachments and interrupt-completed asynchronous fences now
+share the same common contract on ARM32 and ARM64. The common UAPI also exposes
+opaque command handles, bounded command-capability blobs and explicit
+CPU/device transfers. The qemu-virt backend translates these operations to the
+selected VirGL capset without leaking VirtIO details into common code.
+`libarmos-virgl-winsys` validates the complete lifecycle with a real off-screen
+triangle, fence wait, readback and pixel verification. The next milestone is
+the reproducible minimal Mesa/Gallium VirGL port; explicit EGL/Wayland buffer
+exchange, accelerated composition and the common Raylib GLES2 port follow.
+VC4/V3D remains a platform implementation behind the same object and
+synchronization model.
 
 ### ArmUI And Desktop Applications
 

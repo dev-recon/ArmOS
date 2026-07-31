@@ -52,16 +52,20 @@
 #define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     0x0105
 #define VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106
 #define VIRTIO_GPU_CMD_GET_CAPSET_INFO          0x0108
+#define VIRTIO_GPU_CMD_GET_CAPSET               0x0109
 #define VIRTIO_GPU_CMD_CTX_CREATE               0x0200
 #define VIRTIO_GPU_CMD_CTX_DESTROY              0x0201
 #define VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE      0x0202
 #define VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE      0x0203
 #define VIRTIO_GPU_CMD_RESOURCE_CREATE_3D       0x0204
+#define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D      0x0205
+#define VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D    0x0206
 #define VIRTIO_GPU_CMD_SUBMIT_3D                 0x0207
 
 #define VIRTIO_GPU_RESP_OK_NODATA              0x1100
 #define VIRTIO_GPU_RESP_OK_DISPLAY_INFO        0x1101
 #define VIRTIO_GPU_RESP_OK_CAPSET_INFO         0x1102
+#define VIRTIO_GPU_RESP_OK_CAPSET              0x1103
 
 #define VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM       1
 
@@ -190,6 +194,12 @@ typedef struct {
 
 typedef struct {
     virtio_gpu_ctrl_hdr_t hdr;
+    uint32_t capset_id;
+    uint32_t capset_version;
+} __attribute__((packed)) virtio_gpu_get_capset_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
     uint32_t name_length;
     uint32_t context_init;
     char debug_name[VIRTIO_GPU_CONTEXT_NAME_LENGTH];
@@ -224,6 +234,25 @@ typedef struct {
 } __attribute__((packed)) virtio_gpu_resource_ref_t;
 
 typedef struct {
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+    uint32_t width;
+    uint32_t height;
+    uint32_t depth;
+} __attribute__((packed)) virtio_gpu_box_t;
+
+typedef struct {
+    virtio_gpu_ctrl_hdr_t hdr;
+    virtio_gpu_box_t box;
+    uint64_t offset;
+    uint32_t resource_id;
+    uint32_t level;
+    uint32_t stride;
+    uint32_t layer_stride;
+} __attribute__((packed)) virtio_gpu_transfer_host_3d_t;
+
+typedef struct {
     paddr_t phys;
     uint32_t irq;
     volatile uint32_t *mmio;
@@ -238,6 +267,9 @@ typedef struct {
     uint32_t height;
     uint32_t pitch;
     uint32_t scanout_resource_id;
+    uint32_t command_capset_id;
+    uint32_t command_capset_max_version;
+    uint32_t command_capset_size;
     bool has_virgl_capset;
     bool has_virgl2_capset;
     bool initialized;
@@ -285,14 +317,14 @@ static int virtio_gpu_backend_get_info(void *context,
     info->backend_class = ARMOS_DRM_BACKEND_PARAVIRTUAL;
     info->capabilities = ARMOS_DRM_CAP_SCANOUT |
                          ARMOS_DRM_CAP_TRANSFER_2D;
-    if ((gpu.negotiated_features & (1u << VIRTIO_GPU_F_VIRGL)) &&
-        (gpu.has_virgl_capset || gpu.has_virgl2_capset)) {
+    if (gpu_has_virgl()) {
         info->capabilities |= ARMOS_DRM_CAP_CONTEXTS |
                               ARMOS_DRM_CAP_BUFFER_OBJECTS |
                               ARMOS_DRM_CAP_CPU_MAPPABLE |
                               ARMOS_DRM_CAP_COMMAND_SUBMIT |
                               ARMOS_DRM_CAP_FENCES |
-                              ARMOS_DRM_CAP_RENDER_3D;
+                              ARMOS_DRM_CAP_RENDER_3D |
+                              ARMOS_DRM_CAP_RESOURCE_TRANSFER;
         if (gpu.has_virgl2_capset)
             memcpy(info->command_set, "virgl2", sizeof("virgl2"));
         else
@@ -303,6 +335,8 @@ static int virtio_gpu_backend_get_info(void *context,
     info->scanout_height = gpu.height;
     info->max_resource_width = gpu.width;
     info->max_resource_height = gpu.height;
+    info->command_caps_max_version = gpu.command_capset_max_version;
+    info->command_caps_size = gpu.command_capset_size;
     info->driver_name = "virtio-gpu";
     return 0;
 }
@@ -316,7 +350,8 @@ static uint32_t gpu_drm_resource_id(uint32_t handle)
 
 static int virtio_gpu_backend_buffer_create(
     void *context, uint32_t handle, const armos_drm_buffer_desc_t *desc,
-    const armos_drm_memory_segment_t *segments, uint32_t segment_count)
+    const armos_drm_memory_segment_t *segments, uint32_t segment_count,
+    uint32_t *command_handle)
 {
     virtio_gpu_resource_create_2d_t create_2d;
     virtio_gpu_resource_create_3d_t create;
@@ -329,6 +364,7 @@ static int virtio_gpu_backend_buffer_create(
 
     (void)context;
     if (!gpu_has_virgl() || !resource_id || !desc || !segments ||
+        !command_handle ||
         segment_count == 0 || desc->size == 0 ||
         desc->size > 0xffffffffu)
         return -EINVAL;
@@ -370,10 +406,24 @@ static int virtio_gpu_backend_buffer_create(
             create.height = 1u;
             create.depth = 1u;
             create.array_size = 1u;
-            create.bind = PIPE_BIND_VERTEX_BUFFER |
-                          PIPE_BIND_INDEX_BUFFER |
-                          PIPE_BIND_CONSTANT_BUFFER |
-                          PIPE_BIND_SHADER_BUFFER;
+            if (desc->flags & ARMOS_DRM_BO_VERTEX)
+                create.bind |= PIPE_BIND_VERTEX_BUFFER;
+            if (desc->flags & ARMOS_DRM_BO_INDEX)
+                create.bind |= PIPE_BIND_INDEX_BUFFER;
+            if (desc->flags & ARMOS_DRM_BO_CONSTANT)
+                create.bind |= PIPE_BIND_CONSTANT_BUFFER;
+            if (desc->flags & ARMOS_DRM_BO_SHADER_STORAGE)
+                create.bind |= PIPE_BIND_SHADER_BUFFER;
+            /*
+             * A command/staging BO is not consumed as a Gallium resource,
+             * but VirtIO-GPU still requires a legal bind when the common BO
+             * lifecycle creates its backing resource.
+             */
+            if (create.bind == 0 &&
+                (desc->flags & ARMOS_DRM_BO_COMMAND))
+                create.bind = PIPE_BIND_VERTEX_BUFFER;
+            if (create.bind == 0)
+                return -EINVAL;
         }
         if (gpu_submit_simple(&create, sizeof(create),
                               "resource_create_3d") < 0)
@@ -406,6 +456,7 @@ static int virtio_gpu_backend_buffer_create(
         result = -EIO;
         goto failed;
     }
+    *command_handle = resource_id;
     return 0;
 
 failed:
@@ -420,15 +471,25 @@ static int virtio_gpu_backend_buffer_destroy(void *context, uint32_t handle)
 {
     virtio_gpu_resource_ref_t cmd;
     uint32_t resource_id = gpu_drm_resource_id(handle);
+    bool restore_boot_scanout;
 
     (void)context;
     if (!resource_id)
         return -EINVAL;
-    if (gpu.scanout_resource_id == resource_id &&
-        gpu_set_scanout_resource(VIRTIO_GPU_SCANOUT_ID,
-                                 VIRTIO_GPU_RESOURCE_ID,
-                                 gpu.width, gpu.height) < 0)
-        return -EIO;
+    restore_boot_scanout = gpu.scanout_resource_id == resource_id;
+    if (restore_boot_scanout) {
+        if (gpu_set_scanout_resource(VIRTIO_GPU_SCANOUT_ID,
+                                     VIRTIO_GPU_RESOURCE_ID,
+                                     gpu.width, gpu.height) < 0)
+            return -EIO;
+        /*
+         * The boot framebuffer may not have been presented since userland
+         * acquired the scanout. Publish it completely before destroying the
+         * former owner so console recovery cannot expose stale host contents.
+         */
+        if (virtio_gpu_flush() < 0)
+            return -EIO;
+    }
     memset(&cmd, 0, sizeof(cmd));
     gpu_fill_hdr(&cmd.hdr, VIRTIO_GPU_CMD_RESOURCE_UNREF);
     cmd.resource_id = resource_id;
@@ -487,6 +548,13 @@ static int virtio_gpu_backend_buffer_present(
     void *context, uint32_t handle, const armos_drm_buffer_desc_t *desc,
     uint32_t scanout_id, uint32_t x, uint32_t y,
     uint32_t width, uint32_t height);
+static int virtio_gpu_backend_get_command_caps(
+    void *context, uint32_t version, void *data, uint32_t size);
+static int virtio_gpu_backend_buffer_transfer(
+    void *context, uint32_t context_id, uint32_t handle,
+    uint32_t direction, uint32_t level, uint32_t x, uint32_t y,
+    uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
+    uint64_t offset, uint32_t stride, uint32_t layer_stride);
 
 static const armos_drm_backend_ops_t virtio_gpu_backend_ops = {
     .get_info = virtio_gpu_backend_get_info,
@@ -497,6 +565,8 @@ static const armos_drm_backend_ops_t virtio_gpu_backend_ops = {
     .resource_attach = virtio_gpu_backend_resource_attach,
     .resource_detach = virtio_gpu_backend_resource_detach,
     .buffer_present = virtio_gpu_backend_buffer_present,
+    .get_command_caps = virtio_gpu_backend_get_command_caps,
+    .buffer_transfer = virtio_gpu_backend_buffer_transfer,
     .submit = virtio_gpu_backend_submit,
 };
 
@@ -737,16 +807,18 @@ static void gpu_release(void)
 static int gpu_submit(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len)
 {
     uint8_t *cmd_dma_ptr = gpu_cmd_dma;
+    uint8_t *resp_dma_ptr = gpu_resp_dma;
     paddr_t cmd_dma_pa;
+    paddr_t resp_dma_pa;
     void *dynamic_cmd = NULL;
+    void *dynamic_resp = NULL;
     size_t dynamic_cmd_pages = 0;
+    size_t dynamic_resp_pages = 0;
     int ret = -1;
     uint32_t cmd_type = cmd ? ((virtio_gpu_ctrl_hdr_t *)cmd)->type : 0;
 
     if (!gpu.initialized || gpu.failed || !cmd || cmd_len == 0 ||
         !resp || resp_len == 0)
-        return -1;
-    if (resp_len > VIRTIO_GPU_DMA_BUF_SIZE)
         return -1;
     if (gpu.vq.qsize < 2)
         return -1;
@@ -768,6 +840,20 @@ static int gpu_submit(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len
     } else {
         cmd_dma_pa = virt_to_phys((vaddr_t)gpu_cmd_dma);
     }
+    if (resp_len > VIRTIO_GPU_DMA_BUF_SIZE) {
+        dynamic_resp_pages =
+            (resp_len + PAGE_SIZE - 1u) / PAGE_SIZE;
+        dynamic_resp = gpu_alloc_dma_pages(dynamic_resp_pages, &resp_dma_pa);
+        if (!dynamic_resp) {
+            if (dynamic_cmd)
+                free_pages(dynamic_cmd, dynamic_cmd_pages);
+            gpu_release();
+            return -ENOMEM;
+        }
+        resp_dma_ptr = dynamic_resp;
+    } else {
+        resp_dma_pa = virt_to_phys((vaddr_t)gpu_resp_dma);
+    }
 
     unsigned d0 = gpu.next_desc;
     unsigned d1 = (gpu.next_desc + 1) % gpu.vq.qsize;
@@ -778,21 +864,21 @@ static int gpu_submit(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len
 
     memset(resp, 0, resp_len);
     memcpy(cmd_dma_ptr, cmd, cmd_len);
-    memset(gpu_resp_dma, 0, resp_len);
+    memset(resp_dma_ptr, 0, resp_len);
 
     desc0->addr = (uint64_t)cmd_dma_pa;
     desc0->len = cmd_len;
     desc0->flags = VRING_DESC_F_NEXT;
     desc0->next = d1;
 
-    desc1->addr = (uint64_t)virt_to_phys((vaddr_t)gpu_resp_dma);
+    desc1->addr = (uint64_t)resp_dma_pa;
     desc1->len = resp_len;
     desc1->flags = VRING_DESC_F_WRITE;
     desc1->next = 0;
 
     arch_clean_dcache_by_mva((void *)gpu.vq.va_desc, sizeof(struct vring_desc) * gpu.vq.qsize);
     arch_clean_dcache_by_mva(cmd_dma_ptr, cmd_len);
-    arch_clean_invalidate_dcache_by_mva(gpu_resp_dma, resp_len);
+    arch_clean_invalidate_dcache_by_mva(resp_dma_ptr, resp_len);
     arch_data_memory_barrier_inner_shareable();
 
     uint16_t prev_used = gpu.vq.last_used_idx;
@@ -827,8 +913,8 @@ static int gpu_submit(void *cmd, uint32_t cmd_len, void *resp, uint32_t resp_len
 
 complete:
     gpu.vq.last_used_idx = new_used_idx;
-    arch_invalidate_dcache_by_mva(gpu_resp_dma, resp_len);
-    memcpy(resp, gpu_resp_dma, resp_len);
+    arch_invalidate_dcache_by_mva(resp_dma_ptr, resp_len);
+    memcpy(resp, resp_dma_ptr, resp_len);
 
     /*
      * Only acknowledge the used-ring bit here. Acking the whole status word
@@ -847,6 +933,8 @@ out:
      */
     if (dynamic_cmd && !gpu.failed)
         free_pages(dynamic_cmd, dynamic_cmd_pages);
+    if (dynamic_resp && !gpu.failed)
+        free_pages(dynamic_resp, dynamic_resp_pages);
     gpu_release();
     return ret;
 }
@@ -1000,7 +1088,9 @@ static void gpu_fill_hdr(virtio_gpu_ctrl_hdr_t *hdr, uint32_t type)
 static bool gpu_has_virgl(void)
 {
     return (gpu.negotiated_features & (1u << VIRTIO_GPU_F_VIRGL)) &&
-           (gpu.has_virgl_capset || gpu.has_virgl2_capset);
+           gpu.command_capset_id != 0 &&
+           gpu.command_capset_size != 0 &&
+           gpu.command_capset_size <= ARMOS_DRM_MAX_COMMAND_CAPS_SIZE;
 }
 
 static int virtio_gpu_backend_context_create(void *context,
@@ -1068,6 +1158,44 @@ static int virtio_gpu_backend_submit(void *context, uint32_t context_id,
     return result;
 }
 
+static int virtio_gpu_backend_buffer_transfer(
+    void *context, uint32_t context_id, uint32_t handle,
+    uint32_t direction, uint32_t level, uint32_t x, uint32_t y,
+    uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
+    uint64_t offset, uint32_t stride, uint32_t layer_stride)
+{
+    virtio_gpu_transfer_host_3d_t cmd;
+    uint32_t resource_id = gpu_drm_resource_id(handle);
+
+    (void)context;
+    if (!gpu_has_virgl() || context_id == 0 || resource_id == 0 ||
+        (direction != ARMOS_DRM_TRANSFER_CPU_TO_DEVICE &&
+         direction != ARMOS_DRM_TRANSFER_DEVICE_TO_CPU))
+        return -EINVAL;
+    memset(&cmd, 0, sizeof(cmd));
+    gpu_fill_hdr(&cmd.hdr,
+                 direction == ARMOS_DRM_TRANSFER_CPU_TO_DEVICE ?
+                     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D :
+                     VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D);
+    cmd.hdr.ctx_id = context_id;
+    cmd.box.x = x;
+    cmd.box.y = y;
+    cmd.box.z = z;
+    cmd.box.width = width;
+    cmd.box.height = height;
+    cmd.box.depth = depth;
+    cmd.offset = offset;
+    cmd.resource_id = resource_id;
+    cmd.level = level;
+    cmd.stride = stride;
+    cmd.layer_stride = layer_stride;
+    return gpu_submit_simple(&cmd, sizeof(cmd),
+                             direction == ARMOS_DRM_TRANSFER_CPU_TO_DEVICE ?
+                                 "drm_transfer_to_host_3d" :
+                                 "drm_transfer_from_host_3d") < 0 ?
+        -EIO : 0;
+}
+
 static int gpu_get_display_info(bool adopt_mode)
 {
     virtio_gpu_ctrl_hdr_t cmd;
@@ -1126,6 +1254,9 @@ static void gpu_probe_capsets(void)
 
     gpu.has_virgl_capset = false;
     gpu.has_virgl2_capset = false;
+    gpu.command_capset_id = 0;
+    gpu.command_capset_max_version = 0;
+    gpu.command_capset_size = 0;
     if (!(gpu.negotiated_features & (1u << VIRTIO_GPU_F_VIRGL)))
         return;
 
@@ -1144,14 +1275,71 @@ static void gpu_probe_capsets(void)
         KINFO("VirtIO GPU capset[%u]: id=%u version=%u size=%u\n",
               index, info.capset_id, info.capset_max_version,
               info.capset_max_size);
-        if (info.capset_id == VIRTIO_GPU_CAPSET_VIRGL)
+        if (info.capset_id == VIRTIO_GPU_CAPSET_VIRGL) {
             gpu.has_virgl_capset = true;
-        else if (info.capset_id == VIRTIO_GPU_CAPSET_VIRGL2)
+            if (gpu.command_capset_id == 0 &&
+                info.capset_max_size != 0 &&
+                info.capset_max_size <= ARMOS_DRM_MAX_COMMAND_CAPS_SIZE) {
+                gpu.command_capset_id = info.capset_id;
+                gpu.command_capset_max_version = info.capset_max_version;
+                gpu.command_capset_size = info.capset_max_size;
+            }
+        } else if (info.capset_id == VIRTIO_GPU_CAPSET_VIRGL2) {
             gpu.has_virgl2_capset = true;
+            if (info.capset_max_size != 0 &&
+                info.capset_max_size <= ARMOS_DRM_MAX_COMMAND_CAPS_SIZE) {
+                gpu.command_capset_id = info.capset_id;
+                gpu.command_capset_max_version = info.capset_max_version;
+                gpu.command_capset_size = info.capset_max_size;
+            }
+        }
     }
-    if (!gpu.has_virgl_capset && !gpu.has_virgl2_capset) {
-        KWARN("VirtIO GPU negotiated VirGL without a supported capset\n");
+    if (!gpu_has_virgl())
+        KWARN("VirtIO GPU negotiated VirGL without a usable capset\n");
+}
+
+static int virtio_gpu_backend_get_command_caps(
+    void *context, uint32_t version, void *data, uint32_t size)
+{
+    virtio_gpu_get_capset_t cmd;
+    virtio_gpu_ctrl_hdr_t *response;
+    uint32_t response_size;
+    int result;
+
+    (void)context;
+    if (!gpu_has_virgl() || !data ||
+        gpu.command_capset_id == 0 ||
+        gpu.command_capset_size == 0 ||
+        gpu.command_capset_size > ARMOS_DRM_MAX_COMMAND_CAPS_SIZE ||
+        size != gpu.command_capset_size ||
+        version > gpu.command_capset_max_version)
+        return -EINVAL;
+    if (size > 0xffffffffu - sizeof(*response))
+        return -EOVERFLOW;
+    response_size = sizeof(*response) + size;
+    response = kzalloc(response_size);
+    if (!response)
+        return -ENOMEM;
+    memset(&cmd, 0, sizeof(cmd));
+    gpu_fill_hdr(&cmd.hdr, VIRTIO_GPU_CMD_GET_CAPSET);
+    cmd.capset_id = gpu.command_capset_id;
+    cmd.capset_version = version;
+    result = gpu_submit(&cmd, sizeof(cmd), response, response_size);
+    if (result < 0) {
+        result = -EIO;
+        goto out;
     }
+    if (response->type != VIRTIO_GPU_RESP_OK_CAPSET) {
+        KERROR("virtio_gpu: capset data response=0x%08X\n",
+               response->type);
+        result = -EIO;
+        goto out;
+    }
+    memcpy(data, response + 1, size);
+    result = 0;
+out:
+    kfree(response);
+    return result;
 }
 
 static int gpu_create_resource(void)
@@ -1300,8 +1488,10 @@ int virtio_gpu_flush(void)
  *
  * The guest resource keeps its negotiated boot geometry. A host window resize
  * may disturb the scanout state but does not implicitly change that resource.
- * Re-asserting the scanout prepares the next full repaint. Must be called from
- * task context (displayd): it submits synchronous GPU commands.
+ * Re-asserting the current scanout preserves its owner across the event. It
+ * must never switch an active DRM scanout back to the boot framebuffer.
+ * Must be called from task context (displayd): it submits synchronous GPU
+ * commands.
  *
  * Returns true when a config change was seen and handled; the caller should
  * mark the whole framebuffer dirty so the next frame repaints everything.
@@ -1328,7 +1518,11 @@ bool virtio_gpu_check_resize(void)
                      VIRTIO_GPU_INT_CONFIG);
 
     (void)gpu_get_display_info(false);
-    if (gpu_set_scanout() < 0) {
+    if (gpu_set_scanout_resource(
+            VIRTIO_GPU_SCANOUT_ID,
+            gpu.scanout_resource_id ?
+                gpu.scanout_resource_id : VIRTIO_GPU_RESOURCE_ID,
+            gpu.width, gpu.height) < 0) {
         KERROR("virtio_gpu: scanout re-assert failed after resize\n");
         return false;
     }
@@ -1504,6 +1698,14 @@ bool virtio_gpu_init(void)
           gpu.device_features, gpu.negotiated_features,
           gpu.num_scanouts, gpu.num_capsets);
     gpu_probe_capsets();
+    if (gpu_has_virgl()) {
+        KINFO("VirtIO GPU acceleration: %s capset=%u version=%u size=%u\n",
+              gpu.has_virgl2_capset ? "VirGL2" : "VirGL",
+              gpu.command_capset_id, gpu.command_capset_max_version,
+              gpu.command_capset_size);
+    } else {
+        KINFO("VirtIO GPU acceleration: 2D\n");
+    }
     if (gpu_get_display_info(true) < 0) {
         KERROR("virtio_gpu: no supported scanout mode\n");
         gpu.initialized = false;

@@ -2441,8 +2441,8 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
     long ret;
 
-    if (offset != 0) {
-        errno = ENOSYS;
+    if (offset < 0) {
+        errno = EINVAL;
         return MAP_FAILED;
     }
 

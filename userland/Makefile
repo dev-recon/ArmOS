@@ -118,6 +118,8 @@ PROGRAMS := $(filter-out teapot-demo,$(PROGRAMS))
 PROGRAMS := $(filter-out armui-demo,$(PROGRAMS))
 PROGRAMS := $(filter-out armos-control-center,$(PROGRAMS))
 PROGRAMS := $(filter-out armos-shell,$(PROGRAMS))
+# Linked explicitly against the ArmOS VirGL winsys library.
+PROGRAMS := $(filter-out virgl-smoke,$(PROGRAMS))
 
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
@@ -165,12 +167,14 @@ WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
 XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
 THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
 SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
+VIRGL_WINSYS_OBJECTS := $(BUILD_DIR)/lib/virgl/winsys.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
 XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
 THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
 SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
+VIRGL_WINSYS_LIBRARY := $(OUT_USR_LIB)/libarmos-virgl-winsys.a
 WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
                      $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
@@ -193,9 +197,12 @@ CONTROL_CENTER_TARGET := $(OUT_USR_BIN)/armos-control-center
 ARMOS_SHELL_OBJECT := \
 	$(BUILD_DIR)/programs/armos-shell/armos-shell.o
 ARMOS_SHELL_TARGET := $(OUT_SBIN)/armos-shell
+VIRGL_SMOKE_OBJECT := $(BUILD_DIR)/programs/virgl-smoke/virgl-smoke.o
+VIRGL_SMOKE_TARGET := $(OUT_USR_BIN)/virgl-smoke
 
 TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
-           $(WAYLAND_API_TEST_TARGET)
+           $(VIRGL_WINSYS_LIBRARY) $(WAYLAND_API_TEST_TARGET) \
+           $(VIRGL_SMOKE_TARGET)
 
 ifeq ($(BUILD_NUKLEAR),1)
 TARGETS += $(NUKLEAR_LIBRARY) $(ARMUI_LIBRARY) $(ARMUI_DEMO_TARGET) \
@@ -210,7 +217,7 @@ $(NUKLEAR_OBJECT) $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) $(ARMUI_DEMO_OBJECT) 
 	$(TEAPOT_DEMO_OBJECT): CFLAGS += -Iopt/nuklear/include
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 \
-	armos-wlcomp armui-demo
+	armos-wlcomp armui-demo virgl-smoke
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
 # Pattern-generated program objects are final cache entries, not disposable
@@ -218,6 +225,8 @@ $(NUKLEAR_OBJECT) $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) $(ARMUI_DEMO_OBJECT) 
 .SECONDARY:
 
 all: check-newlib $(TARGETS)
+
+virgl-smoke: $(VIRGL_SMOKE_TARGET)
 
 check-newlib:
 	@if [ -z "$(NEWLIB_SYSROOT)" ] || [ ! -f "$(NEWLIB_SYSROOT)/include/stdio.h" ] || [ ! -f "$(NEWLIB_LIBC)" ]; then \
@@ -288,6 +297,10 @@ $(BUILD_DIR)/lib/syslog/%.o: lib/syslog/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/virgl/%.o: lib/virgl/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/lib/armui/%.o: lib/armui/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -317,6 +330,10 @@ $(THREADS_LIBRARY): $(THREADS_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(VIRGL_WINSYS_LIBRARY): $(VIRGL_WINSYS_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -373,6 +390,12 @@ $(ARMOS_SHELL_TARGET): $(LINK_DEPS) $(ARMOS_SHELL_OBJECT) \
 		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
 		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
 		"$(NEWLIB_LIBM)" "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(VIRGL_SMOKE_TARGET): $(LINK_DEPS) $(VIRGL_SMOKE_OBJECT) \
+		$(VIRGL_WINSYS_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(VIRGL_SMOKE_OBJECT) \
+		$(VIRGL_WINSYS_LIBRARY) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
@@ -482,6 +505,10 @@ install: $(TARGETS)
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
+	cp $(VIRGL_WINSYS_LIBRARY) \
+		$(USERFS_USR_LIB)/libarmos-virgl-winsys.a
+	cp $(VIRGL_SMOKE_TARGET) $(USERFS_USR_BIN)/virgl-smoke
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/virgl-smoke
 	mkdir -p $(USERFS_ROOT)/usr/include/uapi/armos
 	rm -f $(USERFS_ROOT)/usr/include/uapi/armos/gpu.h
 	cp ../include/uapi/armos/drm.h \
@@ -525,6 +552,9 @@ else
 	rm -f $(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
 	rm -rf $(USERFS_OPT)/nuklear
 endif
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/virgl_winsys.h \
+		$(USERFS_ROOT)/usr/include/armos/virgl_winsys.h
 
 clean:
 	rm -rf $(BUILD_DIR)

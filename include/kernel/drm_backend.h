@@ -31,6 +31,8 @@ typedef struct armos_drm_backend_info {
     uint32_t scanout_height;
     uint32_t max_resource_width;
     uint32_t max_resource_height;
+    uint32_t command_caps_max_version;
+    uint32_t command_caps_size;
     const char *driver_name;
     uint8_t command_set[16];
 } armos_drm_backend_info_t;
@@ -56,7 +58,8 @@ typedef struct armos_drm_backend_ops {
     int (*buffer_create)(void *context, uint32_t resource_id,
                          const armos_drm_buffer_desc_t *desc,
                          const armos_drm_memory_segment_t *segments,
-                         uint32_t segment_count);
+                         uint32_t segment_count,
+                         uint32_t *command_handle);
     int (*buffer_destroy)(void *context, uint32_t resource_id);
     int (*resource_attach)(void *context, uint32_t context_id,
                            uint32_t resource_id);
@@ -66,6 +69,14 @@ typedef struct armos_drm_backend_ops {
                           const armos_drm_buffer_desc_t *desc,
                           uint32_t scanout_id, uint32_t x, uint32_t y,
                           uint32_t width, uint32_t height);
+    int (*get_command_caps)(void *context, uint32_t version,
+                            void *data, uint32_t size);
+    int (*buffer_transfer)(void *context, uint32_t context_id,
+                           uint32_t resource_id, uint32_t direction,
+                           uint32_t level, uint32_t x, uint32_t y,
+                           uint32_t z, uint32_t width, uint32_t height,
+                           uint32_t depth, uint64_t offset,
+                           uint32_t stride, uint32_t layer_stride);
     int (*submit)(void *context, uint32_t context_id,
                   const void *commands, uint32_t command_size,
                   uint64_t fence_id);

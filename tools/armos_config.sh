@@ -11,6 +11,7 @@ ENABLE_NET ENABLE_WIFI ENABLE_GPU ENABLE_HDMI ENABLE_ILI9341 ENABLE_USB HDMI_WID
 BUILD_NEWLIB BUILD_ALL_USERLAND BUILD_TCC BUILD_BSD BUILD_NCURSES BUILD_NANO BUILD_EPOLL_SHIM BUILD_PIXMAN BUILD_TLLIST BUILD_UTF8PROC BUILD_FREETYPE BUILD_EXPAT BUILD_FONTCONFIG BUILD_HARFBUZZ BUILD_FCFT BUILD_FOOT BUILD_NUKLEAR
 BUILD_XV_DEPS BUILD_FBVIEW BUILD_ZLIB BUILD_LIBJPEG BUILD_LIBPNG BUILD_LIBTIFF
 QEMU_MEMORY QEMU_CPU QEMU_MACHINE QEMU_REQUIRED_VERSION QEMU_DISPLAY
+QEMU_GPU_ACCEL QEMU_GPU_HOSTMEM
 NET_HOST_ADDR NET_HOST_PORT NET_GUEST_PORT NET_MAC GPU_XRES GPU_YRES
 SD_VOLUME RASPI_FIRMWARE_DIR DEVICE_TREE DTOVERLAY
 "
@@ -184,6 +185,21 @@ armos_config_validate() {
        [ "${TARGET_PLATFORM:-qemu-virt}" != qemu-virt ]; then
         armos_config_error "ENABLE_GPU is a QEMU launch option and requires qemu-virt"
         return 1
+    fi
+
+    if [ -n "${QEMU_GPU_ACCEL:-}" ]; then
+        case "$QEMU_GPU_ACCEL" in
+            2d|virgl) ;;
+            *)
+                armos_config_error \
+                    "QEMU_GPU_ACCEL expects 2d or virgl"
+                return 1
+                ;;
+        esac
+        [ "${TARGET_PLATFORM:-qemu-virt}" = qemu-virt ] || {
+            armos_config_error "QEMU_GPU_ACCEL requires TARGET_PLATFORM=qemu-virt"
+            return 1
+        }
     fi
 
     if [ "${ENABLE_WIFI:-0}" = 1 ] &&

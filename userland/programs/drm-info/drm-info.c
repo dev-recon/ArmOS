@@ -40,6 +40,7 @@ static const capability_name_t capability_names[] = {
     { ARMOS_DRM_CAP_FENCES, "fences" },
     { ARMOS_DRM_CAP_CPU_MAPPABLE, "cpu-mappable" },
     { ARMOS_DRM_CAP_RENDER_3D, "render-3d" },
+    { ARMOS_DRM_CAP_RESOURCE_TRANSFER, "resource-transfer" },
 };
 
 static const char *backend_class_name(unsigned int backend_class)

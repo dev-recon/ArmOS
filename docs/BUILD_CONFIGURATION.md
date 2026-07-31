@@ -74,6 +74,18 @@ ARMOS_CONFIG=configs/raspi3-arm64-wifi.conf tools/build_pi3_sd.sh --mode none
 
 `ARMOS_CONFIG` paths are resolved from the repository root.
 
+The tracked qemu-virt profiles also select the VirGL GPU transport:
+
+```ini
+ENABLE_GPU=yes
+QEMU_GPU_ACCEL=virgl
+QEMU_GPU_HOSTMEM=512M
+```
+
+Override `QEMU_GPU_ACCEL=2d` when testing the compatibility scanout path or
+when the host QEMU was built without VirGL. These launch options affect only
+qemu-virt; they do not enter the common kernel or Raspberry Pi builds.
+
 ## Precedence
 
 Values are resolved in this order, from highest to lowest priority:
