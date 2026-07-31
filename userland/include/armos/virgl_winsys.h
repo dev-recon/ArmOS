@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <uapi/armos/drm.h>
+#include <uapi/armos/drm_virgl.h>
 
 typedef struct armos_virgl_device {
     int fd;
@@ -59,6 +60,10 @@ int armos_virgl_buffer_create(armos_virgl_device_t *device,
                               uint64_t size, uint32_t flags,
                               uint32_t width, uint32_t height,
                               uint32_t stride, uint32_t format);
+int armos_virgl_resource_create(
+    armos_virgl_device_t *device, armos_virgl_buffer_t *buffer,
+    uint64_t size, uint32_t flags,
+    const armos_drm_virgl_resource_descriptor_t *descriptor);
 int armos_virgl_buffer_map(armos_virgl_device_t *device,
                            armos_virgl_buffer_t *buffer);
 int armos_virgl_buffer_unmap(armos_virgl_buffer_t *buffer);

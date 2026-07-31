@@ -35,6 +35,7 @@
 #include <kernel/arch_platform.h>
 #include <kernel/interrupt.h>
 #include <uapi/armos/drm.h>
+#include <uapi/armos/drm_virgl.h>
 
 #define VIRTIO_ID_GPU 16
 
@@ -77,6 +78,12 @@
 /* Gallium resource constants carried by the VirtIO-GPU VirGL protocol. */
 #define PIPE_BUFFER                            0u
 #define PIPE_TEXTURE_2D                        2u
+#define PIPE_TEXTURE_3D                        3u
+#define PIPE_TEXTURE_CUBE                      4u
+#define PIPE_TEXTURE_1D_ARRAY                  6u
+#define PIPE_TEXTURE_2D_ARRAY                  7u
+#define PIPE_TEXTURE_CUBE_ARRAY                8u
+#define PIPE_MAX_TEXTURE_TYPES                 9u
 #define PIPE_FORMAT_NONE                       0u
 #define PIPE_FORMAT_B8G8R8A8_UNORM             1u
 #define PIPE_BIND_DEPTH_STENCIL                (1u << 0)
@@ -351,8 +358,10 @@ static uint32_t gpu_drm_resource_id(uint32_t handle)
 static int virtio_gpu_backend_buffer_create(
     void *context, uint32_t handle, const armos_drm_buffer_desc_t *desc,
     const armos_drm_memory_segment_t *segments, uint32_t segment_count,
+    const void *command_descriptor, uint32_t command_descriptor_size,
     uint32_t *command_handle)
 {
+    armos_drm_virgl_resource_descriptor_t resource_desc;
     virtio_gpu_resource_create_2d_t create_2d;
     virtio_gpu_resource_create_3d_t create;
     virtio_gpu_resource_attach_backing_t *attach;
@@ -368,10 +377,38 @@ static int virtio_gpu_backend_buffer_create(
         segment_count == 0 || desc->size == 0 ||
         desc->size > 0xffffffffu)
         return -EINVAL;
+    if ((command_descriptor_size == 0) != (command_descriptor == NULL) ||
+        (command_descriptor_size != 0 &&
+         command_descriptor_size != sizeof(resource_desc)))
+        return -EINVAL;
+    memset(&resource_desc, 0, sizeof(resource_desc));
+    if (command_descriptor_size != 0) {
+        memcpy(&resource_desc, command_descriptor, sizeof(resource_desc));
+        if (resource_desc.abi_version !=
+                ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION ||
+            resource_desc.struct_size != sizeof(resource_desc) ||
+            resource_desc.target >= PIPE_MAX_TEXTURE_TYPES ||
+            resource_desc.width == 0 || resource_desc.height == 0 ||
+            resource_desc.depth == 0 || resource_desc.array_size == 0 ||
+            resource_desc.width > 16384u ||
+            resource_desc.height > 16384u ||
+            resource_desc.depth > 2048u ||
+            resource_desc.last_level > 15u ||
+            resource_desc.nr_samples > 16u)
+            return -EINVAL;
+        for (uint32_t index = 0;
+             index < sizeof(resource_desc.reserved) /
+                         sizeof(resource_desc.reserved[0]); index++) {
+            if (resource_desc.reserved[index] != 0)
+                return -EINVAL;
+        }
+    }
     if (desc->width != 0 &&
         desc->format != ARMOS_DRM_FORMAT_BGRA8888)
         return -ENOTSUP;
     if ((desc->flags & ARMOS_DRM_BO_SCANOUT) != 0) {
+        if (command_descriptor_size != 0)
+            return -EINVAL;
         if (desc->width == 0 || desc->height == 0 ||
             desc->stride != desc->width * sizeof(uint32_t))
             return -EINVAL;
@@ -388,7 +425,18 @@ static int virtio_gpu_backend_buffer_create(
         memset(&create, 0, sizeof(create));
         gpu_fill_hdr(&create.hdr, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D);
         create.resource_id = resource_id;
-        if (desc->width && desc->height) {
+        if (command_descriptor_size != 0) {
+            create.target = resource_desc.target;
+            create.format = resource_desc.format;
+            create.bind = resource_desc.bind;
+            create.width = resource_desc.width;
+            create.height = resource_desc.height;
+            create.depth = resource_desc.depth;
+            create.array_size = resource_desc.array_size;
+            create.last_level = resource_desc.last_level;
+            create.nr_samples = resource_desc.nr_samples;
+            create.flags = resource_desc.flags;
+        } else if (desc->width && desc->height) {
             create.target = PIPE_TEXTURE_2D;
             create.format = PIPE_FORMAT_B8G8R8A8_UNORM;
             create.width = desc->width;
@@ -554,7 +602,8 @@ static int virtio_gpu_backend_buffer_transfer(
     void *context, uint32_t context_id, uint32_t handle,
     uint32_t direction, uint32_t level, uint32_t x, uint32_t y,
     uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
-    uint64_t offset, uint32_t stride, uint32_t layer_stride);
+    uint64_t offset, uint32_t stride, uint32_t layer_stride,
+    const void *command_descriptor, uint32_t command_descriptor_size);
 
 static const armos_drm_backend_ops_t virtio_gpu_backend_ops = {
     .get_info = virtio_gpu_backend_get_info,
@@ -1162,16 +1211,56 @@ static int virtio_gpu_backend_buffer_transfer(
     void *context, uint32_t context_id, uint32_t handle,
     uint32_t direction, uint32_t level, uint32_t x, uint32_t y,
     uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
-    uint64_t offset, uint32_t stride, uint32_t layer_stride)
+    uint64_t offset, uint32_t stride, uint32_t layer_stride,
+    const void *command_descriptor, uint32_t command_descriptor_size)
 {
     virtio_gpu_transfer_host_3d_t cmd;
+    armos_drm_virgl_resource_descriptor_t resource_desc;
     uint32_t resource_id = gpu_drm_resource_id(handle);
+    uint32_t level_width;
+    uint32_t level_height;
+    uint32_t level_depth;
 
     (void)context;
     if (!gpu_has_virgl() || context_id == 0 || resource_id == 0 ||
         (direction != ARMOS_DRM_TRANSFER_CPU_TO_DEVICE &&
          direction != ARMOS_DRM_TRANSFER_DEVICE_TO_CPU))
         return -EINVAL;
+    if ((command_descriptor_size == 0) != (command_descriptor == NULL) ||
+        (command_descriptor_size != 0 &&
+         command_descriptor_size != sizeof(resource_desc)))
+        return -EINVAL;
+    if (command_descriptor_size != 0) {
+        memcpy(&resource_desc, command_descriptor, sizeof(resource_desc));
+        if (resource_desc.abi_version !=
+                ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION ||
+            resource_desc.struct_size != sizeof(resource_desc) ||
+            level > resource_desc.last_level)
+            return -EINVAL;
+        level_width = resource_desc.width >> level;
+        level_height = resource_desc.height >> level;
+        if (resource_desc.target == PIPE_TEXTURE_3D)
+            level_depth = resource_desc.depth >> level;
+        else if (resource_desc.target == PIPE_TEXTURE_CUBE ||
+                 resource_desc.target == PIPE_TEXTURE_1D_ARRAY ||
+                 resource_desc.target == PIPE_TEXTURE_2D_ARRAY ||
+                 resource_desc.target == PIPE_TEXTURE_CUBE_ARRAY)
+            level_depth = resource_desc.array_size;
+        else
+            level_depth = 1u;
+        if (level_width == 0)
+            level_width = 1u;
+        if (level_height == 0)
+            level_height = 1u;
+        if (level_depth == 0)
+            level_depth = 1u;
+        if (x >= level_width || y >= level_height || z >= level_depth ||
+            width > level_width - x || height > level_height - y ||
+            depth > level_depth - z)
+            return -EINVAL;
+    } else if (level != 0) {
+        return -EINVAL;
+    }
     memset(&cmd, 0, sizeof(cmd));
     gpu_fill_hdr(&cmd.hdr,
                  direction == ARMOS_DRM_TRANSFER_CPU_TO_DEVICE ?

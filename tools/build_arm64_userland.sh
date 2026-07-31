@@ -112,6 +112,8 @@ cp "$ROOT_DIR/include/uapi/armos/input.h" \
     "$SYSROOT/include/uapi/armos/input.h"
 cp "$ROOT_DIR/include/uapi/armos/drm.h" \
     "$SYSROOT/include/uapi/armos/drm.h"
+cp "$ROOT_DIR/include/uapi/armos/drm_virgl.h" \
+    "$SYSROOT/include/uapi/armos/drm_virgl.h"
 
 make -C "$ROOT_DIR/newlib-port" \
     TARGET_ARCH=arm64 \

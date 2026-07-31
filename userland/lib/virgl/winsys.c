@@ -130,11 +130,11 @@ int armos_virgl_context_destroy(armos_virgl_device_t *device,
                              ARMOS_DRM_IOCTL_CONTEXT_DESTROY, &request);
 }
 
-int armos_virgl_buffer_create(armos_virgl_device_t *device,
-                              armos_virgl_buffer_t *buffer,
-                              uint64_t size, uint32_t flags,
-                              uint32_t width, uint32_t height,
-                              uint32_t stride, uint32_t format)
+static int armos_virgl_buffer_create_internal(
+    armos_virgl_device_t *device, armos_virgl_buffer_t *buffer,
+    uint64_t size, uint32_t flags, uint32_t width, uint32_t height,
+    uint32_t stride, uint32_t format,
+    const armos_drm_virgl_resource_descriptor_t *descriptor)
 {
     armos_drm_bo_create_t request;
 
@@ -151,6 +151,11 @@ int armos_virgl_buffer_create(armos_virgl_device_t *device,
     request.height = height;
     request.stride = stride;
     request.format = format;
+    if (descriptor) {
+        request.command_descriptor_address =
+            (unsigned long long)(uintptr_t)descriptor;
+        request.command_descriptor_size = sizeof(*descriptor);
+    }
     if (armos_virgl_ioctl(device->fd, ARMOS_DRM_IOCTL_BO_CREATE,
                           &request) < 0)
         return -1;
@@ -164,6 +169,40 @@ int armos_virgl_buffer_create(armos_virgl_device_t *device,
     buffer->size = size;
     buffer->map_offset = request.map_offset;
     return 0;
+}
+
+int armos_virgl_buffer_create(armos_virgl_device_t *device,
+                              armos_virgl_buffer_t *buffer,
+                              uint64_t size, uint32_t flags,
+                              uint32_t width, uint32_t height,
+                              uint32_t stride, uint32_t format)
+{
+    return armos_virgl_buffer_create_internal(
+        device, buffer, size, flags, width, height, stride, format, NULL);
+}
+
+int armos_virgl_resource_create(
+    armos_virgl_device_t *device, armos_virgl_buffer_t *buffer,
+    uint64_t size, uint32_t flags,
+    const armos_drm_virgl_resource_descriptor_t *descriptor)
+{
+    int result;
+
+    if (!descriptor ||
+        descriptor->abi_version != ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION ||
+        descriptor->struct_size != sizeof(*descriptor)) {
+        errno = EINVAL;
+        return -1;
+    }
+    result = armos_virgl_buffer_create_internal(
+        device, buffer, size, flags, 0, 0, 0, ARMOS_DRM_FORMAT_NONE,
+        descriptor);
+    if (result == 0) {
+        buffer->width = descriptor->width;
+        buffer->height = descriptor->height;
+        buffer->format = descriptor->format;
+    }
+    return result;
 }
 
 int armos_virgl_buffer_map(armos_virgl_device_t *device,

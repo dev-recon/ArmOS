@@ -29,6 +29,9 @@
 #include <kernel/timer.h>
 #include <uapi/armos/drm.h>
 
+typedef char armos_drm_bo_create_abi_size_must_remain_64[
+    sizeof(armos_drm_bo_create_t) == 64u ? 1 : -1];
+
 #define DEV_DRI_CARD0_RDEV      0xE200u
 #define DEV_DRI_RENDER128_RDEV  0xE280u
 #define ARMOS_DRM_MAX_FILE_CONTEXTS 32u
@@ -48,6 +51,8 @@ typedef struct armos_drm_buffer {
     uint32_t mapping_count;
     bool owner_released;
     bool backend_created;
+    uint32_t command_descriptor_size;
+    uint8_t command_descriptor[ARMOS_DRM_MAX_RESOURCE_DESCRIPTOR_SIZE];
     spinlock_t lock;
 } armos_drm_buffer_t;
 
@@ -716,6 +721,7 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     armos_drm_backend_info_t info;
     armos_drm_buffer_t *buffer = NULL;
     armos_drm_memory_segment_t *segments = NULL;
+    uint8_t command_descriptor[ARMOS_DRM_MAX_RESOURCE_DESCRIPTOR_SIZE];
     void *context;
     uint64_t rounded;
     int result;
@@ -726,6 +732,18 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
         request.size == 0 || request.size > ARMOS_DRM_MAX_BUFFER_SIZE ||
         (request.flags & ~ARMOS_DRM_BO_VALID_FLAGS) != 0)
         return -EINVAL;
+    if ((request.command_descriptor_size == 0) !=
+        (request.command_descriptor_address == 0) ||
+        request.command_descriptor_size >
+            ARMOS_DRM_MAX_RESOURCE_DESCRIPTOR_SIZE ||
+        request.reserved0 != 0)
+        return -EINVAL;
+    if (request.command_descriptor_size != 0 &&
+        copy_from_user(command_descriptor,
+                       (const void *)(uintptr_t)
+                           request.command_descriptor_address,
+                       request.command_descriptor_size) < 0)
+        return -EFAULT;
     if ((request.width == 0) != (request.height == 0))
         return -EINVAL;
     if (request.width != 0) {
@@ -800,6 +818,10 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     buffer->desc.height = request.height;
     buffer->desc.stride = request.stride;
     buffer->desc.format = request.format;
+    buffer->command_descriptor_size = request.command_descriptor_size;
+    if (request.command_descriptor_size != 0)
+        memcpy(buffer->command_descriptor, command_descriptor,
+               request.command_descriptor_size);
     for (uint32_t index = 0; index < buffer->page_count; index++) {
         void *page = allocate_page();
 
@@ -816,6 +838,9 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     }
     result = ops->buffer_create(context, buffer->handle, &buffer->desc,
                                 segments, buffer->page_count,
+                                request.command_descriptor_size != 0 ?
+                                    command_descriptor : NULL,
+                                request.command_descriptor_size,
                                 &buffer->command_handle);
     if (result < 0)
         goto failed;
@@ -828,7 +853,9 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     request.handle = buffer->handle;
     request.command_handle = buffer->command_handle;
     request.map_offset = (uint64_t)buffer->handle * PAGE_SIZE;
-    memset(request.reserved, 0, sizeof(request.reserved));
+    request.command_descriptor_address = 0;
+    request.command_descriptor_size = 0;
+    request.reserved0 = 0;
     if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
         state->buffer_count--;
         (void)ops->buffer_destroy(context, buffer->handle);
@@ -1082,7 +1109,36 @@ static int armos_drm_bo_transfer(file_t *file, uintptr_t arg)
         result = -EACCES;
         goto out;
     }
-    if (buffer->desc.width != 0) {
+    if (buffer->command_descriptor_size != 0) {
+        last_byte = request.offset;
+        if (request.height > 1u) {
+            uint64_t rows = request.height - 1u;
+            uint64_t row_offset = rows * (uint64_t)request.stride;
+
+            if (request.stride == 0 ||
+                row_offset > ~0ULL - last_byte) {
+                result = -EINVAL;
+                goto out;
+            }
+            last_byte += row_offset;
+        }
+        if (request.depth > 1u) {
+            uint64_t layers = request.depth - 1u;
+            uint64_t layer_offset =
+                layers * (uint64_t)request.layer_stride;
+
+            if (request.layer_stride == 0 ||
+                layer_offset > ~0ULL - last_byte) {
+                result = -EINVAL;
+                goto out;
+            }
+            last_byte += layer_offset;
+        }
+        if (last_byte < request.offset || last_byte >= buffer->desc.size) {
+            result = -EINVAL;
+            goto out;
+        }
+    } else if (buffer->desc.width != 0) {
         if (request.level != 0 || request.z != 0 || request.depth != 1 ||
             request.x >= buffer->desc.width ||
             request.y >= buffer->desc.height ||
@@ -1121,7 +1177,10 @@ static int armos_drm_bo_transfer(file_t *file, uintptr_t arg)
         context, request.context_id, buffer->handle, request.direction,
         request.level, request.x, request.y, request.z, request.width,
         request.height, request.depth, request.offset, request.stride,
-        request.layer_stride);
+        request.layer_stride,
+        buffer->command_descriptor_size != 0 ?
+            buffer->command_descriptor : NULL,
+        buffer->command_descriptor_size);
     if (result == 0 &&
         request.direction == ARMOS_DRM_TRANSFER_DEVICE_TO_CPU)
         drm_buffer_cache_all(buffer, true);

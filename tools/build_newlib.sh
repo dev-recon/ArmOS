@@ -185,6 +185,8 @@ cp "$ROOT_DIR/include/uapi/armos/input.h" \
     "$SYSROOT/include/uapi/armos/input.h"
 cp "$ROOT_DIR/include/uapi/armos/drm.h" \
     "$SYSROOT/include/uapi/armos/drm.h"
+cp "$ROOT_DIR/include/uapi/armos/drm_virgl.h" \
+    "$SYSROOT/include/uapi/armos/drm_virgl.h"
 
 if [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: expected newlib sysroot files were not produced." >&2

@@ -59,6 +59,8 @@ typedef struct armos_drm_backend_ops {
                          const armos_drm_buffer_desc_t *desc,
                          const armos_drm_memory_segment_t *segments,
                          uint32_t segment_count,
+                         const void *command_descriptor,
+                         uint32_t command_descriptor_size,
                          uint32_t *command_handle);
     int (*buffer_destroy)(void *context, uint32_t resource_id);
     int (*resource_attach)(void *context, uint32_t context_id,
@@ -76,7 +78,9 @@ typedef struct armos_drm_backend_ops {
                            uint32_t level, uint32_t x, uint32_t y,
                            uint32_t z, uint32_t width, uint32_t height,
                            uint32_t depth, uint64_t offset,
-                           uint32_t stride, uint32_t layer_stride);
+                           uint32_t stride, uint32_t layer_stride,
+                           const void *command_descriptor,
+                           uint32_t command_descriptor_size);
     int (*submit)(void *context, uint32_t context_id,
                   const void *commands, uint32_t command_size,
                   uint64_t fence_id);

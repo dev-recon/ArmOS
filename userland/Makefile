@@ -513,6 +513,8 @@ install: $(TARGETS)
 	rm -f $(USERFS_ROOT)/usr/include/uapi/armos/gpu.h
 	cp ../include/uapi/armos/drm.h \
 		$(USERFS_ROOT)/usr/include/uapi/armos/drm.h
+	cp ../include/uapi/armos/drm_virgl.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/drm_virgl.h
 	rm -f $(USERFS_USR_BIN)/gpu-info
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test

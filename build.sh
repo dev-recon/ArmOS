@@ -195,6 +195,8 @@ cp "$ROOT_DIR/include/uapi/armos/input.h" \
     "$NEWLIB_SYSROOT/include/uapi/armos/input.h"
 cp "$ROOT_DIR/include/uapi/armos/drm.h" \
     "$NEWLIB_SYSROOT/include/uapi/armos/drm.h"
+cp "$ROOT_DIR/include/uapi/armos/drm_virgl.h" \
+    "$NEWLIB_SYSROOT/include/uapi/armos/drm_virgl.h"
 
 echo "=== Building userland incrementally ==="
 USERLAND_CONTRACT_STAMP="$TARGET_BUILD_ROOT/userland/.armos-build.contract"

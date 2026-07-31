@@ -42,6 +42,7 @@
 #define ARMOS_DRM_COMMAND_SET_LENGTH     16u
 #define ARMOS_DRM_MAX_COMMAND_SIZE       (256u * 1024u)
 #define ARMOS_DRM_MAX_COMMAND_CAPS_SIZE  (16u * 1024u)
+#define ARMOS_DRM_MAX_RESOURCE_DESCRIPTOR_SIZE 128u
 
 #define ARMOS_DRM_IOCTL_GET_INFO         0x4400u
 #define ARMOS_DRM_IOCTL_CONTEXT_CREATE   0x4401u
@@ -143,7 +144,9 @@ typedef struct armos_drm_bo_create {
     unsigned int handle;
     unsigned int command_handle;
     unsigned long long map_offset;
-    unsigned int reserved[4];
+    unsigned long long command_descriptor_address;
+    unsigned int command_descriptor_size;
+    unsigned int reserved0;
 } armos_drm_bo_create_t;
 
 typedef struct armos_drm_bo_destroy {

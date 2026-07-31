@@ -1,0 +1,64 @@
+From: ArmOS Project
+Subject: [PATCH] ui/sdl2: apply mouse mode changes on the UI thread
+
+Input device activation can notify the SDL frontend from a vCPU thread.
+Calling SDL's Cocoa backend from that notifier modifies NSWindow state outside
+the macOS main thread and aborts the process.  Publish only the latest desired
+mode from the notifier and apply it from SDL's event polling callback, which
+runs on the UI thread.  Coalescing is correct because mouse mode is state, not
+an event stream.
+
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -53,6 +53,7 @@ static int absolute_enabled;
+ static int guest_x, guest_y;
+ static SDL_Cursor *guest_sprite;
+ static Notifier mouse_mode_notifier;
++static int mouse_mode_pending;
+ 
+ #define SDL2_REFRESH_INTERVAL_BUSY 10
+ #define SDL2_MAX_IDLE_COUNT (2 * GUI_REFRESH_INTERVAL_DEFAULT \
+@@ -298,9 +299,14 @@ static void absolute_mouse_grab(struct sdl2_console *scon)
+     }
+ }
+ 
+-static void sdl_mouse_mode_change(Notifier *notify, void *data)
++static void sdl_apply_mouse_mode_change(void)
+ {
+-    if (qemu_input_is_absolute(sdl2_console[0].dcl.con)) {
++    int mode = qatomic_xchg(&mouse_mode_pending, 0);
++
++    if (mode == 0) {
++        return;
++    }
++    if (mode == 2) {
+         if (!absolute_enabled) {
+             absolute_enabled = 1;
+             SDL_SetRelativeMouseMode(SDL_FALSE);
+@@ -312,6 +318,14 @@ static void sdl_mouse_mode_change(Notifier *notify, void *data)
+         }
+         absolute_enabled = 0;
+     }
++}
++
++static void sdl_mouse_mode_change(Notifier *notify, void *data)
++{
++    int mode = qemu_input_is_absolute(sdl2_console[0].dcl.con) ? 2 : 1;
++
++    /* The notifier can run on a vCPU thread.  SDL/Cocoa must stay on UI. */
++    qatomic_set(&mouse_mode_pending, mode);
+ }
+ 
+ static void sdl_send_mouse_event(struct sdl2_console *scon, int dx, int dy,
+@@ -659,6 +673,10 @@ void sdl2_poll_events(struct sdl2_console *scon)
+     SDL_Event ev1, *ev = &ev1;
+     bool allow_close = true;
+     int idle = 1;
++
++    if (scon == &sdl2_console[0]) {
++        sdl_apply_mouse_mode_change();
++    }
+ 
+     if (scon->last_vm_running != runstate_is_running()) {
+         scon->last_vm_running = runstate_is_running();

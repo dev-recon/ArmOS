@@ -43,6 +43,11 @@
 
 #define VIRGL_FORMAT_BGRA8888 1u
 #define VIRGL_FORMAT_R32G32B32_FLOAT 30u
+#define PIPE_BUFFER 0u
+#define PIPE_TEXTURE_2D 2u
+#define PIPE_FORMAT_NONE 0u
+#define PIPE_BIND_RENDER_TARGET (1u << 1)
+#define PIPE_BIND_VERTEX_BUFFER (1u << 4)
 #define PIPE_SHADER_VERTEX 0u
 #define PIPE_SHADER_FRAGMENT 1u
 #define PIPE_PRIM_TRIANGLES 4u
@@ -256,7 +261,7 @@ static int verify_pixels(const uint32_t *pixels)
             changed++;
     }
     printf("virgl-smoke: corner=%08x center=%08x changed=%u\n",
-           corner, center, changed);
+           (unsigned int)corner, (unsigned int)center, changed);
     if (center == corner || changed < 128u ||
         (center & 0x00ff0000u) == 0u) {
         errno = EIO;
@@ -275,6 +280,8 @@ int main(void)
     armos_virgl_device_t device;
     armos_virgl_buffer_t target;
     armos_virgl_buffer_t vertex;
+    armos_drm_virgl_resource_descriptor_t target_desc;
+    armos_drm_virgl_resource_descriptor_t vertex_desc;
     command_builder_t commands;
     uint32_t context_id = 0;
     uint64_t fence_id = 0;
@@ -284,25 +291,44 @@ int main(void)
 
     memset(&target, 0, sizeof(target));
     memset(&vertex, 0, sizeof(vertex));
+    memset(&target_desc, 0, sizeof(target_desc));
+    target_desc.abi_version = ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION;
+    target_desc.struct_size = sizeof(target_desc);
+    target_desc.target = PIPE_TEXTURE_2D;
+    target_desc.format = VIRGL_FORMAT_BGRA8888;
+    target_desc.bind = PIPE_BIND_RENDER_TARGET;
+    target_desc.width = TEST_WIDTH;
+    target_desc.height = TEST_HEIGHT;
+    target_desc.depth = 1u;
+    target_desc.array_size = 1u;
+    memset(&vertex_desc, 0, sizeof(vertex_desc));
+    vertex_desc.abi_version = ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION;
+    vertex_desc.struct_size = sizeof(vertex_desc);
+    vertex_desc.target = PIPE_BUFFER;
+    vertex_desc.format = PIPE_FORMAT_NONE;
+    vertex_desc.bind = PIPE_BIND_VERTEX_BUFFER;
+    vertex_desc.width = sizeof(vertices);
+    vertex_desc.height = 1u;
+    vertex_desc.depth = 1u;
+    vertex_desc.array_size = 1u;
     if (armos_virgl_open(&device, NULL) < 0) {
         fprintf(stderr, "virgl-smoke: open: %s\n", strerror(errno));
         return 1;
     }
     printf("virgl-smoke: command-set=%s caps-version=%u caps-size=%u\n",
            (const char *)device.info.command_set,
-           device.command_caps_version, device.command_caps_size);
+           (unsigned int)device.command_caps_version,
+           (unsigned int)device.command_caps_size);
     if (armos_virgl_context_create(&device, &context_id) < 0 ||
-        armos_virgl_buffer_create(
+        armos_virgl_resource_create(
             &device, &target, TEST_SIZE,
             ARMOS_DRM_BO_CPU_READ | ARMOS_DRM_BO_CPU_WRITE |
                 ARMOS_DRM_BO_RENDER_TARGET,
-            TEST_WIDTH, TEST_HEIGHT, TEST_STRIDE,
-            ARMOS_DRM_FORMAT_BGRA8888) < 0 ||
-        armos_virgl_buffer_create(
+            &target_desc) < 0 ||
+        armos_virgl_resource_create(
             &device, &vertex, sizeof(vertices),
             ARMOS_DRM_BO_CPU_READ | ARMOS_DRM_BO_CPU_WRITE |
-                ARMOS_DRM_BO_VERTEX, 0, 0, 0,
-            ARMOS_DRM_FORMAT_NONE) < 0) {
+                ARMOS_DRM_BO_VERTEX, &vertex_desc) < 0) {
         fprintf(stderr, "virgl-smoke: setup: %s\n", strerror(errno));
         goto out;
     }

@@ -74,6 +74,16 @@ operations without exposing VirtIO transport details. This is deliberately a
 small dependency-free layer suitable for a later Mesa winsys; it is not a
 partial Gallium state tracker.
 
+Command sets may require resource metadata that does not belong in the common
+BO model. `BO_CREATE` therefore accepts a size-bounded opaque resource
+descriptor after command-set negotiation. The common core copies and owns the
+descriptor, preserves it for the complete BO lifetime and passes it back only
+to the selected backend. The optional `drm_virgl.h` contract defines the
+VirGL descriptor consumed by the Mesa adapter and qemu-virt backend; neither
+the common DRM core nor other platform backends include that header. Legacy
+generic BO creation remains source- and ABI-compatible because the descriptor
+fields replace reserved space without changing the ioctl structure size.
+
 The existing qemu-virt VirtIO-GPU 2D implementation is the first registered
 backend. It negotiates VirGL when the device offers it and inventories the
 standard VirGL/VirGL2 capability sets. The generic `render-3d`, `contexts`,
@@ -93,7 +103,10 @@ a transport resource identifier from a DRM handle. Generic BO usage flags
 describe render targets, textures, vertex, index, constant and shader-storage
 resources without naming Gallium. `BO_TRANSFER` synchronizes explicit
 CPU-to-device uploads and device-to-CPU readbacks, including common cache
-maintenance. Submissions are queued without waiting for the control ring. The
+maintenance. For command-described resources, the common core validates the
+backing-memory range while qemu-virt validates mip level and texture/array box
+geometry from the VirGL descriptor before emitting a transport command.
+Submissions are queued without waiting for the control ring. The
 device IRQ completes a common fence, wakes scheduler waiters and releases the
 queue for the next operation. Fences remain file-owned until `FENCE_DESTROY` or
 final descriptor closure, including after a successful wait. Context and file
@@ -179,6 +192,14 @@ texture through a dedicated red/blue conversion shader. Guest applications,
 the common DRM core and the VirtIO-GPU backend retain the standard BGRA
 contract and contain no macOS-specific conversion.
 
+A second host-only QEMU patch defers SDL mouse-grab, cursor and window-title
+updates from the VirtIO input notifier to the SDL event thread. Cocoa requires
+all `NSWindow` changes to run on that thread; applying them from a vCPU thread
+causes an `NSInternalInconsistencyException` as soon as the guest keyboard or
+mouse becomes active. The notifier publishes only the latest desired mouse
+mode, which the SDL polling loop then consumes. This synchronization remains
+entirely outside ArmOS and does not alter the common DRM or input contracts.
+
 At boot, the qemu-virt backend reports one unambiguous line:
 
 ```text
@@ -223,7 +244,9 @@ deterministic console fallback.
 ## Next milestones
 
 1. Cross-build a minimal Mesa containing Gallium VirGL, EGL and OpenGL ES 2
-   only, and connect its winsys to `libarmos-virgl-winsys`.
+   only, and connect its winsys to `libarmos-virgl-winsys`. The opaque typed
+   resource descriptor required by that winsys is now part of the validated
+   ARM32/ARM64 kernel contract.
 2. Extend the Wayland contract with explicit GPU buffer exchange and
    acquire/release fences, then use it for EGL window surfaces.
 3. Import client GPU buffers into the compositor and compose textured damage
