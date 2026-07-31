@@ -467,25 +467,65 @@ pid_t tty_get_foreground_pgid(void)
     return tty_get_foreground_pgid_for_id(TTY_CONSOLE_ID);
 }
 
-static bool tty_current_task_is_background_reader(struct tty_struct *tty, pid_t *pgid_out)
+static bool tty_current_task_is_background(struct tty_struct *tty,
+                                           task_t **leader_out,
+                                           pid_t *pgid_out)
 {
     task_t *task = task_current_local();
+    task_t *leader;
+    process_t *process;
     unsigned long flags;
     pid_t fg_pgid;
     pid_t pgid;
 
-    if (!task || task->type != TASK_TYPE_PROCESS || !task->process)
+    process = task_get_process(task);
+    leader = task_get_process_leader(task);
+    if (!process || !leader)
         return false;
 
-    pgid = task->process->pgid;
+    pgid = process->pgid;
     spin_lock_irqsave(&tty->lock, &flags);
     fg_pgid = tty->foreground_pgid;
     spin_unlock_irqrestore(&tty->lock, flags);
 
+    if (leader_out)
+        *leader_out = leader;
     if (pgid_out)
         *pgid_out = pgid;
 
     return fg_pgid > 0 && pgid > 0 && pgid != fg_pgid;
+}
+
+int tty_job_control_check_for_id(int tty_id, int signal_number)
+{
+    struct tty_struct *tty = tty_by_id(tty_id);
+    task_t *leader = NULL;
+    process_t *process;
+    pid_t pgid = 0;
+
+    if (!tty)
+        return -ENODEV;
+    if (!tty_current_task_is_background(tty, &leader, &pgid))
+        return 0;
+
+    process = task_get_process(leader);
+    if (!process || signal_number <= 0 || signal_number >= MAX_SIGNALS)
+        return -EINVAL;
+
+    /*
+     * POSIX permits a background group to perform the operation when the
+     * corresponding job-control signal is blocked or explicitly ignored.
+     * Otherwise the whole process group is stopped (default action) or its
+     * installed handler is invoked, and the interrupted operation reports
+     * EINTR.
+     */
+    if ((process->signals.blocked & (1u << signal_number)) != 0u ||
+        process->signals.actions[signal_number].sa_handler == SIG_IGN)
+        return 0;
+
+    tty_signal_process_group(pgid, signal_number);
+    (void)check_pending_signals();
+    return -EINTR;
 }
 
 int tty_get_termios_for_id(int tty_id, struct termios *tio)
@@ -1134,7 +1174,6 @@ static ssize_t tty_read_to(struct tty_struct *tty, char *buf, size_t count)
     bool interbyte_timer_active = false;
     uint32_t interbyte_deadline = 0;
     unsigned long flags;
-    pid_t pgid = 0;
 
     if (count == 0)
         return 0;
@@ -1142,11 +1181,8 @@ static ssize_t tty_read_to(struct tty_struct *tty, char *buf, size_t count)
     if (!tty)
         return -ENODEV;
 
-    if (tty_current_task_is_background_reader(tty, &pgid)) {
-        tty_signal_process_group(pgid, SIGTTIN);
-        (void)check_pending_signals();
+    if (tty_job_control_check_for_id(tty->id, SIGTTIN) < 0)
         return -EINTR;
-    }
     
     while (read < count) {
         while (tty->backend && tty->backend->has_data()) {

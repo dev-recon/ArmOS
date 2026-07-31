@@ -1148,6 +1148,8 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         while (tty_has_pending_output()) {
             if (has_pending_signals(task))
                 return -EINTR;
@@ -1163,6 +1165,8 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_set_termios_for_id(tty_id, &tio, 0);
 
     case TCSETSF:
@@ -1172,11 +1176,18 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_set_termios_for_id(tty_id, &tio, 1);
 
     case TCFLSH:
         if (!file_is_tty(file))
             return -ENOTTY;
+        if ((int)arg != TCIFLUSH && (int)arg != TCOFLUSH &&
+            (int)arg != TCIOFLUSH)
+            return -EINVAL;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_flush_for_id(tty_id, (int)arg);
     default:
         return -ENOTTY;

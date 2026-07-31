@@ -233,6 +233,7 @@ int tty_set_foreground_pgid(pid_t pgid);
 pid_t tty_get_foreground_pgid(void);
 int tty_set_foreground_pgid_for_id(int tty_id, pid_t pgid);
 pid_t tty_get_foreground_pgid_for_id(int tty_id);
+int tty_job_control_check_for_id(int tty_id, int signal_number);
 pid_t tty_get_read_wait_pid(void);
 int tty_get_read_wait_state(void);
 pid_t tty_get_read_wait_pid_for_id(int tty_id);

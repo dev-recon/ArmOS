@@ -71,6 +71,8 @@ int shell_line_was_eof(void);
 void shell_line_edit_init(void);
 void shell_line_edit_shutdown(void);
 int shell_termination_requested(void);
+void shell_restore_tty_mode(void);
+int shell_repair_tty_mode(void);
 
 #define SHELL_BUFFER_SIZE 1024
 #define SHELL_MAX_ARGS      64

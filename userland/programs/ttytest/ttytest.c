@@ -11,9 +11,11 @@
  */
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -368,6 +370,74 @@ static void test_control_chars_preserved(void)
                 "termios preserves VWERASE", check.c_cc[VWERASE]);
 }
 
+static void test_background_termios_job_control(void)
+{
+    pid_t child;
+    pid_t waited;
+    int status = 0;
+
+    if (tcgetpgrp(STDIN_FILENO) != getpgrp()) {
+        printf("\033[1;33m[SKIP]\033[0m background tcsetattr job control "
+               "(ttytest is not foreground)\n");
+        return;
+    }
+
+    child = fork();
+    if (child == 0) {
+        signal(SIGTTOU, SIG_DFL);
+        if (setpgid(0, 0) < 0)
+            _exit(2);
+        (void)tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+        _exit(3);
+    }
+    if (child < 0) {
+        fail("fork background tcsetattr child", errno);
+        return;
+    }
+
+    waited = waitpid(child, &status, WUNTRACED);
+    expect_true(waited == child && WIFSTOPPED(status) &&
+                WSTOPSIG(status) == SIGTTOU,
+                "background tcsetattr stops group with SIGTTOU", status);
+    kill(child, SIGKILL);
+    (void)waitpid(child, &status, 0);
+
+    child = fork();
+    if (child == 0) {
+        signal(SIGTTOU, SIG_IGN);
+        if (setpgid(0, 0) < 0)
+            _exit(2);
+        _exit(tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios) == 0 ? 0 : 3);
+    }
+    if (child < 0) {
+        fail("fork ignored SIGTTOU child", errno);
+        return;
+    }
+
+    waited = waitpid(child, &status, 0);
+    expect_true(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "ignored SIGTTOU permits background tcsetattr", status);
+
+    child = fork();
+    if (child == 0) {
+        sigset_t blocked;
+
+        sigemptyset(&blocked);
+        sigaddset(&blocked, SIGTTOU);
+        if (sigprocmask(SIG_BLOCK, &blocked, NULL) < 0 || setpgid(0, 0) < 0)
+            _exit(2);
+        _exit(tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios) == 0 ? 0 : 3);
+    }
+    if (child < 0) {
+        fail("fork blocked SIGTTOU child", errno);
+        return;
+    }
+
+    waited = waitpid(child, &status, 0);
+    expect_true(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "blocked SIGTTOU permits background tcsetattr", status);
+}
+
 int main(int argc, char **argv)
 {
     struct termios tio;
@@ -404,6 +474,7 @@ int main(int argc, char **argv)
     test_tcsetattr_actions();
     test_tcdrain();
     test_control_chars_preserved();
+    test_background_termios_job_control();
     test_raw_timeout_mode();
     test_raw_poll_mode();
 
