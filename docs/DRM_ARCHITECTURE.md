@@ -74,6 +74,20 @@ operations without exposing VirtIO transport details. This is deliberately a
 small dependency-free layer suitable for a later Mesa winsys; it is not a
 partial Gallium state tracker.
 
+Mesa's next architecture-neutral layer is the ArmGL Gallium frontend. It owns
+the `pipe_frontend_screen`, GLES state-tracker contexts and off-screen color,
+depth and stencil attachments. Surface allocation is lazy, resize invalidates
+attachments atomically, context sharing is explicit and synchronous flushes
+wait on Gallium fences. The frontend does not know how the `pipe_screen` was
+created and therefore works unchanged with VirGL and the future VC4/V3D
+backend. EGL, Wayland buffers, window policy and presentation remain above it.
+
+The frontend compiles as Mesa's `libarmgl.a` with both ArmOS ARM32 and ARM64
+ABIs. This milestone validates the common state-tracker lifecycle; it does not
+yet install `libEGL.a` or `libGLESv2.a`. The following lot adds a surfaceless
+EGL driver and pbuffer triangle/readback test before any native Wayland window
+surface is introduced.
+
 Command sets may require resource metadata that does not belong in the common
 BO model. `BO_CREATE` therefore accepts a size-bounded opaque resource
 descriptor after command-set negotiation. The common core copies and owns the
@@ -247,8 +261,10 @@ deterministic console fallback.
    only. The first slice is now present: Mesa's `struct virgl_winsys` is
    implemented by `userland/opt/mesa/armos/virgl_armos_winsys.c` on top of
    `libarmos-virgl-winsys`, with typed resources, mapping, transfers, command
-   relocation references and native ArmOS fence lifetimes. The adapter is
-   compiled against Mesa 25.3.6 headers with both target compilers by
+   relocation references and native ArmOS fence lifetimes. The common ArmGL
+   frontend now supplies GLES state-tracker contexts and pbuffer attachments
+   without depending on the selected GPU. Both layers are compiled against
+   Mesa 25.3.6 headers with the ARM32 and ARM64 target compilers by
    `tools/check_mesa_virgl_adapter.sh`. The remaining part of this milestone
    is the reproducible Mesa static build and the ArmOS EGL platform glue.
 2. Extend the Wayland contract with explicit GPU buffer exchange and
