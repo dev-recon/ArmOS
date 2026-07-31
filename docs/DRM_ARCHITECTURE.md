@@ -244,9 +244,13 @@ deterministic console fallback.
 ## Next milestones
 
 1. Cross-build a minimal Mesa containing Gallium VirGL, EGL and OpenGL ES 2
-   only, and connect its winsys to `libarmos-virgl-winsys`. The opaque typed
-   resource descriptor required by that winsys is now part of the validated
-   ARM32/ARM64 kernel contract.
+   only. The first slice is now present: Mesa's `struct virgl_winsys` is
+   implemented by `userland/opt/mesa/armos/virgl_armos_winsys.c` on top of
+   `libarmos-virgl-winsys`, with typed resources, mapping, transfers, command
+   relocation references and native ArmOS fence lifetimes. The adapter is
+   compiled against Mesa 25.3.6 headers with both target compilers by
+   `tools/check_mesa_virgl_adapter.sh`. The remaining part of this milestone
+   is the reproducible Mesa static build and the ArmOS EGL platform glue.
 2. Extend the Wayland contract with explicit GPU buffer exchange and
    acquire/release fences, then use it for EGL window surfaces.
 3. Import client GPU buffers into the compositor and compose textured damage
