@@ -124,6 +124,9 @@ PROGRAMS := $(filter-out virgl-smoke,$(PROGRAMS))
 # compositor-provider archives and are linked by tools/build_mesa.sh.
 PROGRAMS := $(filter-out egl-smoke egl-wayland-smoke armgl-import-smoke \
 	armgl-compositor-smoke,$(PROGRAMS))
+# Raylib applications require the private Raylib/Mesa dependency graph and
+# are compiled and linked atomically by tools/build_raylib.sh.
+PROGRAMS := $(filter-out raylib-smoke raypot-demo,$(PROGRAMS))
 
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
