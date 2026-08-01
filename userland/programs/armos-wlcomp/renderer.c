@@ -185,6 +185,12 @@ static int wl_renderer_try_gpu(struct wl_server_renderer *renderer)
         errno = ENOTSUP;
         goto fail;
     }
+    if ((wl_gpu_backend_supported_capabilities() &
+         WL_GPU_COMPOSITOR_REQUIRED_CAPS) !=
+        WL_GPU_COMPOSITOR_REQUIRED_CAPS) {
+        errno = ENOTSUP;
+        goto fail;
+    }
     size = (uint64_t)info.scanout_width * sizeof(uint32_t) *
         info.scanout_height;
     if (!size || size > SIZE_MAX || size > UINT32_MAX) {
@@ -197,6 +203,18 @@ static int wl_renderer_try_gpu(struct wl_server_renderer *renderer)
     backend_config.height = info.scanout_height;
     backend = wl_gpu_backend_create(&backend_config);
     if (!backend) {
+        errno = ENOTSUP;
+        goto fail;
+    }
+    /*
+     * Never substitute the GPU path for the reference renderer on the
+     * strength of function pointers alone.  Decorations, translucent client
+     * pixels, cursor ordering and triple-buffer damage all depend on these
+     * exact semantic guarantees.
+     */
+    if ((wl_gpu_backend_capabilities(backend) &
+         WL_GPU_COMPOSITOR_REQUIRED_CAPS) !=
+        WL_GPU_COMPOSITOR_REQUIRED_CAPS) {
         errno = ENOTSUP;
         goto fail;
     }
@@ -1622,6 +1640,47 @@ static bool wl_gpu_prepare_pointer(
     return true;
 }
 
+static uint64_t wl_server_tag_frame_callbacks(struct wl_server *server)
+{
+    uint64_t presentation_serial = 0u;
+
+    if (!server)
+        return 0u;
+    for (size_t client_index = 0u;
+         client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
+        struct wl_server_client *client = &server->clients[client_index];
+
+        if (!client->used)
+            continue;
+        for (size_t surface_index = 0u;
+             surface_index < WL_SERVER_MAX_SURFACES; surface_index++) {
+            struct wl_server_surface *surface =
+                &client->surfaces[surface_index];
+
+            if (!surface->used)
+                continue;
+            for (size_t callback_index = 0u;
+                 callback_index < WL_SERVER_MAX_CALLBACKS;
+                 callback_index++) {
+                struct wl_server_callback *callback =
+                    &surface->callbacks[callback_index];
+
+                if (!callback->used || callback->presentation_serial != 0u)
+                    continue;
+                if (presentation_serial == 0u) {
+                    presentation_serial =
+                        ++server->next_presentation_serial;
+                    if (presentation_serial == 0u)
+                        presentation_serial =
+                            ++server->next_presentation_serial;
+                }
+                callback->presentation_serial = presentation_serial;
+            }
+        }
+    }
+    return presentation_serial;
+}
+
 static int wl_renderer_gpu_present_event(
     int fd, uint32_t mask, void *data)
 {
@@ -1663,6 +1722,14 @@ static int wl_renderer_gpu_present_event(
     }
     server->gpu_present_started_us[output_index] = 0u;
     server->gpu_present_pixels[output_index] = 0u;
+    if (server->gpu_present_serial[output_index] != 0u) {
+        if (wl_server_complete_frame_callbacks(
+                server, server->gpu_present_serial[output_index]) < 0) {
+            server->fatal_error = true;
+            return -1;
+        }
+        server->gpu_present_serial[output_index] = 0u;
+    }
 
     if (wl_gpu_presenter_pending(renderer->gpu_presenter)) {
         int next_fence_fd;
@@ -1909,6 +1976,8 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
             wl_renderer_monotonic_us() : 0u;
 
         if (!server->event_loop) {
+            uint64_t presentation_serial;
+
             if (!wl_gpu_presenter_present(
                     renderer->gpu_presenter, renderer->gpu_backend,
                     &damage)) {
@@ -1926,6 +1995,11 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
                 renderer->profile_present_pixels +=
                     (uint64_t)damage.width * damage.height;
             }
+            presentation_serial = wl_server_tag_frame_callbacks(server);
+            if (presentation_serial != 0u &&
+                wl_server_complete_frame_callbacks(
+                    server, presentation_serial) < 0)
+                return -1;
         } else {
             int fence_fd;
             uint32_t output_index;
@@ -1977,6 +2051,13 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
             server->gpu_present_started_us[output_index] = started_us;
             server->gpu_present_pixels[output_index] =
                 (uint64_t)damage.width * damage.height;
+            if (server->gpu_present_serial[output_index] != 0u) {
+                wl_gpu_presenter_cancel(renderer->gpu_presenter);
+                errno = EPROTO;
+                return -1;
+            }
+            server->gpu_present_serial[output_index] =
+                wl_server_tag_frame_callbacks(server);
         }
     }
 
@@ -2819,7 +2900,8 @@ int wl_surface_commit(struct wl_server *server,
     return 0;
 }
 
-int wl_server_complete_frame_callbacks(struct wl_server *server)
+int wl_server_complete_frame_callbacks(struct wl_server *server,
+                                       uint64_t presentation_serial)
 {
     if (!server)
         return -1;
@@ -2844,7 +2926,8 @@ int wl_server_complete_frame_callbacks(struct wl_server *server)
                     &surface->callbacks[callback_index];
                 uint32_t done;
 
-                if (!callback->used)
+                if (!callback->used ||
+                    callback->presentation_serial != presentation_serial)
                     continue;
                 done = ++server->serial;
                 if (wl_client_send_words(client, callback->object_id,

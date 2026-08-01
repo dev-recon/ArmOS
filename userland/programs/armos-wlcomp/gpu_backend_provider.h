@@ -50,9 +50,11 @@ struct wl_gpu_backend_ops {
 
 struct wl_gpu_backend {
     const struct wl_gpu_backend_ops *ops;
+    uint64_t capabilities;
 };
 
 struct wl_gpu_backend *wl_gpu_backend_provider_create(
     const struct wl_gpu_backend_config *config);
+uint64_t wl_gpu_backend_provider_capabilities(void);
 
 #endif /* ARMOS_WLCOMP_GPU_BACKEND_PROVIDER_H */

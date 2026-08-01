@@ -19,6 +19,7 @@
 
 #include <raylib.h>
 #include <raymath.h>
+#include <rlgl.h>
 
 #include "../teapot-demo/teapot_model.h"
 
@@ -233,10 +234,17 @@ int main(void)
         BeginDrawing();
         ClearBackground((Color){ 20, 27, 35, 255 });
         BeginMode3D(camera);
+        /* The patch data is two-sided and does not guarantee a uniform
+         * winding across every Bezier patch.  Keep depth writes authoritative
+         * while avoiding topology loss from back-face culling. */
+        rlEnableDepthMask();
+        rlEnableDepthTest();
+        rlDisableBackfaceCulling();
         DrawModel(model, (Vector3){ 0.0f, 0.0f, 0.0f }, 1.0f, WHITE);
         if (wireframe)
             DrawModelWires(model, (Vector3){ 0.0f, 0.0f, 0.0f },
                            1.002f, (Color){ 90, 230, 245, 255 });
+        rlEnableBackfaceCulling();
         EndMode3D();
         DrawText("Raypot - GPU Raylib/EGL/VirGL", 18, 16, 20,
                  (Color){ 88, 190, 235, 255 });

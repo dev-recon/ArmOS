@@ -51,6 +51,18 @@ struct wl_gpu_rect {
 
 #define WL_GPU_MAX_OUTPUT_BUFFERS 3u
 
+/*
+ * A provider may accelerate the compositor only when it guarantees the same
+ * observable result as the reference software renderer.  These are semantic
+ * guarantees, not merely indications that an operation exists.
+ */
+#define WL_GPU_CAP_ORDERED_COMPOSITION UINT64_C(1)
+#define WL_GPU_CAP_SOURCE_OVER         UINT64_C(2)
+#define WL_GPU_CAP_DAMAGE_PRESERVATION UINT64_C(4)
+#define WL_GPU_COMPOSITOR_REQUIRED_CAPS \
+    (WL_GPU_CAP_ORDERED_COMPOSITION | WL_GPU_CAP_SOURCE_OVER | \
+     WL_GPU_CAP_DAMAGE_PRESERVATION)
+
 struct wl_gpu_output {
     int buffer_fd;
     uint32_t stride;
@@ -67,6 +79,8 @@ struct wl_gpu_frame {
 struct wl_gpu_backend *wl_gpu_backend_create(
     const struct wl_gpu_backend_config *config);
 void wl_gpu_backend_destroy(struct wl_gpu_backend *backend);
+uint64_t wl_gpu_backend_supported_capabilities(void);
+uint64_t wl_gpu_backend_capabilities(const struct wl_gpu_backend *backend);
 
 /*
  * A frame is an explicit command-generation transaction. Rendering operations

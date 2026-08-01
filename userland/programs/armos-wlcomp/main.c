@@ -278,7 +278,12 @@ static int wl_server_render_event(void *data)
         server->fatal_error = true;
         return -1;
     }
-    if (wl_server_complete_frame_callbacks(server) < 0) {
+    /*
+     * Software frames are complete synchronously.  GPU callbacks tagged with
+     * a non-zero presentation serial are completed by their output fence;
+     * only callbacks not associated with a submitted GPU frame remain here.
+     */
+    if (wl_server_complete_frame_callbacks(server, 0u) < 0) {
         server->fatal_error = true;
         return -1;
     }

@@ -3662,8 +3662,9 @@ void wl_display_cancel_read(struct wl_display *display)
     }
 }
 
-int wl_display_dispatch_queue_pending(struct wl_display *display,
-                                      struct wl_event_queue *queue)
+static int wl_display_dispatch_queue_pending_bounded(
+    struct wl_display *display, struct wl_event_queue *queue,
+    uint32_t max_events)
 {
     int dispatched = 0;
 
@@ -3671,7 +3672,7 @@ int wl_display_dispatch_queue_pending(struct wl_display *display,
         errno = EINVAL;
         return -1;
     }
-    while (queue->pending_head) {
+    while (queue->pending_head && (uint32_t)dispatched < max_events) {
         struct wl_pending_event *event = queue->pending_head;
 
         queue->pending_head = event->next;
@@ -3685,6 +3686,24 @@ int wl_display_dispatch_queue_pending(struct wl_display *display,
         dispatched++;
     }
     return dispatched;
+}
+
+int wl_display_dispatch_queue_pending(struct wl_display *display,
+                                      struct wl_event_queue *queue)
+{
+    return wl_display_dispatch_queue_pending_bounded(
+        display, queue, UINT32_MAX);
+}
+
+int armos_wl_display_dispatch_pending_bounded(struct wl_display *display,
+                                              uint32_t max_events)
+{
+    if (!display) {
+        errno = EINVAL;
+        return -1;
+    }
+    return wl_display_dispatch_queue_pending_bounded(
+        display, &display->default_queue, max_events);
 }
 
 int wl_display_dispatch_pending(struct wl_display *display)
@@ -3723,6 +3742,35 @@ int wl_display_dispatch(struct wl_display *display)
         return -1;
     }
     return wl_display_dispatch_queue(display, &display->default_queue);
+}
+
+int armos_wl_display_dispatch_bounded(struct wl_display *display,
+                                      uint32_t max_events)
+{
+    int dispatched;
+
+    if (!display) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (max_events == 0)
+        return 0;
+
+    dispatched = wl_display_dispatch_queue_pending_bounded(
+        display, &display->default_queue, max_events);
+    if (dispatched != 0)
+        return dispatched;
+    for (;;) {
+        if (wl_display_prepare_read_queue(
+                display, &display->default_queue) < 0)
+            return -1;
+        if (wl_display_read_events(display) < 0)
+            return -1;
+        dispatched = wl_display_dispatch_queue_pending_bounded(
+            display, &display->default_queue, max_events);
+        if (dispatched != 0)
+            return dispatched;
+    }
 }
 
 struct wl_roundtrip_state {

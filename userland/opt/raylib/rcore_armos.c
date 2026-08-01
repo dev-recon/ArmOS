@@ -32,6 +32,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xdg-shell-client-protocol.h>
 
+#define ARMOS_WAYLAND_EVENTS_PER_FRAME 64u
+
 typedef struct {
     struct wl_display *display;
     struct wl_registry *registry;
@@ -346,6 +348,9 @@ static void ArmOSKeyboardKey(void *data, struct wl_keyboard *keyboard,
         else if (pressed && wasDown)
             CORE.Input.Keyboard.keyRepeatInFrame[mapped] = 1;
     }
+    if (pressed && (mapped != KEY_NULL) &&
+        (mapped == CORE.Input.Keyboard.exitKey))
+        CORE.Window.shouldClose = true;
     if (pressed && platform.xkbState)
         codepoint = xkb_state_key_get_utf32(platform.xkbState, key + 8u);
     if ((codepoint >= 0x20u) && (codepoint != 0x7fu) &&
@@ -504,6 +509,8 @@ double GetTime(void)
 void PollInputEvents(void)
 {
     struct pollfd descriptor = { 0 };
+    unsigned int dispatched = 0u;
+    int pending;
 
 #if SUPPORT_GESTURES_SYSTEM
     UpdateGestures();
@@ -524,22 +531,40 @@ void PollInputEvents(void)
     CORE.Input.Mouse.currentWheelMove = (Vector2){ 0.0f, 0.0f };
 
     if (!platform.display) return;
-    if (wl_display_dispatch_pending(platform.display) < 0)
+    pending = armos_wl_display_dispatch_pending_bounded(
+        platform.display, ARMOS_WAYLAND_EVENTS_PER_FRAME);
+    if (pending < 0)
     {
         CORE.Window.shouldClose = true;
         return;
     }
+    dispatched = (unsigned int)pending;
+    if (dispatched >= ARMOS_WAYLAND_EVENTS_PER_FRAME)
+        return;
     wl_display_flush(platform.display);
     descriptor.fd = wl_display_get_fd(platform.display);
     descriptor.events = POLLIN;
-    while (poll(&descriptor, 1, 0) > 0)
+    /*
+     * Keep input latency low without allowing a continuously readable
+     * Wayland socket to starve the render loop.  Pointer motion can arrive
+     * faster than frames are produced; draining until EAGAIN made an
+     * animated Raylib client stop rendering for as long as the mouse moved.
+     */
+    while (dispatched < ARMOS_WAYLAND_EVENTS_PER_FRAME)
     {
-        if (wl_display_dispatch(platform.display) < 0)
+        int count;
+
+        descriptor.revents = 0;
+        if (poll(&descriptor, 1, 0) <= 0)
+            break;
+        count = armos_wl_display_dispatch_bounded(
+            platform.display, ARMOS_WAYLAND_EVENTS_PER_FRAME - dispatched);
+        if (count < 0)
         {
             CORE.Window.shouldClose = true;
             break;
         }
-        descriptor.revents = 0;
+        dispatched += (unsigned int)count;
     }
 }
 
@@ -550,6 +575,7 @@ int InitPlatform(void)
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 16,
         EGL_NONE
     };
     static const EGLint contextAttributes[] = {

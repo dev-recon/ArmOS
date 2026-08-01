@@ -2120,6 +2120,7 @@ static int wl_surface_add_callback(struct wl_server_client *client,
             continue;
         callback->used = true;
         callback->object_id = new_id;
+        callback->presentation_serial = 0u;
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_CALLBACK,
                                  1u, callback) < 0) {
             memset(callback, 0, sizeof(*callback));

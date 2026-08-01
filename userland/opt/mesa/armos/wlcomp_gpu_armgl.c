@@ -66,7 +66,6 @@ static void
 wl_gpu_armgl_destroy(struct wl_gpu_backend *base)
 {
     struct wl_gpu_armgl_backend *backend = wl_gpu_armgl_backend(base);
-
     if (!backend)
         return;
     armgl_context_destroy(backend->context);
@@ -256,6 +255,16 @@ static const struct wl_gpu_backend_ops wl_gpu_armgl_ops = {
     .blit = wl_gpu_armgl_blit,
 };
 
+uint64_t
+wl_gpu_backend_provider_capabilities(void)
+{
+    /*
+     * Do not initialize Mesa merely to discover that this provider has not
+     * passed the reference-renderer conformance suite yet.
+     */
+    return 0u;
+}
+
 struct wl_gpu_backend *
 wl_gpu_backend_provider_create(const struct wl_gpu_backend_config *config)
 {
@@ -270,6 +279,13 @@ wl_gpu_backend_provider_create(const struct wl_gpu_backend_config *config)
     if (!backend)
         return NULL;
     backend->base.ops = &wl_gpu_armgl_ops;
+    /*
+     * Keep compositor acceleration disabled until the provider passes the
+     * reference-renderer conformance suite: ordered operations, exact
+     * source-over blending and preservation outside the damage region.
+     * VirGL remains available to EGL clients independently of this mask.
+     */
+    backend->base.capabilities = 0u;
     backend->output_count = WL_GPU_MAX_OUTPUT_BUFFERS;
     backend->draw_index = backend->output_count - 1u;
 

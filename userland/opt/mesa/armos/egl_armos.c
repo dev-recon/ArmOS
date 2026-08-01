@@ -86,8 +86,25 @@ struct armos_egl_surface {
    struct armgl_surface *armgl;
    struct wl_egl_window *native_window;
    struct wl_surface *wayland_surface;
+   struct wl_callback *frame_callback;
    struct armos_egl_image images[ARMOS_EGL_SWAPCHAIN_IMAGES];
    unsigned current_image;
+};
+
+static void
+armos_egl_frame_done(void *data, struct wl_callback *callback,
+                     uint32_t callback_data)
+{
+   struct armos_egl_surface *surface = data;
+
+   (void)callback_data;
+   if (surface && surface->frame_callback == callback)
+      surface->frame_callback = NULL;
+   wl_callback_destroy(callback);
+}
+
+static const struct wl_callback_listener armos_egl_frame_listener = {
+   .done = armos_egl_frame_done,
 };
 
 static void
@@ -445,7 +462,7 @@ armos_egl_add_config(_EGLDisplay *display, EGLint config_id,
    config->base.MaxPbufferPixels =
       _EGL_MAX_PBUFFER_WIDTH * _EGL_MAX_PBUFFER_HEIGHT;
    config->base.MinSwapInterval = 0;
-   config->base.MaxSwapInterval = 0;
+   config->base.MaxSwapInterval = 1;
 
    if (!_eglValidateConfig(&config->base, EGL_FALSE)) {
       free(config);
@@ -620,7 +637,7 @@ armos_egl_create_window(_EGLDisplay *display, _EGLConfig *config,
    surface->wayland_surface = armos_wl_egl_window_get_surface(window);
    surface->base.Width = (EGLint)width;
    surface->base.Height = (EGLint)height;
-   surface->base.SwapInterval = 0;
+   surface->base.SwapInterval = 1;
 
    for (index = 0; index < ARMOS_EGL_SWAPCHAIN_IMAGES; ++index) {
       if (!armos_egl_image_create(surface, &surface->images[index],
@@ -648,6 +665,10 @@ armos_egl_destroy_surface(_EGLDisplay *display, _EGLSurface *base)
       if (surface->base.Type == EGL_WINDOW_BIT) {
          unsigned index;
 
+         if (surface->frame_callback) {
+            wl_callback_destroy(surface->frame_callback);
+            surface->frame_callback = NULL;
+         }
          for (index = 0; index < ARMOS_EGL_SWAPCHAIN_IMAGES; ++index)
             armos_egl_image_reset(&surface->images[index]);
       } else {
@@ -680,6 +701,12 @@ armos_egl_swap_buffers(_EGLDisplay *display, _EGLSurface *base)
        armos_wl_egl_window_get_size(surface->native_window,
                                     &target_width, &target_height) < 0)
       return _eglError(EGL_BAD_SURFACE, "ArmOS EGL swap surface");
+
+   while (surface->base.SwapInterval > 0 && surface->frame_callback) {
+      if (wl_display_dispatch_queue(surface->owner->wayland,
+                                    surface->owner->queue) < 0)
+         return _eglError(EGL_BAD_SURFACE, "ArmOS EGL frame callback");
+   }
 
    current = &surface->images[surface->current_image];
    next = armos_egl_acquire_image(surface, surface->current_image,
@@ -723,12 +750,31 @@ armos_egl_swap_buffers(_EGLDisplay *display, _EGLSurface *base)
       close(acquire_fence_fd);
    }
 
+   if (surface->base.SwapInterval > 0) {
+      surface->frame_callback = wl_surface_frame(surface->wayland_surface);
+      if (!surface->frame_callback ||
+          wl_callback_add_listener(surface->frame_callback,
+                                   &armos_egl_frame_listener,
+                                   surface) < 0) {
+         if (surface->frame_callback)
+            wl_callback_destroy(surface->frame_callback);
+         surface->frame_callback = NULL;
+         (void)armgl_make_current(context->armgl, current->armgl,
+                                  read_surface == surface ? current->armgl :
+                                  read_surface->armgl);
+         return _eglError(EGL_BAD_ALLOC, "ArmOS EGL frame callback");
+      }
+      wl_proxy_set_queue((struct wl_proxy *)surface->frame_callback,
+                         surface->owner->queue);
+   }
    wl_surface_attach(surface->wayland_surface, current->buffer, 0, 0);
    wl_surface_damage_buffer(surface->wayland_surface, 0, 0,
                             (int32_t)current->width,
                             (int32_t)current->height);
    current->busy = true;
    wl_surface_commit(surface->wayland_surface);
+   if (wl_display_flush(surface->owner->wayland) < 0)
+      return _eglError(EGL_BAD_SURFACE, "ArmOS EGL frame flush");
 
    surface->current_image = next_index;
    surface->armgl = next->armgl;

@@ -22,6 +22,8 @@
 /* Defined by a provider archive when GPU composition is enabled. */
 extern struct wl_gpu_backend *wl_gpu_backend_provider_create(
     const struct wl_gpu_backend_config *config) __attribute__((weak));
+extern uint64_t wl_gpu_backend_provider_capabilities(void)
+    __attribute__((weak));
 
 static bool
 wl_gpu_backend_valid(const struct wl_gpu_backend *backend)
@@ -56,6 +58,20 @@ wl_gpu_backend_destroy(struct wl_gpu_backend *backend)
 {
     if (wl_gpu_backend_valid(backend))
         backend->ops->destroy(backend);
+}
+
+uint64_t
+wl_gpu_backend_supported_capabilities(void)
+{
+    if (!wl_gpu_backend_provider_capabilities)
+        return 0u;
+    return wl_gpu_backend_provider_capabilities();
+}
+
+uint64_t
+wl_gpu_backend_capabilities(const struct wl_gpu_backend *backend)
+{
+    return wl_gpu_backend_valid(backend) ? backend->capabilities : 0u;
 }
 
 bool

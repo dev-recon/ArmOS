@@ -214,6 +214,7 @@ struct wl_server_buffer {
 struct wl_server_callback {
     bool used;
     uint32_t object_id;
+    uint64_t presentation_serial;
 };
 
 enum wl_server_surface_role {
@@ -425,6 +426,8 @@ struct wl_server {
     uint64_t startup_started_us;
     uint64_t gpu_present_started_us[WL_GPU_MAX_OUTPUT_BUFFERS];
     uint64_t gpu_present_pixels[WL_GPU_MAX_OUTPUT_BUFFERS];
+    uint64_t gpu_present_serial[WL_GPU_MAX_OUTPUT_BUFFERS];
+    uint64_t next_presentation_serial;
     bool fatal_error;
     bool exit_requested;
     bool pointer_presented;
@@ -555,7 +558,8 @@ void wl_renderer_damage_surface_at(
 void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
                              uint32_t width, uint32_t height);
 int wl_renderer_compose_damage(struct wl_server *server);
-int wl_server_complete_frame_callbacks(struct wl_server *server);
+int wl_server_complete_frame_callbacks(struct wl_server *server,
+                                       uint64_t presentation_serial);
 int wl_server_schedule_render(struct wl_server *server, bool scene_damage);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,

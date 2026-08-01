@@ -70,11 +70,12 @@ QEMU_CONFIGURE_ARGS=(
     --disable-spice
     --disable-spice-protocol
 )
-QEMU_REQUIRED_DISPLAY_BACKEND=sdl
+QEMU_REQUIRED_DISPLAY_BACKENDS=(sdl)
 if [ "$(uname -s)" = "Linux" ]; then
     QEMU_CONFIGURE_ARGS+=(--disable-gtk)
 elif [ "$(uname -s)" = "Darwin" ]; then
-    QEMU_CONFIGURE_ARGS+=(--disable-cocoa)
+    QEMU_CONFIGURE_ARGS+=(--enable-cocoa)
+    QEMU_REQUIRED_DISPLAY_BACKENDS+=(cocoa)
 fi
 
 mkdir -p "$DOWNLOAD_DIR" "$WORK_DIR"
@@ -131,21 +132,20 @@ for qemu_name in qemu-system-arm qemu-system-aarch64; do
         echo "error: unexpected installed QEMU version: $version_line" >&2
         exit 1
     fi
-    if [ -n "$QEMU_REQUIRED_DISPLAY_BACKEND" ] &&
-       ! "$QEMU_BINARY" -display help 2>/dev/null |
-           grep -qx "$QEMU_REQUIRED_DISPLAY_BACKEND"; then
-        echo "error: $QEMU_BINARY lacks the required '$QEMU_REQUIRED_DISPLAY_BACKEND' display backend" >&2
-        exit 1
-    fi
+    QEMU_DISPLAY_HELP="$("$QEMU_BINARY" -display help 2>/dev/null)"
+    for display_backend in "${QEMU_REQUIRED_DISPLAY_BACKENDS[@]}"; do
+        if ! printf '%s\n' "$QEMU_DISPLAY_HELP" | grep -qx "$display_backend"; then
+            echo "error: $QEMU_BINARY lacks the required '$display_backend' display backend" >&2
+            exit 1
+        fi
+    done
     if ! "$QEMU_BINARY" -device help 2>/dev/null |
            grep -q 'name "virtio-gpu-gl-device"'; then
         echo "error: $QEMU_BINARY lacks VirGL support" >&2
         exit 1
     fi
     echo "Installed: $QEMU_BINARY"
-    if [ -n "$QEMU_REQUIRED_DISPLAY_BACKEND" ]; then
-        echo "Display:   $QEMU_REQUIRED_DISPLAY_BACKEND"
-    fi
+    echo "Displays:  ${QEMU_REQUIRED_DISPLAY_BACKENDS[*]}"
 done
 
 if [ ! -f "$PREFIX/share/qemu/efi-virtio.rom" ]; then
