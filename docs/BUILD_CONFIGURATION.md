@@ -277,9 +277,12 @@ this exception does not add C++ to the native ArmOS toolchain contract.
 
 `BUILD_RAYLIB=yes` requires `BUILD_MESA=yes`. It builds the pinned Raylib 6.0
 release as a static C library under `/opt/raylib` and installs the
-`raylib-smoke` validation client. Its ArmOS platform backend uses only Wayland,
-EGL and OpenGL ES 2. VirGL under QEMU and the future VC4/V3D Mesa backend on
-Raspberry Pi therefore share the same application-facing Raylib contract.
+`raylib-smoke` validation client plus the `raypot-demo` accelerated Utah
+teapot. The latter validates real vertex and normal buffers, depth testing,
+custom GLES2 shaders, resize/input handling and Wayland presentation. Its
+ArmOS platform backend uses only Wayland, EGL and OpenGL ES 2. VirGL under QEMU
+and the future VC4/V3D Mesa backend on Raspberry Pi therefore share the same
+application-facing Raylib contract.
 
 The repository intentionally shares one `userfs` source tree between ARM32
 and ARM64 builds. Before rebuilding, `build.sh` checks every installed ELF.

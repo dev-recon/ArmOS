@@ -149,6 +149,16 @@ armgl_create_attachment(struct armgl_surface *surface,
    return surface->attachments[attachment] != NULL;
 }
 
+static enum pipe_format
+armgl_depth_stencil_format(uint8_t depth_bits, uint8_t stencil_bits)
+{
+   if (depth_bits >= 24 && stencil_bits >= 8)
+      return PIPE_FORMAT_Z24_UNORM_S8_UINT;
+   if (depth_bits >= 16 && stencil_bits == 0)
+      return PIPE_FORMAT_Z16_UNORM;
+   return PIPE_FORMAT_NONE;
+}
+
 static bool
 armgl_validate(struct st_context *state_tracker,
                struct pipe_frontend_drawable *drawable,
@@ -391,13 +401,13 @@ armgl_surface_create(struct armgl_display *display,
       errno = ENOTSUP;
       return NULL;
    }
-   surface->visual.depth_stencil_format = config->depth_stencil
-      ? PIPE_FORMAT_Z24_UNORM_S8_UINT : PIPE_FORMAT_NONE;
+   surface->visual.depth_stencil_format =
+      armgl_depth_stencil_format(config->depth_bits, config->stencil_bits);
    surface->visual.accum_format = PIPE_FORMAT_NONE;
    surface->visual.buffer_mask = ST_ATTACHMENT_FRONT_LEFT_MASK;
    if (config->double_buffered)
       surface->visual.buffer_mask |= ST_ATTACHMENT_BACK_LEFT_MASK;
-   if (config->depth_stencil)
+   if (surface->visual.depth_stencil_format != PIPE_FORMAT_NONE)
       surface->visual.buffer_mask |= ST_ATTACHMENT_DEPTH_STENCIL_MASK;
 
    surface->drawable.ID = p_atomic_inc_return(&armgl_next_drawable_id);
@@ -651,13 +661,13 @@ armgl_context_create(struct armgl_display *display,
    attributes.minor = config->minor;
    attributes.visual.color_format = config->alpha
       ? PIPE_FORMAT_BGRA8888_UNORM : PIPE_FORMAT_BGRX8888_UNORM;
-   attributes.visual.depth_stencil_format = config->depth_stencil
-      ? PIPE_FORMAT_Z24_UNORM_S8_UINT : PIPE_FORMAT_NONE;
+   attributes.visual.depth_stencil_format =
+      armgl_depth_stencil_format(config->depth_bits, config->stencil_bits);
    attributes.visual.accum_format = PIPE_FORMAT_NONE;
    attributes.visual.buffer_mask = ST_ATTACHMENT_FRONT_LEFT_MASK;
    if (config->double_buffered)
       attributes.visual.buffer_mask |= ST_ATTACHMENT_BACK_LEFT_MASK;
-   if (config->depth_stencil)
+   if (attributes.visual.depth_stencil_format != PIPE_FORMAT_NONE)
       attributes.visual.buffer_mask |= ST_ATTACHMENT_DEPTH_STENCIL_MASK;
    if (config->debug)
       attributes.flags |= ST_CONTEXT_FLAG_DEBUG;

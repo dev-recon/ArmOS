@@ -549,12 +549,15 @@ int InitPlatform(void)
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8, EGL_NONE
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE
     };
     static const EGLint contextAttributes[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE
     };
+    EGLConfig configs[256];
     EGLint configCount = 0;
+    EGLint bestScore = 1000;
 
     platform.pendingWidth = (int)CORE.Window.screen.width;
     platform.pendingHeight = (int)CORE.Window.screen.height;
@@ -586,7 +589,38 @@ int InitPlatform(void)
         !eglInitialize(platform.eglDisplay, NULL, NULL) ||
         !eglBindAPI(EGL_OPENGL_ES_API) ||
         !eglChooseConfig(platform.eglDisplay, configAttributes,
-            &platform.eglConfig, 1, &configCount) || configCount < 1) return -1;
+            configs, (EGLint)(sizeof(configs)/sizeof(configs[0])),
+            &configCount) || configCount < 1) return -1;
+
+    /* EGL size attributes are minima.  Taking the first matching config can
+     * silently select a packed Z24S8 buffer even though the client never
+     * requested stencil.  Rank the returned configs explicitly: GLES2's
+     * portable 16-bit depth format first, then an unpacked 24-bit depth
+     * format, and finally a depthless 2D surface.  Packed depth/stencil is
+     * deliberately excluded because it is not portable across VirGL hosts. */
+    platform.eglConfig = NULL;
+    for (EGLint index = 0; index < configCount; index++)
+    {
+        EGLint depth = 0;
+        EGLint stencil = 0;
+        EGLint score;
+
+        if (!eglGetConfigAttrib(platform.eglDisplay, configs[index],
+                EGL_DEPTH_SIZE, &depth) ||
+            !eglGetConfigAttrib(platform.eglDisplay, configs[index],
+                EGL_STENCIL_SIZE, &stencil)) continue;
+        if (depth == 16 && stencil == 0) score = 0;
+        else if (depth == 24 && stencil == 0) score = 1;
+        else if (depth == 0 && stencil == 0) score = 2;
+        else if (depth == 0 && stencil == 8) score = 3;
+        else continue;
+        if (score < bestScore)
+        {
+            platform.eglConfig = configs[index];
+            bestScore = score;
+        }
+    }
+    if (!platform.eglConfig) return -1;
     platform.eglContext = eglCreateContext(platform.eglDisplay,
         platform.eglConfig, EGL_NO_CONTEXT, contextAttributes);
     platform.eglSurface = eglCreateWindowSurface(platform.eglDisplay,

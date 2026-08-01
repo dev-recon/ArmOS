@@ -495,9 +495,12 @@ common DRM core and in the VirtIO backend.
    bundle, first-party Wayland platform backend and `raylib-smoke` client now
    compile and reach a VirGL-backed GLES context. The backend handles XDG
    configure/close, resize, pointer, XKB keyboard input and EGL presentation
-   without hardware-specific APIs. Full Raylib frame validation is the next
-   gate: its richer Gallium command stream currently exposes a missing VirGL
-   resource-lifecycle case that the simpler EGL diagnostics do not exercise.
+   without hardware-specific APIs. `raypot-demo` now renders the shared Utah
+   teapot model through real VBOs, depth testing and custom GLES2 shaders. The
+   platform VirtIO-GPU backend canonicalizes untyped PIPE_BUFFER descriptors,
+   while the common winsys keeps submitted resources attached until their
+   asynchronous fence signals. This validates the complete Raylib frame and
+   VBO lifecycle without adding an application-specific GPU path.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.
 

@@ -56,7 +56,8 @@ struct armgl_surface_config {
    uint32_t width;
    uint32_t height;
    bool alpha;
-   bool depth_stencil;
+   uint8_t depth_bits;
+   uint8_t stencil_bits;
    bool double_buffered;
    /* The resource may leave this ArmGL display through an FD export. */
    bool exportable;
@@ -67,7 +68,8 @@ struct armgl_context_config {
    uint32_t major;
    uint32_t minor;
    bool alpha;
-   bool depth_stencil;
+   uint8_t depth_bits;
+   uint8_t stencil_bits;
    bool double_buffered;
    bool debug;
    bool no_error;

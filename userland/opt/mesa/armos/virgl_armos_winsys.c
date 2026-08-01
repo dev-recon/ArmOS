@@ -208,6 +208,18 @@ static void armos_resource_destroy(struct virgl_armos_winsys *winsys,
 {
    if (!resource)
       return;
+
+   /*
+    * SUBMIT_3D is asynchronous.  The command-buffer reference only keeps the
+    * guest wrapper alive until the submission has been accepted; the host may
+    * still be consuming the attached resource until its fence signals.
+    * Detaching it earlier makes the already queued VirGL stream reference an
+    * unknown host resource.  Resource teardown is uncommon and is therefore
+    * the correct synchronization boundary.
+    */
+   if (resource->last_fence)
+      (void)armos_fence_wait_internal(resource->last_fence,
+                                      OS_TIMEOUT_INFINITE);
    armos_fence_reference_internal(&resource->last_fence, NULL);
    (void)armos_virgl_buffer_detach(&winsys->device, winsys->context_id,
                                    &resource->buffer);
@@ -251,7 +263,14 @@ static struct virgl_hw_res *armos_resource_create(
    descriptor.abi_version = ARMOS_DRM_VIRGL_RESOURCE_ABI_VERSION;
    descriptor.struct_size = sizeof(descriptor);
    descriptor.target = target;
-   descriptor.format = pipe_to_virgl_format(format);
+   /*
+    * PIPE_BUFFER resources are untyped byte storage.  Vertex/index element
+    * formats live in the command stream, not in RESOURCE_CREATE_3D.  Passing
+    * Mesa's internal R8 fallback here makes strict VirtIO-GPU hosts reject
+    * otherwise valid VBOs and leaves SET_VERTEX_BUFFERS with handle zero.
+    */
+   descriptor.format = target == PIPE_BUFFER ? PIPE_FORMAT_NONE :
+                       pipe_to_virgl_format(format);
    descriptor.bind = bind;
    descriptor.width = width;
    descriptor.height = height;

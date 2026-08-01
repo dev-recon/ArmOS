@@ -287,8 +287,8 @@ armos_egl_image_create(struct armos_egl_surface *surface,
    config.width = width;
    config.height = height;
    config.alpha = surface->base.Config->AlphaSize != 0;
-   config.depth_stencil = surface->base.Config->DepthSize != 0 ||
-                          surface->base.Config->StencilSize != 0;
+   config.depth_bits = surface->base.Config->DepthSize;
+   config.stencil_bits = surface->base.Config->StencilSize;
    config.double_buffered = false;
    config.exportable = true;
    image->armgl = armgl_surface_create(surface->owner->armgl, &config);
@@ -515,6 +515,19 @@ armos_egl_initialize(_EGLDisplay *display)
       return EGL_FALSE;
    }
 
+   /* Advertise depth only after the selected DRM/Gallium provider confirms
+    * the exact resource format.  Z16 is the portable GLES2 baseline and
+    * avoids relying on optimistic packed Z24S8 VirGL capsets. */
+   if (screen->is_format_supported &&
+       screen->is_format_supported(screen, PIPE_FORMAT_Z16_UNORM,
+                                   PIPE_TEXTURE_2D, 0, 0,
+                                   PIPE_BIND_DEPTH_STENCIL) &&
+       !armos_egl_add_config(display, 2, 16, 0)) {
+      display->DriverData = NULL;
+      armos_egl_display_release(armos);
+      return EGL_FALSE;
+   }
+
    return EGL_TRUE;
 }
 
@@ -553,8 +566,8 @@ armos_egl_create_pbuffer(_EGLDisplay *display, _EGLConfig *config,
    armgl_config.width = surface->base.Width;
    armgl_config.height = surface->base.Height;
    armgl_config.alpha = config->AlphaSize != 0;
-   armgl_config.depth_stencil =
-      config->DepthSize != 0 || config->StencilSize != 0;
+   armgl_config.depth_bits = config->DepthSize;
+   armgl_config.stencil_bits = config->StencilSize;
    armgl_config.double_buffered = false;
    surface->armgl = armgl_surface_create(
       armos_egl_display(display)->armgl, &armgl_config);
@@ -753,8 +766,8 @@ armos_egl_create_context(_EGLDisplay *display, _EGLConfig *config,
    armgl_config.major = context->base.ClientMajorVersion;
    armgl_config.minor = context->base.ClientMinorVersion;
    armgl_config.alpha = !config || config->AlphaSize != 0;
-   armgl_config.depth_stencil =
-      !config || config->DepthSize != 0 || config->StencilSize != 0;
+   armgl_config.depth_bits = config ? config->DepthSize : 0;
+   armgl_config.stencil_bits = config ? config->StencilSize : 0;
    armgl_config.double_buffered = false;
    armgl_config.debug = (context->base.Flags & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR) != 0;
    armgl_config.no_error = context->base.NoError;

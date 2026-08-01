@@ -115,10 +115,10 @@ strictly in submission order so multiple readable fences cannot reorder
 scanout.
 Direct import of client GPU buffers, acquire fences and per-buffer compositor
 release fences are implemented. The common Raylib 6.0 Wayland/EGL/GLES2 port
-now builds and initializes through VirGL; completing its first rendered frame
-is the active GPU command/resource-lifecycle validation milestone. VC4/V3D remains a platform
-implementation behind the
-same object and synchronization model.
+now builds and presents through VirGL. `raypot-demo` validates a complete
+accelerated frame with VBOs, depth testing and GLES2 shaders using the same
+Utah model as the software demo. VC4/V3D remains a platform implementation
+behind the same object and synchronization model.
 
 Startup profiling separates renderer readiness, first presentation and client
 launch. On the current static Mesa image the renderer and first frame complete

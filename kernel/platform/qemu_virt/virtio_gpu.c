@@ -397,16 +397,12 @@ static int virtio_gpu_backend_buffer_create(
         if (resource_desc.target == PIPE_BUFFER) {
             /*
              * VirGL encodes a buffer's byte length in width.  Texture
-             * dimension limits therefore do not apply: Gallium uploaders
-             * routinely allocate buffers larger than 16384 bytes.  The
-             * common DRM layer already bounds the backing BO size.
+             * metadata has no meaning for an untyped buffer and Mesa is free
+             * to carry template defaults in those fields.  Validate only the
+             * byte extent here, then canonicalize the VirtIO descriptor below
+             * so VBO/IBO creation does not depend on texture-only values.
              */
-            if (resource_desc.height != 1u ||
-                resource_desc.depth != 1u ||
-                resource_desc.array_size != 1u ||
-                resource_desc.last_level != 0u ||
-                resource_desc.nr_samples > 1u ||
-                resource_desc.width > desc->size)
+            if (resource_desc.width > desc->size)
                 return -EINVAL;
         } else if (resource_desc.width > 16384u ||
                    resource_desc.height > 16384u ||
@@ -455,6 +451,15 @@ static int virtio_gpu_backend_buffer_create(
             create.last_level = resource_desc.last_level;
             create.nr_samples = resource_desc.nr_samples;
             create.flags = resource_desc.flags;
+            if (resource_desc.target == PIPE_BUFFER) {
+                create.format = PIPE_FORMAT_NONE;
+                create.height = 1u;
+                create.depth = 1u;
+                create.array_size = 1u;
+                create.last_level = 0u;
+                create.nr_samples = 0u;
+                create.flags = 0u;
+            }
         } else if (desc->width && desc->height) {
             create.target = PIPE_TEXTURE_2D;
             create.format = PIPE_FORMAT_B8G8R8A8_UNORM;

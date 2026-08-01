@@ -454,12 +454,18 @@ fi
 
 if [ "$BUILD_RAYLIB" = "1" ]; then
     echo "=== Building Raylib Wayland/EGL/OpenGL ES 2 bundle ==="
+    raylib_inputs="$ROOT_DIR/tools/patches/raylib-6.0 \
+$ROOT_DIR/userland/opt/raylib/rcore_armos.c \
+$ROOT_DIR/userland/programs/raylib-smoke \
+$ROOT_DIR/userland/programs/raypot-demo \
+$ROOT_DIR/userland/programs/teapot-demo/teapot_model.h"
     WORK_DIR="$TARGET_BUNDLES/raylib" ARCH="$ARCH" \
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
-        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/tools/patches/raylib-6.0 $ROOT_DIR/userland/programs/raylib-smoke" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$raylib_inputs" \
         build_cached_bundle raylib ./tools/build_raylib.sh mesa
     rsync -a "$TARGET_BUNDLES/raylib/bundle/" "$TARGET_USERFS/"
     "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/raylib-smoke"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/raypot-demo"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

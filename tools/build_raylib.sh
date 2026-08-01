@@ -12,7 +12,7 @@
 # Responsibilities:
 # - Fetch and verify the pinned Raylib source release.
 # - Apply the first-party ArmOS Wayland/EGL platform backend.
-# - Cross-build a static OpenGL ES 2 Raylib and its contract smoke test.
+# - Cross-build a static OpenGL ES 2 Raylib and its validation programs.
 # - Keep target objects below build/<arch>/<platform>/bundles/raylib.
 
 set -euo pipefail
@@ -73,7 +73,9 @@ contract="$({
     printf '%s\n' "$RAYLIB_SHA256"
     shasum -a 256 "$PATCH_FILE" \
         "$ROOT_DIR/userland/opt/raylib/rcore_armos.c" \
-        "$ROOT_DIR/userland/programs/raylib-smoke/raylib-smoke.c"
+        "$ROOT_DIR/userland/programs/raylib-smoke/raylib-smoke.c" \
+        "$ROOT_DIR/userland/programs/raypot-demo/raypot-demo.c" \
+        "$ROOT_DIR/userland/programs/teapot-demo/teapot_model.h"
 } | shasum -a 256 | awk '{print $1}')"
 if [ ! -f "$SOURCE_STAMP" ] || [ "$(cat "$SOURCE_STAMP")" != "$contract" ]; then
     rm -rf "$SOURCE_DIR" "$OBJECT_DIR"
@@ -124,23 +126,29 @@ cp "$SOURCE_DIR/src/raylib.h" "$SOURCE_DIR/src/raymath.h" \
 "${ARCH}gcc" $COMMON_FLAGS -I"$BUNDLE_PREFIX/include" \
     -c "$ROOT_DIR/userland/programs/raylib-smoke/raylib-smoke.c" \
     -o "$OBJECT_DIR/raylib-smoke.o"
+"${ARCH}gcc" $COMMON_FLAGS -I"$BUNDLE_PREFIX/include" \
+    -c "$ROOT_DIR/userland/programs/raypot-demo/raypot-demo.c" \
+    -o "$OBJECT_DIR/raypot-demo.o"
 
 runtime_objects="$TARGET_BUILD_ROOT/newlib-port/crt0_newlib.o $TARGET_BUILD_ROOT/newlib-port/syscall_raw.o $TARGET_BUILD_ROOT/newlib-port/syscalls.o $TARGET_BUILD_ROOT/newlib-port/stdio_lock.o $TARGET_BUILD_ROOT/newlib-port/pthread.o $TARGET_BUILD_ROOT/newlib-port/pthread_sync.o"
-"${ARCH}gcc" $ARM_FLAGS -nostdlib -nostartfiles -static \
-    -Wl,-Ttext="$TEXT_ADDRESS" -Wl,-e,_start -Wl,--gc-sections \
-    -Wl,--allow-multiple-definition \
-    -o "$BUNDLE_ROOT/usr/bin/raylib-smoke" \
-    $runtime_objects "$OBJECT_DIR/raylib-smoke.o" \
-    -Wl,--start-group "$BUNDLE_PREFIX/lib/libraylib.a" \
-    "$MESA_PREFIX/lib/libEGL.a" "$MESA_PREFIX/lib/libGLESv2.a" \
-    "$WAYLAND_EGL_LIBRARY" "$WAYLAND_CLIENT_LIBRARY" \
-    "$XKBCOMMON_LIBRARY" "$VIRGL_WINSYS_LIBRARY" "$SYSLOG_LIBRARY" \
-    "$NEWLIB_LIBM" "$NEWLIB_LIBC" \
-    "$("${ARCH}gcc" $ARM_FLAGS -print-libgcc-file-name)" \
-    -Wl,--end-group
+for program in raylib-smoke raypot-demo; do
+    "${ARCH}gcc" $ARM_FLAGS -nostdlib -nostartfiles -static \
+        -Wl,-Ttext="$TEXT_ADDRESS" -Wl,-e,_start -Wl,--gc-sections \
+        -Wl,--allow-multiple-definition \
+        -o "$BUNDLE_ROOT/usr/bin/$program" \
+        $runtime_objects "$OBJECT_DIR/$program.o" \
+        -Wl,--start-group "$BUNDLE_PREFIX/lib/libraylib.a" \
+        "$MESA_PREFIX/lib/libEGL.a" "$MESA_PREFIX/lib/libGLESv2.a" \
+        "$WAYLAND_EGL_LIBRARY" "$WAYLAND_CLIENT_LIBRARY" \
+        "$XKBCOMMON_LIBRARY" "$VIRGL_WINSYS_LIBRARY" "$SYSLOG_LIBRARY" \
+        "$NEWLIB_LIBM" "$NEWLIB_LIBC" \
+        "$("${ARCH}gcc" $ARM_FLAGS -print-libgcc-file-name)" \
+        -Wl,--end-group
 
-if ! "${ARCH}readelf" -h "$BUNDLE_ROOT/usr/bin/raylib-smoke" | grep -q "Machine:.*$ELF_MACHINE"; then
-    echo "error: Raylib smoke test has the wrong target architecture" >&2
-    exit 1
-fi
+    if ! "${ARCH}readelf" -h "$BUNDLE_ROOT/usr/bin/$program" | \
+        grep -q "Machine:.*$ELF_MACHINE"; then
+        echo "error: $program has the wrong target architecture" >&2
+        exit 1
+    fi
+done
 echo "Raylib $RAYLIB_VERSION bundle ready for $TARGET_ARCH/$TARGET_PLATFORM"
