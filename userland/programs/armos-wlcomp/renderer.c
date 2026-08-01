@@ -103,6 +103,9 @@ static int wl_surface_content_origin(
 static bool wl_renderer_tile_dirty(
     const struct wl_server_renderer *renderer,
     uint32_t column, uint32_t row);
+static void wl_renderer_mark_rect_in_tiles(
+    const struct wl_server_renderer *renderer, uint64_t *tiles,
+    int32_t x, int32_t y, uint32_t width, uint32_t height);
 static struct wl_renderer_rect wl_renderer_tile_rect(
     const struct wl_server_renderer *renderer,
     uint32_t column, uint32_t row);
@@ -1734,6 +1737,36 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
                renderer->dirty_tile_word_count *
                sizeof(*renderer->dirty_tiles));
 
+    /*
+     * The pointer is part of every output image.  A swapchain image can
+     * therefore contain a different historical pointer position from the
+     * last image submitted globally.  Damage the position retained by this
+     * exact image before reusing it, otherwise old cursors accumulate in
+     * triple-buffered output.
+     */
+    if ((renderer->gpu_pointer_valid_mask &
+         (UINT32_C(1) << frame.output_index)) == 0u ||
+        renderer->gpu_pointer_x[frame.output_index] != server->pointer_x ||
+        renderer->gpu_pointer_y[frame.output_index] != server->pointer_y ||
+        renderer->gpu_pointer_cursor[frame.output_index] !=
+            server->pointer_cursor) {
+        if ((renderer->gpu_pointer_valid_mask &
+             (UINT32_C(1) << frame.output_index)) != 0u) {
+            wl_renderer_mark_rect_in_tiles(
+                renderer, renderer->dirty_tiles,
+                renderer->gpu_pointer_x[frame.output_index] -
+                    WL_POINTER_DAMAGE_OFFSET,
+                renderer->gpu_pointer_y[frame.output_index] -
+                    WL_POINTER_DAMAGE_OFFSET,
+                WL_POINTER_DAMAGE_SIZE, WL_POINTER_DAMAGE_SIZE);
+        }
+        wl_renderer_mark_rect_in_tiles(
+            renderer, renderer->dirty_tiles,
+            server->pointer_x - WL_POINTER_DAMAGE_OFFSET,
+            server->pointer_y - WL_POINTER_DAMAGE_OFFSET,
+            WL_POINTER_DAMAGE_SIZE, WL_POINTER_DAMAGE_SIZE);
+    }
+
     wl_renderer_build_scene(server, &scene);
     if (!wl_gpu_prepare_pointer(server, &pointer_image))
         goto fail;
@@ -1949,6 +1982,12 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
 
     renderer->gpu_output_initialized_mask |=
         UINT32_C(1) << frame.output_index;
+    renderer->gpu_pointer_valid_mask |=
+        UINT32_C(1) << frame.output_index;
+    renderer->gpu_pointer_x[frame.output_index] = server->pointer_x;
+    renderer->gpu_pointer_y[frame.output_index] = server->pointer_y;
+    renderer->gpu_pointer_cursor[frame.output_index] =
+        server->pointer_cursor;
     server->pointer_presented = true;
     server->presented_pointer_x = server->pointer_x;
     server->presented_pointer_y = server->pointer_y;
@@ -2068,25 +2107,10 @@ static bool wl_renderer_tile_dirty(
             (1ull << (index % 64u))) != 0u;
 }
 
-static void wl_renderer_mark_tile(
-    struct wl_server_renderer *renderer,
-    uint32_t column, uint32_t row)
+static void wl_renderer_mark_rect_in_tiles(
+    const struct wl_server_renderer *renderer, uint64_t *tiles,
+    int32_t x, int32_t y, uint32_t width, uint32_t height)
 {
-    size_t index = wl_renderer_tile_index(renderer, column, row);
-
-    for (uint32_t buffer = 0u;
-         buffer < renderer->present_buffer_count; buffer++) {
-        uint64_t *tiles = renderer->dirty_tile_storage +
-            (size_t)buffer * renderer->dirty_tile_word_count;
-
-        tiles[index / 64u] |= 1ull << (index % 64u);
-    }
-}
-
-void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
-                             uint32_t width, uint32_t height)
-{
-    struct wl_server_renderer *renderer;
     int64_t x1;
     int64_t y1;
     uint32_t column0;
@@ -2094,9 +2118,8 @@ void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
     uint32_t row0;
     uint32_t row1;
 
-    if (!server || width == 0u || height == 0u)
+    if (!renderer || !tiles || width == 0u || height == 0u)
         return;
-    renderer = &server->renderer;
     x1 = (int64_t)x + width;
     y1 = (int64_t)y + height;
     if (x1 <= 0 || y1 <= 0 ||
@@ -2117,8 +2140,30 @@ void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
     row0 = (uint32_t)y / WL_RENDER_TILE_SIZE;
     row1 = ((uint32_t)y1 - 1u) / WL_RENDER_TILE_SIZE;
     for (uint32_t row = row0; row <= row1; row++) {
-        for (uint32_t column = column0; column <= column1; column++)
-            wl_renderer_mark_tile(renderer, column, row);
+        for (uint32_t column = column0; column <= column1; column++) {
+            size_t index = wl_renderer_tile_index(
+                renderer, column, row);
+
+            tiles[index / 64u] |= UINT64_C(1) << (index % 64u);
+        }
+    }
+}
+
+void wl_renderer_damage_rect(struct wl_server *server, int32_t x, int32_t y,
+                             uint32_t width, uint32_t height)
+{
+    struct wl_server_renderer *renderer;
+
+    if (!server || width == 0u || height == 0u)
+        return;
+    renderer = &server->renderer;
+    for (uint32_t buffer = 0u;
+         buffer < renderer->present_buffer_count; buffer++) {
+        uint64_t *tiles = renderer->dirty_tile_storage +
+            (size_t)buffer * renderer->dirty_tile_word_count;
+
+        wl_renderer_mark_rect_in_tiles(
+            renderer, tiles, x, y, width, height);
     }
     server->damage_pending = true;
 }

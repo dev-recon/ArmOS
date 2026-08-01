@@ -402,6 +402,11 @@ struct wl_server_renderer {
     struct wl_gpu_image *gpu_pointer_images[5];
     uint64_t gpu_content_generation;
     uint32_t gpu_output_initialized_mask;
+    uint32_t gpu_pointer_valid_mask;
+    int32_t gpu_pointer_x[WL_GPU_MAX_OUTPUT_BUFFERS];
+    int32_t gpu_pointer_y[WL_GPU_MAX_OUTPUT_BUFFERS];
+    enum wl_server_pointer_cursor
+        gpu_pointer_cursor[WL_GPU_MAX_OUTPUT_BUFFERS];
 };
 
 struct wl_server {
