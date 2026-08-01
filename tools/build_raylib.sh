@@ -99,14 +99,11 @@ for required in \
 done
 
 if [ "$TARGET_ARCH" = arm64 ]; then
-    ARM_FLAGS="-mcpu=cortex-a53"
-    TEXT_ADDRESS=0x100000000
     ELF_MACHINE=AArch64
 else
-    ARM_FLAGS="-mcpu=cortex-a15 -marm -mfpu=neon-vfpv4 -mfloat-abi=soft"
-    TEXT_ADDRESS=0x8000
     ELF_MACHINE='ARM'
 fi
+TEXT_ADDRESS="$TARGET_TEXT_ADDRESS"
 
 COMMON_FLAGS="$ARM_FLAGS -std=gnu99 -O2 -ffreestanding -fno-builtin -fno-stack-protector -ffunction-sections -fdata-sections -DARM_OS_NEWLIB -D__DYNAMIC_REENT__ -D__ARMOS__ -DPLATFORM_ARMOS -DGRAPHICS_API_OPENGL_ES2 -DSUPPORT_MODULE_RAUDIO=0 -I$ROOT_DIR/userland/include -I$ROOT_DIR/include -I$NEWLIB_SYSROOT/include -I$MESA_PREFIX/include -I$SOURCE_DIR/src -I$SOURCE_DIR/src/external"
 
