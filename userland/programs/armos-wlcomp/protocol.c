@@ -172,6 +172,7 @@ static struct wl_server_buffer *wl_allocate_buffer(
             memset(&client->buffers[index], 0,
                    sizeof(client->buffers[index]));
             client->buffers[index].used = true;
+            client->buffers[index].release_fence_fd = -1;
             return &client->buffers[index];
         }
     }
@@ -185,6 +186,10 @@ static void wl_destroy_gpu_buffer(struct wl_server_client *client,
 
     if (!client || !buffer || !buffer->gpu_backed)
         return;
+    if (buffer->release_fence_fd >= 0) {
+        close(buffer->release_fence_fd);
+        buffer->release_fence_fd = -1;
+    }
     renderer = client->server ? &client->server->renderer : NULL;
     if (renderer && buffer->gpu_image)
         wl_gpu_backend_destroy_image(

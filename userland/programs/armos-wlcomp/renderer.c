@@ -70,6 +70,12 @@ struct wl_renderer_scene {
     size_t count;
 };
 
+struct wl_gpu_frame_buffers {
+    struct wl_server_buffer *items[
+        WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
+    size_t count;
+};
+
 struct wl_gpu_surface_cache {
     const struct wl_server_surface *surface;
     struct wl_gpu_image *image;
@@ -100,6 +106,52 @@ static bool wl_renderer_tile_dirty(
 static struct wl_renderer_rect wl_renderer_tile_rect(
     const struct wl_server_renderer *renderer,
     uint32_t column, uint32_t row);
+
+static bool wl_gpu_frame_track_buffer(
+    struct wl_gpu_frame_buffers *buffers,
+    struct wl_server_buffer *buffer)
+{
+    if (!buffers || !buffer)
+        return false;
+    for (size_t index = 0u; index < buffers->count; index++) {
+        if (buffers->items[index] == buffer)
+            return true;
+    }
+    if (buffers->count >=
+        sizeof(buffers->items) / sizeof(buffers->items[0])) {
+        errno = ENOSPC;
+        return false;
+    }
+    buffers->items[buffers->count++] = buffer;
+    return true;
+}
+
+static bool wl_gpu_frame_publish_release_fence(
+    const struct wl_gpu_frame_buffers *buffers, int fence_fd)
+{
+    int duplicated[WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
+
+    if (!buffers || fence_fd < 0) {
+        errno = EINVAL;
+        return false;
+    }
+    for (size_t index = 0u; index < buffers->count; index++) {
+        duplicated[index] = dup(fence_fd);
+        if (duplicated[index] < 0) {
+            while (index > 0u)
+                close(duplicated[--index]);
+            return false;
+        }
+    }
+    for (size_t index = 0u; index < buffers->count; index++) {
+        struct wl_server_buffer *buffer = buffers->items[index];
+
+        if (buffer->release_fence_fd >= 0)
+            close(buffer->release_fence_fd);
+        buffer->release_fence_fd = duplicated[index];
+    }
+    return true;
+}
 static void wl_gpu_surface_cache_reset(
     struct wl_server_renderer *renderer,
     struct wl_gpu_surface_cache *cache);
@@ -1652,6 +1704,7 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
     struct wl_renderer_rect presentation = {0};
     struct wl_gpu_frame frame;
     struct wl_gpu_image *pointer_image = NULL;
+    struct wl_gpu_frame_buffers frame_buffers = {0};
     bool have_damage = false;
 
     if (!renderer->gpu_backend || !renderer->gpu_presenter ||
@@ -1778,6 +1831,9 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
                             buffer->width, buffer->height,
                             content_x, content_y, !surface->opaque))
                         goto fail;
+                    if (!wl_gpu_frame_track_buffer(
+                            &frame_buffers, buffer))
+                        goto fail;
                     renderer->profile_gpu_direct_blits++;
                 }
             }
@@ -1852,6 +1908,13 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
             if (output_index >= WL_GPU_MAX_OUTPUT_BUFFERS) {
                 wl_gpu_presenter_cancel(renderer->gpu_presenter);
                 errno = EBUSY;
+                return -1;
+            }
+            if (!wl_gpu_frame_publish_release_fence(
+                    &frame_buffers, fence_fd)) {
+                fprintf(stderr, "armos-wlcomp: cannot retain GPU "
+                        "release fence: %s\n", strerror(errno));
+                wl_gpu_presenter_cancel(renderer->gpu_presenter);
                 return -1;
             }
             if (!server->gpu_present_source) {
@@ -2480,9 +2543,21 @@ int wl_surface_release_buffer(struct wl_server_client *client,
         if (manager &&
             manager->type == WL_SERVER_OBJECT_ARMOS_GPU_BUFFER_MANAGER) {
             buffer_id = buffer->object_id;
-            if (wl_client_send_words(
-                    client, manager->id, 1u, &buffer_id, 1u) < 0)
+            if (buffer->release_fence_fd >= 0) {
+                if (wl_client_send_fd_words(
+                        client, manager->id, 0u, &buffer_id, 1u,
+                        buffer->release_fence_fd) < 0)
+                    return -1;
+                close(buffer->release_fence_fd);
+                buffer->release_fence_fd = -1;
+                client->server->renderer.profile_gpu_fenced_releases++;
+            } else if (wl_client_send_words(
+                           client, manager->id, 1u,
+                           &buffer_id, 1u) < 0) {
                 return -1;
+            } else {
+                client->server->renderer.profile_gpu_immediate_releases++;
+            }
         }
     }
     return wl_client_send_words(client, buffer->object_id, 0u, NULL, 0u);

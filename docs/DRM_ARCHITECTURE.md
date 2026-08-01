@@ -308,18 +308,19 @@ Import failure has one explicit compatibility path: a BO advertised as
 CPU-readable may be mapped and composed by the software renderer. A GPU-only
 BO which is not importable is rejected instead of silently presenting stale
 content. Acquire fences are consumed before the imported image is sampled.
-The compositor now waits for its composition fence through the event loop
-rather than inside the render call. Exported-BO and fence ownership remain live
-until the import and presentation transaction completes.
-Scanout-completion release fences still need to be propagated through the
-Wayland buffer release transaction; this is the remaining synchronization
-milestone.
+The compositor waits for its composition fence through the event loop rather
+than inside the render call. Every directly sampled client BO records the most
+recent composition fence. When a surface replaces that buffer, the compositor
+emits `fenced_release` instead of claiming an immediate release; the EGL
+swapchain may reuse the image only after the fence signals. A buffer which was
+not sampled asynchronously keeps the explicit immediate-release path.
 
 `armos-wlcomp --profile` reports `gpu_imports_total` and
-`gpu_direct_blits`. The first is cumulative because imports occur at buffer
-creation, while the second is reset with each profiling interval and counts
-tile-local direct image blits. A running EGL client should increase both
-counters without increasing CPU transfer traffic.
+`gpu_direct_blits`, plus `gpu_fenced_releases` and
+`gpu_immediate_releases`. Imports are cumulative; the other counters cover one
+profiling interval. A running EGL client should produce direct blits and fenced
+releases without increasing CPU transfer traffic. Immediate releases remain
+valid for buffers which were never sampled by an asynchronous GPU frame.
 
 Raspberry Pi continues to use the firmware framebuffer and therefore does not
 expose DRM nodes until its native backend is present.
@@ -479,9 +480,10 @@ common DRM core and in the VirtIO backend.
    the complete Mesa bundle and runtime remain required before enabling the
    option in the tracked ARM32 profile.
 2. Complete release-fence propagation. Direct client BO import,
-   acquire-fence consumption and event-driven compositor render-fence waits
-   are complete. The remaining work retains resources until scanout completion
-   and emits the release fence from that transaction.
+   acquire-fence consumption, event-driven compositor render-fence waits and
+   per-buffer fenced release are complete. Output BO reuse remains owned by the
+   presenter transaction; clients are never given an output/scanout fence for
+   an image that is only sampled as composition input.
    Startup profiling attributed the remaining initial desktop delay to
    `fork()` after Mesa had populated the compositor address space, not to
    renderer initialization or Foot. The architecture-neutral `armos_spawnve`

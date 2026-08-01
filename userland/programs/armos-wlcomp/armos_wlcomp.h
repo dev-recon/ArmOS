@@ -208,6 +208,7 @@ struct wl_server_buffer {
     uint8_t *drm_mapping;
     size_t drm_size;
     struct wl_gpu_image *gpu_image;
+    int release_fence_fd;
 };
 
 struct wl_server_callback {
@@ -392,6 +393,8 @@ struct wl_server_renderer {
     uint64_t profile_present_pixels;
     uint64_t profile_gpu_imports;
     uint64_t profile_gpu_direct_blits;
+    uint64_t profile_gpu_fenced_releases;
+    uint64_t profile_gpu_immediate_releases;
     struct wl_gpu_backend *gpu_backend;
     struct wl_gpu_presenter *gpu_presenter;
     struct wl_gpu_surface_cache *gpu_surface_cache;

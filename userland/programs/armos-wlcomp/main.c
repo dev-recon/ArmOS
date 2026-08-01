@@ -108,6 +108,7 @@ static void wl_server_profile_frame(struct wl_server *server,
             "WLPROFILE frames=%llu compose_avg_us=%llu "
             "present_avg_us=%llu present_pixels=%llu "
             "gpu_imports_total=%llu gpu_direct_blits=%llu "
+            "gpu_fenced_releases=%llu gpu_immediate_releases=%llu "
             "fill_pixels=%llu copy_pixels=%llu blend_pixels=%llu\n",
             (unsigned long long)server->profile_frames,
             (unsigned long long)(compose_us / server->profile_frames),
@@ -116,6 +117,8 @@ static void wl_server_profile_frame(struct wl_server *server,
             (unsigned long long)renderer->profile_present_pixels,
             (unsigned long long)renderer->profile_gpu_imports,
             (unsigned long long)renderer->profile_gpu_direct_blits,
+            (unsigned long long)renderer->profile_gpu_fenced_releases,
+            (unsigned long long)renderer->profile_gpu_immediate_releases,
             (unsigned long long)primitives.fill_pixels,
             (unsigned long long)primitives.copy_pixels,
             (unsigned long long)primitives.blend_pixels);
@@ -125,6 +128,8 @@ static void wl_server_profile_frame(struct wl_server *server,
     renderer->profile_present_us = 0u;
     renderer->profile_present_pixels = 0u;
     renderer->profile_gpu_direct_blits = 0u;
+    renderer->profile_gpu_fenced_releases = 0u;
+    renderer->profile_gpu_immediate_releases = 0u;
 }
 
 static void wl_server_child_signal(int signal_number)
