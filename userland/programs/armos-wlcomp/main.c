@@ -465,9 +465,28 @@ static pid_t wl_server_launch_shell(uint32_t token)
     _exit(127);
 }
 
+static bool wl_server_shell_panel_ready(const struct wl_server *server)
+{
+    const struct wl_server_client *client;
+
+    if (!server || !(client = server->shell_client) || !client->used)
+        return false;
+    for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
+        const struct wl_server_surface *surface = &client->surfaces[index];
+
+        if (surface->used && surface->mapped &&
+            surface->role == WL_SERVER_SURFACE_ROLE_PANEL)
+            return true;
+    }
+    return false;
+}
+
 static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
                          pid_t *shell_pid)
 {
+    bool initial_terminal_pending =
+        terminal_pid && *terminal_pid < 0;
+
     server->event_display = wl_display_create();
     if (!server->event_display)
         return -1;
@@ -505,6 +524,35 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
                 waitpid(*terminal_pid, &status, WNOHANG) ==
                     *terminal_pid) {
                 *terminal_pid = -1;
+            }
+        }
+        /*
+         * The desktop shell and the initial terminal are both substantial
+         * clients.  Starting them concurrently makes their filesystem, font
+         * and GPU setup contend during the first visible frame.  The panel's
+         * first mapped buffer is the compositor-level readiness boundary:
+         * launch Foot after that boundary, or immediately if the shell died.
+         */
+        if (initial_terminal_pending &&
+            ((!shell_pid || *shell_pid < 0) ||
+             wl_server_shell_panel_ready(server))) {
+            *terminal_pid = wl_server_launch_terminal();
+            initial_terminal_pending = false;
+            if (*terminal_pid < 0) {
+                perror("armos-wlcomp: terminal");
+                server->fatal_error = true;
+                continue;
+            }
+            if (server->renderer.profile_enabled &&
+                server->startup_started_us != 0u) {
+                uint64_t now_us = wl_monotonic_us();
+
+                if (now_us >= server->startup_started_us)
+                    fprintf(stderr,
+                            "armos-wlcomp: startup terminal-fork=%llums\n",
+                            (unsigned long long)(
+                                (now_us - server->startup_started_us) /
+                                1000u));
             }
         }
         if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
@@ -548,6 +596,7 @@ int main(int argc, char **argv)
     }
 
     memset(&server, 0, sizeof(server));
+    server.startup_started_us = wl_monotonic_us();
     server.shell_token =
         (uint32_t)wl_monotonic_us() ^ (uint32_t)getpid() ^
         0xa53c9e17u;
@@ -623,12 +672,7 @@ int main(int argc, char **argv)
             shell_pid = wl_server_launch_shell(server.shell_token);
             if (shell_pid < 0) {
                 perror("armos-wlcomp: shell");
-                server.fatal_error = true;
-            }
-            terminal_pid = wl_server_launch_terminal();
-            if (terminal_pid < 0) {
-                perror("armos-wlcomp: terminal");
-                server.fatal_error = true;
+                shell_pid = -1;
             }
         }
     }

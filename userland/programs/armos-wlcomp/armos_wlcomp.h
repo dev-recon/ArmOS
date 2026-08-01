@@ -411,6 +411,7 @@ struct wl_server {
     bool render_pending;
     bool scene_damage_pending;
     uint64_t next_frame_us;
+    uint64_t startup_started_us;
     bool fatal_error;
     bool exit_requested;
     bool pointer_presented;

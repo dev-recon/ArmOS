@@ -103,7 +103,7 @@ void armos_input_emit(uint16_t type, uint16_t code, int32_t value)
     event->value = value;
     input_head = next;
     spin_unlock(&input_lock);
-    task_poll_notify();
+    task_poll_notify_key(input_queue);
 }
 
 bool armos_input_tty_routing_enabled(void)
@@ -140,10 +140,16 @@ static ssize_t input_read(file_t *file, void *buffer, size_t count)
         return -EACCES;
     }
     spin_unlock(&input_lock);
-    while (!armos_input_read_ready()) {
+    while (1) {
+        const void *wait_key = input_queue;
+        uint32_t generation = task_poll_generation();
+
+        if (armos_input_read_ready())
+            break;
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, 0u,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
 
@@ -228,6 +234,7 @@ file_t *create_input_device_file(const char *name, int flags, int *error)
     file->flags = flags;
     file->type = FILE_TYPE_INPUT;
     file->inode = inode;
+    file->private_data = input_queue;
     if (name) {
         strncpy(file->name, name, sizeof(file->name) - 1u);
         file->name[sizeof(file->name) - 1u] = '\0';

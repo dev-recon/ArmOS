@@ -29,6 +29,8 @@
 #define WL_WINDOW_CLOSE_Y      14
 #define WL_WINDOW_BUTTON_HIT   7
 #define WL_WINDOW_MINIMIZED_WIDTH 220u
+#define WL_INPUT_READ_BATCH       32u
+#define WL_INPUT_DISPATCH_BUDGET 128u
 
 #define WL_XKB_MOD_SHIFT   (1u << 0)
 #define WL_XKB_MOD_LOCK    (1u << 1)
@@ -775,21 +777,28 @@ static void wl_handle_key(struct wl_server *server,
         wl_send_keyboard_modifiers(server, server->focus_client, keyboard);
 }
 
-static void wl_handle_input_event(struct wl_server *server,
-                                  const struct armos_input_event *event)
+static bool wl_input_is_motion(const struct armos_input_event *event)
 {
-    if (event->type == ARMOS_INPUT_EVENT_CONFIG) {
-        if (event->code == ARMOS_INPUT_CONFIG_KEYBOARD_LAYOUT &&
-            event->value >= 0 &&
-            (uint32_t)event->value < ARMOS_KEYBOARD_LAYOUT_COUNT &&
-            server->keyboard_layout != (uint32_t)event->value) {
-            server->keyboard_layout = (uint32_t)event->value;
-            (void)wl_server_broadcast_keymap(server);
-        }
-    } else if (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
-        event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
-        int32_t previous_pointer_x = server->pointer_x;
-        int32_t previous_pointer_y = server->pointer_y;
+    return event &&
+        (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
+         event->type == ARMOS_INPUT_EVENT_ABSOLUTE);
+}
+
+static void wl_handle_motion_events(
+    struct wl_server *server, const struct armos_input_event *events,
+    size_t count)
+{
+    int32_t previous_pointer_x;
+    int32_t previous_pointer_y;
+    uint32_t timestamp_ms;
+
+    if (!server || !events || count == 0u)
+        return;
+    previous_pointer_x = server->pointer_x;
+    previous_pointer_y = server->pointer_y;
+    timestamp_ms = events[count - 1u].timestamp_ms;
+    for (size_t index = 0u; index < count; index++) {
+        const struct armos_input_event *event = &events[index];
 
         if (event->code == ARMOS_INPUT_AXIS_X) {
             if (event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
@@ -810,94 +819,99 @@ static void wl_handle_input_event(struct wl_server *server,
                 server->pointer_y += event->value;
             }
         }
-        if (server->pointer_x < 0)
-            server->pointer_x = 0;
-        if (server->pointer_y < 0)
-            server->pointer_y = 0;
-        if ((uint32_t)server->pointer_x >= server->renderer.framebuffer.width)
-            server->pointer_x =
-                (int32_t)server->renderer.framebuffer.width - 1;
-        if ((uint32_t)server->pointer_y >= server->renderer.framebuffer.height)
-            server->pointer_y =
-                (int32_t)server->renderer.framebuffer.height - 1;
-        wl_update_pointer_cursor(server);
-        if ((server->pointer_x != previous_pointer_x ||
-             server->pointer_y != previous_pointer_y) &&
-            server->drag_surface && server->drag_client &&
-            server->drag_surface->used && server->drag_client->used) {
-            wl_renderer_damage_surface_at(
-                server, server->drag_surface,
-                server->drag_surface->x, server->drag_surface->y);
-            server->drag_surface->x =
-                server->pointer_x - server->drag_offset_x;
-            server->drag_surface->y =
-                server->pointer_y - server->drag_offset_y;
-            wl_renderer_damage_surface_at(
-                server, server->drag_surface,
-                server->drag_surface->x, server->drag_surface->y);
-        } else if ((server->pointer_x != previous_pointer_x ||
-                    server->pointer_y != previous_pointer_y) &&
-                   server->resize_surface && server->resize_client &&
-                   server->resize_surface->used &&
-                   server->resize_client->used) {
-            struct wl_server_surface *surface = server->resize_surface;
-            int32_t delta_x =
-                server->pointer_x - server->resize_pointer_x;
-            int32_t delta_y =
-                server->pointer_y - server->resize_pointer_y;
-            int64_t width = server->resize_initial_width;
-            int64_t height = server->resize_initial_height;
-            uint32_t minimum_width =
-                surface->minimum_width ? surface->minimum_width : 160u;
-            uint32_t minimum_height =
-                surface->minimum_height ? surface->minimum_height : 100u;
-            uint32_t maximum_width =
-                surface->maximum_width ? surface->maximum_width :
-                server->renderer.framebuffer.width;
-            uint32_t maximum_height =
-                surface->maximum_height ? surface->maximum_height :
-                server->renderer.framebuffer.height -
-                    WL_WINDOW_TITLE_HEIGHT;
+    }
+    if (server->pointer_x < 0)
+        server->pointer_x = 0;
+    if (server->pointer_y < 0)
+        server->pointer_y = 0;
+    if ((uint32_t)server->pointer_x >= server->renderer.framebuffer.width)
+        server->pointer_x =
+            (int32_t)server->renderer.framebuffer.width - 1;
+    if ((uint32_t)server->pointer_y >= server->renderer.framebuffer.height)
+        server->pointer_y =
+            (int32_t)server->renderer.framebuffer.height - 1;
+    wl_update_pointer_cursor(server);
+    if ((server->pointer_x != previous_pointer_x ||
+         server->pointer_y != previous_pointer_y) &&
+        server->drag_surface && server->drag_client &&
+        server->drag_surface->used && server->drag_client->used) {
+        wl_renderer_damage_surface_at(
+            server, server->drag_surface,
+            server->drag_surface->x, server->drag_surface->y);
+        server->drag_surface->x =
+            server->pointer_x - server->drag_offset_x;
+        server->drag_surface->y =
+            server->pointer_y - server->drag_offset_y;
+        wl_renderer_damage_surface_at(
+            server, server->drag_surface,
+            server->drag_surface->x, server->drag_surface->y);
+    } else if ((server->pointer_x != previous_pointer_x ||
+                server->pointer_y != previous_pointer_y) &&
+               server->resize_surface && server->resize_client &&
+               server->resize_surface->used &&
+               server->resize_client->used) {
+        struct wl_server_surface *surface = server->resize_surface;
+        int32_t delta_x = server->pointer_x - server->resize_pointer_x;
+        int32_t delta_y = server->pointer_y - server->resize_pointer_y;
+        int64_t width = server->resize_initial_width;
+        int64_t height = server->resize_initial_height;
+        uint32_t minimum_width =
+            surface->minimum_width ? surface->minimum_width : 160u;
+        uint32_t minimum_height =
+            surface->minimum_height ? surface->minimum_height : 100u;
+        uint32_t maximum_width =
+            surface->maximum_width ? surface->maximum_width :
+            server->renderer.framebuffer.width;
+        uint32_t maximum_height =
+            surface->maximum_height ? surface->maximum_height :
+            server->renderer.framebuffer.height - WL_WINDOW_TITLE_HEIGHT;
 
-            if ((server->resize_edges & 4u) != 0u)
-                width -= delta_x;
-            else if ((server->resize_edges & 8u) != 0u)
-                width += delta_x;
-            if ((server->resize_edges & 1u) != 0u)
-                height -= delta_y;
-            else if ((server->resize_edges & 2u) != 0u)
-                height += delta_y;
-            if (width < (int64_t)minimum_width)
-                width = minimum_width;
-            if (height < (int64_t)minimum_height)
-                height = minimum_height;
-            if (width > (int64_t)maximum_width)
-                width = maximum_width;
-            if (height > (int64_t)maximum_height)
-                height = maximum_height;
-            wl_damage_resize_outline(
-                server, server->resize_x, server->resize_y,
-                server->resize_width, server->resize_height);
-            server->resize_width = (uint32_t)width;
-            server->resize_height = (uint32_t)height;
-            server->resize_x =
-                (server->resize_edges & 4u) != 0u ?
-                surface->resize_anchor_right - (int32_t)width :
-                surface->x;
-            server->resize_y =
-                (server->resize_edges & 1u) != 0u ?
-                surface->resize_anchor_bottom -
-                    WL_WINDOW_TITLE_HEIGHT - (int32_t)height :
-                surface->y;
-            surface->resize_from_left =
-                (server->resize_edges & 4u) != 0u;
-            surface->resize_from_top =
-                (server->resize_edges & 1u) != 0u;
-            wl_damage_resize_outline(
-                server, server->resize_x, server->resize_y,
-                server->resize_width, server->resize_height);
+        if ((server->resize_edges & 4u) != 0u)
+            width -= delta_x;
+        else if ((server->resize_edges & 8u) != 0u)
+            width += delta_x;
+        if ((server->resize_edges & 1u) != 0u)
+            height -= delta_y;
+        else if ((server->resize_edges & 2u) != 0u)
+            height += delta_y;
+        if (width < (int64_t)minimum_width)
+            width = minimum_width;
+        if (height < (int64_t)minimum_height)
+            height = minimum_height;
+        if (width > (int64_t)maximum_width)
+            width = maximum_width;
+        if (height > (int64_t)maximum_height)
+            height = maximum_height;
+        wl_damage_resize_outline(
+            server, server->resize_x, server->resize_y,
+            server->resize_width, server->resize_height);
+        server->resize_width = (uint32_t)width;
+        server->resize_height = (uint32_t)height;
+        server->resize_x = (server->resize_edges & 4u) != 0u ?
+            surface->resize_anchor_right - (int32_t)width : surface->x;
+        server->resize_y = (server->resize_edges & 1u) != 0u ?
+            surface->resize_anchor_bottom - WL_WINDOW_TITLE_HEIGHT -
+                (int32_t)height : surface->y;
+        surface->resize_from_left = (server->resize_edges & 4u) != 0u;
+        surface->resize_from_top = (server->resize_edges & 1u) != 0u;
+        wl_damage_resize_outline(
+            server, server->resize_x, server->resize_y,
+            server->resize_width, server->resize_height);
+    }
+    wl_send_pointer_motion(server, timestamp_ms);
+}
+
+static void wl_handle_input_event(struct wl_server *server,
+                                  const struct armos_input_event *event)
+{
+    if (event->type == ARMOS_INPUT_EVENT_CONFIG) {
+        if (event->code == ARMOS_INPUT_CONFIG_KEYBOARD_LAYOUT &&
+            event->value >= 0 &&
+            (uint32_t)event->value < ARMOS_KEYBOARD_LAYOUT_COUNT &&
+            server->keyboard_layout != (uint32_t)event->value) {
+            server->keyboard_layout = (uint32_t)event->value;
+            (void)wl_server_broadcast_keymap(server);
         }
-        wl_send_pointer_motion(server, event->timestamp_ms);
     } else if (event->type == ARMOS_INPUT_EVENT_KEY) {
         if (event->code >= ARMOS_INPUT_BUTTON_LEFT)
             wl_handle_button(server, event);
@@ -908,11 +922,13 @@ static void wl_handle_input_event(struct wl_server *server,
 
 int wl_server_handle_input(struct wl_server *server)
 {
-    struct armos_input_event events[32];
+    struct armos_input_event events[WL_INPUT_READ_BATCH];
+    size_t dispatched = 0u;
     bool handled = false;
 
-    for (;;) {
+    while (dispatched < WL_INPUT_DISPATCH_BUDGET) {
         ssize_t size = read(server->input_fd, events, sizeof(events));
+        size_t count;
 
         if (size < 0) {
             if (errno == EAGAIN)
@@ -923,11 +939,25 @@ int wl_server_handle_input(struct wl_server *server)
             return handled ? 1 : 0;
         if ((size_t)size % sizeof(events[0]) != 0u)
             return -1;
-        for (size_t index = 0;
-             index < (size_t)size / sizeof(events[0]); index++)
-            wl_handle_input_event(server, &events[index]);
+        count = (size_t)size / sizeof(events[0]);
+        for (size_t index = 0u; index < count;) {
+            size_t first = index;
+
+            if (wl_input_is_motion(&events[index])) {
+                while (index < count &&
+                       wl_input_is_motion(&events[index]))
+                    index++;
+                wl_handle_motion_events(
+                    server, &events[first], index - first);
+            } else {
+                index++;
+                wl_handle_input_event(server, &events[first]);
+            }
+        }
+        dispatched += count;
         handled = true;
         if ((size_t)size < sizeof(events))
             return 1;
     }
+    return handled ? 1 : 0;
 }

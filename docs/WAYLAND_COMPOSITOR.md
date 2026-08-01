@@ -14,6 +14,14 @@ The ArmUI desktop stack, including transactional pointer input, transient
 popups, the Control Center service boundary and the authenticated system-bar
 role, has been validated as one end-to-end architecture.
 
+At graphical-session startup the compositor launches the system shell first,
+then starts the initial terminal after the shell panel has committed its first
+buffer. This mapped-buffer boundary replaces arbitrary delays and prevents the
+two font/UI-heavy clients from competing for the first visible frame. Input is
+drained with a bounded budget and consecutive pointer motion is coalesced while
+preserving ordering around buttons and keys, so pointer traffic cannot starve
+client dispatch or presentation.
+
 ## Architecture
 
 The graphical session is split into three layers:

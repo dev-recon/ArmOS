@@ -102,10 +102,12 @@ The common kernel provides:
 - descriptor passing and process isolation;
 - architecture-neutral framebuffer and future display/GPU UAPIs.
 
-The current readiness generation closes scan-to-sleep races but still wakes all
-descriptor waiters. Per-object wait queues are the next scalability step: a
-source will then wake only tasks registered on that source. Platform drivers
-publish events but never contain Wayland, terminal-emulator or UI policy.
+The readiness generation closes scan-to-sleep races and each blocking task
+registers the resources observed by its descriptor scan. Pipes, local sockets,
+PTYs, input queues, event/timer descriptors and DRM fences wake only tasks
+waiting on that resource. Direct blocking reads use the same contract, so they
+cannot silently fall back to millisecond polling. Platform drivers publish
+events but never contain Wayland, terminal-emulator or UI policy.
 
 ## Compositor contract
 

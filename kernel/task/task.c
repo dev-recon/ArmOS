@@ -1281,6 +1281,8 @@ task_t* task_create_copy(task_t* parent, bool from_user)
     child->futex_wait_address = 0;
     child->futex_wait_active = 0;
     child->poll_wait_active = 0;
+    child->poll_wait_keys = NULL;
+    child->poll_wait_key_count = 0u;
     child->magic = TASK_MAGIC_ALIVE;
 
     kernel_lifecycle_stats.tasks_created++;
@@ -1710,6 +1712,8 @@ task_t* task_create(const char* name, void (*entry)(void* arg), void* arg, uint3
     task->futex_wait_address = 0;
     task->futex_wait_active = 0;
     task->poll_wait_active = 0;
+    task->poll_wait_keys = NULL;
+    task->poll_wait_key_count = 0u;
     task->magic = TASK_MAGIC_ALIVE;
     task->process = NULL;  /* Par defaut, pas de processus associe */
 
@@ -1982,9 +1986,9 @@ uint32_t task_futex_wake(process_t* process, vaddr_t address,
 
 /*
  * Descriptor readiness uses one common generation rather than periodic
- * rescans. Producers publish state before calling task_poll_notify(); the
- * generation comparison in task_poll_wait() then closes the race between a
- * caller's readiness scan and the transition to TASK_INTERRUPTIBLE.
+ * rescans. Producers publish state before notifying their stable resource
+ * key; the generation comparison closes the scan-to-sleep race, while the
+ * registered keys keep an already sleeping task isolated from unrelated I/O.
  */
 static uint32_t poll_generation = 1u;
 
@@ -1999,7 +2003,8 @@ uint32_t task_poll_generation(void)
     return generation;
 }
 
-int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline)
+int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline,
+                   const void *const *keys, uint32_t key_count)
 {
     task_t* leader;
     unsigned long flags;
@@ -2023,6 +2028,8 @@ int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline)
     runqueue_remove_locked(task);
     scheduler_clear_nonrunnable_debt_locked(task, TASK_INTERRUPTIBLE);
     task->poll_wait_active = 1u;
+    task->poll_wait_keys = keys;
+    task->poll_wait_key_count = key_count;
     task->wakeup_time = deadline;
     task->state = TASK_INTERRUPTIBLE;
     if (task->process)
@@ -2033,20 +2040,31 @@ int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline)
 
     spin_lock_irqsave(&task_lock, &flags);
     task->poll_wait_active = 0u;
+    task->poll_wait_keys = NULL;
+    task->poll_wait_key_count = 0u;
     task->wakeup_time = 0u;
     spin_unlock_irqrestore(&task_lock, flags);
 
     return leader && has_pending_signals(leader) ? -EINTR : 0;
 }
 
-void task_poll_notify(void)
+static bool task_poll_key_matches(const task_t *task, const void *key)
+{
+    if (!key)
+        return true;
+    for (uint32_t index = 0u; index < task->poll_wait_key_count; index++) {
+        if (task->poll_wait_keys[index] == key)
+            return true;
+    }
+    return false;
+}
+
+static void task_poll_notify_locked(const void *key)
 {
     task_t* task;
     task_t* start;
     uint32_t scanned = 0u;
-    unsigned long flags;
 
-    spin_lock_irqsave(&task_lock, &flags);
     poll_generation++;
     if (poll_generation == 0u)
         poll_generation = 1u;
@@ -2056,9 +2074,11 @@ void task_poll_notify(void)
     while (task && scanned < MAX_TASKS) {
         task_t* next = task->next;
 
-        if (task->poll_wait_active &&
+        if (task->poll_wait_active && task_poll_key_matches(task, key) &&
             task->state == TASK_INTERRUPTIBLE) {
             task->poll_wait_active = 0u;
+            task->poll_wait_keys = NULL;
+            task->poll_wait_key_count = 0u;
             task->wakeup_time = 0u;
             task_make_ready_under_lock(task);
         }
@@ -2068,6 +2088,25 @@ void task_poll_notify(void)
         if (task == start)
             break;
     }
+}
+
+void task_poll_notify_key(const void *key)
+{
+    unsigned long flags;
+
+    if (!key)
+        return;
+    spin_lock_irqsave(&task_lock, &flags);
+    task_poll_notify_locked(key);
+    spin_unlock_irqrestore(&task_lock, flags);
+}
+
+void task_poll_notify(void)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    task_poll_notify_locked(NULL);
     spin_unlock_irqrestore(&task_lock, flags);
 }
 

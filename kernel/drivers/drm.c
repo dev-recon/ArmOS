@@ -506,7 +506,7 @@ void armos_drm_fence_complete(uint64_t fence_id, int status)
     }
     spin_unlock(&drm_lock);
     if (fence)
-        task_poll_notify();
+        task_poll_notify_key(fence);
 }
 
 int armos_drm_backend_register(const armos_drm_backend_ops_t *ops,
@@ -722,6 +722,9 @@ static ssize_t armos_drm_fence_file_read(file_t *file, void *buffer,
     if (!fence || !buffer || count != sizeof(result))
         return -EINVAL;
     while (1) {
+        const void *wait_key = fence;
+        uint32_t generation = task_poll_generation();
+
         spin_lock(&drm_lock);
         if (fence->completed) {
             result.status = fence->status;
@@ -733,7 +736,8 @@ static ssize_t armos_drm_fence_file_read(file_t *file, void *buffer,
         spin_unlock(&drm_lock);
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, 0u,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
 }
@@ -1855,7 +1859,12 @@ static int armos_drm_fence_wait(file_t *file, uintptr_t arg)
             return result;
         if (deadline && (int32_t)(get_system_ticks() - deadline) >= 0)
             return -ETIMEDOUT;
-        result = task_poll_wait(task_current_local(), generation, deadline);
+        {
+            const void *wait_key = fence;
+
+            result = task_poll_wait(task_current_local(), generation,
+                                    deadline, &wait_key, 1u);
+        }
         if (result < 0)
             return result;
     }
