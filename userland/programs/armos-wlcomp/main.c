@@ -598,6 +598,8 @@ int main(int argc, char **argv)
 
     if (!quiet) {
         const char *output =
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_GPU ?
+                ", gpu" :
             server.renderer.output_backend == WL_RENDERER_OUTPUT_DRM ?
                 ", drm" :
             server.renderer.output_backend == WL_RENDERER_OUTPUT_FRAMEBUFFER ?

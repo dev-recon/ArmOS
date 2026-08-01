@@ -19,6 +19,8 @@
  */
 
 #include "armos_wlcomp.h"
+#include "gpu_backend.h"
+#include "gpu_present.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,6 +28,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #define WL_HEADLESS_WIDTH  800u
@@ -65,6 +68,129 @@ struct wl_renderer_scene {
         WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES];
     size_t count;
 };
+
+struct wl_gpu_surface_cache {
+    const struct wl_server_surface *surface;
+    struct wl_gpu_image *image;
+    uint32_t *pixels;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    int32_t offset_x;
+    int32_t offset_y;
+    uint64_t signature;
+};
+
+static uint64_t wl_renderer_monotonic_us(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        return 0u;
+    return (uint64_t)now.tv_sec * UINT64_C(1000000) +
+           (uint64_t)now.tv_nsec / UINT64_C(1000);
+}
+
+static int wl_surface_content_origin(
+    const struct wl_server_surface *surface, int32_t *x, int32_t *y);
+static bool wl_renderer_tile_dirty(
+    const struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row);
+static struct wl_renderer_rect wl_renderer_tile_rect(
+    const struct wl_server_renderer *renderer,
+    uint32_t column, uint32_t row);
+static void wl_gpu_surface_cache_reset(
+    struct wl_server_renderer *renderer,
+    struct wl_gpu_surface_cache *cache);
+
+static int wl_renderer_try_gpu(struct wl_server_renderer *renderer)
+{
+    const uint64_t required = ARMOS_DRM_CAP_SCANOUT |
+        ARMOS_DRM_CAP_SHARED_BUFFERS | ARMOS_DRM_CAP_SYNC_FDS;
+    struct wl_gpu_backend_config backend_config;
+    struct wl_gpu_presenter *presenter = NULL;
+    struct wl_gpu_backend *backend = NULL;
+    armos_drm_context_create_t context_create;
+    armos_drm_info_t info;
+    uint64_t size;
+    int fd = -1;
+
+    fd = open("/dev/dri/card0", O_RDWR, 0);
+    if (fd < 0)
+        return -1;
+    memset(&info, 0, sizeof(info));
+    if (ioctl(fd, ARMOS_DRM_IOCTL_GET_INFO, &info) < 0 ||
+        info.abi_version != ARMOS_DRM_ABI_VERSION ||
+        info.struct_size < sizeof(info) ||
+        (info.capabilities & required) != required ||
+        !info.scanout_count || !info.scanout_width ||
+        !info.scanout_height ||
+        info.scanout_width > UINT32_MAX / sizeof(uint32_t)) {
+        errno = ENOTSUP;
+        goto fail;
+    }
+    size = (uint64_t)info.scanout_width * sizeof(uint32_t) *
+        info.scanout_height;
+    if (!size || size > SIZE_MAX || size > UINT32_MAX) {
+        errno = EOVERFLOW;
+        goto fail;
+    }
+    memset(&backend_config, 0, sizeof(backend_config));
+    backend_config.render_node = "/dev/dri/renderD128";
+    backend_config.width = info.scanout_width;
+    backend_config.height = info.scanout_height;
+    backend = wl_gpu_backend_create(&backend_config);
+    if (!backend) {
+        errno = ENOTSUP;
+        goto fail;
+    }
+    presenter = calloc(1, sizeof(*presenter));
+    if (!presenter)
+        goto fail;
+    presenter->card_fd = -1;
+    if (!wl_gpu_presenter_init_fd(
+            presenter, fd, true, info.scanout_width,
+            info.scanout_height))
+        goto fail;
+
+    renderer->output_backend = WL_RENDERER_OUTPUT_GPU;
+    renderer->framebuffer.width = info.scanout_width;
+    renderer->framebuffer.height = info.scanout_height;
+    renderer->framebuffer.pitch =
+        info.scanout_width * sizeof(uint32_t);
+    renderer->framebuffer.bpp = 32u;
+    renderer->framebuffer.size = (uint32_t)size;
+    renderer->framebuffer.format = ARMOS_FB_FORMAT_ARGB8888;
+    renderer->gpu_backend = backend;
+    renderer->gpu_presenter = presenter;
+    renderer->drm_fd = fd;
+    renderer->present_buffer_count = WL_GPU_MAX_OUTPUT_BUFFERS;
+    renderer->direct_present = false;
+
+    if ((info.capabilities &
+         (ARMOS_DRM_CAP_CONTEXTS | ARMOS_DRM_CAP_RESOURCE_TRANSFER)) ==
+        (ARMOS_DRM_CAP_CONTEXTS | ARMOS_DRM_CAP_RESOURCE_TRANSFER)) {
+        memset(&context_create, 0, sizeof(context_create));
+        context_create.abi_version = ARMOS_DRM_ABI_VERSION;
+        if (ioctl(fd, ARMOS_DRM_IOCTL_CONTEXT_CREATE,
+                  &context_create) == 0) {
+            renderer->drm_context_id = context_create.context_id;
+            renderer->gpu_buffer_import = true;
+        }
+    }
+    return 0;
+
+fail:
+    if (presenter) {
+        wl_gpu_presenter_destroy(presenter);
+        free(presenter);
+        fd = -1;
+    }
+    wl_gpu_backend_destroy(backend);
+    if (fd >= 0)
+        close(fd);
+    return -1;
+}
 
 static void wl_renderer_select_draw_buffer(
     struct wl_server_renderer *renderer)
@@ -218,6 +344,8 @@ int wl_renderer_init(struct wl_server_renderer *renderer, bool headless)
             renderer->framebuffer.pitch * WL_HEADLESS_HEIGHT;
         renderer->framebuffer.format = ARMOS_FB_FORMAT_ARGB8888;
     } else {
+        if (wl_renderer_try_gpu(renderer) == 0)
+            goto output_ready;
         if (wl_renderer_try_drm(renderer) == 0)
             goto output_ready;
         renderer->output_backend = WL_RENDERER_OUTPUT_FRAMEBUFFER;
@@ -326,6 +454,22 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
     renderer->mapped_buffers = NULL;
     renderer->mapped_buffers_size = 0u;
     renderer->canvas = NULL;
+    if (renderer->gpu_surface_cache) {
+        for (size_t index = 0u;
+             index < renderer->gpu_surface_cache_count; index++)
+            wl_gpu_surface_cache_reset(
+                renderer, &renderer->gpu_surface_cache[index]);
+        free(renderer->gpu_surface_cache);
+        renderer->gpu_surface_cache = NULL;
+        renderer->gpu_surface_cache_count = 0u;
+    }
+    for (size_t index = 0u;
+         index < sizeof(renderer->gpu_pointer_images) /
+                 sizeof(renderer->gpu_pointer_images[0]); index++) {
+        wl_gpu_backend_destroy_image(
+            renderer->gpu_backend, renderer->gpu_pointer_images[index]);
+        renderer->gpu_pointer_images[index] = NULL;
+    }
     if (renderer->drm_fd >= 0) {
         if (renderer->drm_context_id != 0u) {
             armos_drm_context_destroy_t context_destroy = {
@@ -344,8 +488,16 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
             (void)ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_DESTROY,
                         &destroy);
         }
-        close(renderer->drm_fd);
+        if (renderer->output_backend != WL_RENDERER_OUTPUT_GPU)
+            close(renderer->drm_fd);
     }
+    if (renderer->gpu_presenter) {
+        wl_gpu_presenter_destroy(renderer->gpu_presenter);
+        free(renderer->gpu_presenter);
+        renderer->gpu_presenter = NULL;
+    }
+    wl_gpu_backend_destroy(renderer->gpu_backend);
+    renderer->gpu_backend = NULL;
     renderer->drm_fd = -1;
     renderer->drm_handle = 0u;
     renderer->drm_context_id = 0u;
@@ -1003,6 +1155,572 @@ static void wl_renderer_draw_scene(
     }
 }
 
+static uint64_t wl_gpu_signature_mix(uint64_t hash, uint64_t value)
+{
+    hash ^= value;
+    return hash * UINT64_C(1099511628211);
+}
+
+static uint64_t wl_gpu_surface_signature(
+    const struct wl_server_surface *surface, bool active)
+{
+    uint64_t hash = UINT64_C(1469598103934665603);
+
+    hash = wl_gpu_signature_mix(hash, surface->gpu_content_generation);
+    hash = wl_gpu_signature_mix(hash, surface->width);
+    hash = wl_gpu_signature_mix(hash, surface->height);
+    hash = wl_gpu_signature_mix(hash, surface->role);
+    hash = wl_gpu_signature_mix(hash, surface->opaque);
+    hash = wl_gpu_signature_mix(hash, surface->server_decorated);
+    hash = wl_gpu_signature_mix(hash, surface->fullscreen);
+    hash = wl_gpu_signature_mix(hash, surface->minimized);
+    hash = wl_gpu_signature_mix(hash, surface->shaded);
+    hash = wl_gpu_signature_mix(hash, active);
+    for (size_t index = 0u;
+         index < sizeof(surface->title) && surface->title[index]; index++)
+        hash = wl_gpu_signature_mix(
+            hash, (unsigned char)surface->title[index]);
+    return hash;
+}
+
+static void wl_gpu_surface_cache_reset(
+    struct wl_server_renderer *renderer,
+    struct wl_gpu_surface_cache *cache)
+{
+    if (!renderer || !cache)
+        return;
+    wl_gpu_backend_destroy_image(renderer->gpu_backend, cache->image);
+    free(cache->pixels);
+    memset(cache, 0, sizeof(*cache));
+}
+
+void wl_renderer_release_surface_gpu(
+    struct wl_server_renderer *renderer,
+    const struct wl_server_surface *surface)
+{
+    if (!renderer || !renderer->gpu_surface_cache || !surface)
+        return;
+    for (size_t index = 0u;
+         index < renderer->gpu_surface_cache_count; index++) {
+        struct wl_gpu_surface_cache *cache =
+            &renderer->gpu_surface_cache[index];
+
+        if (cache->surface == surface) {
+            wl_gpu_surface_cache_reset(renderer, cache);
+            return;
+        }
+    }
+}
+
+static struct wl_gpu_surface_cache *wl_gpu_surface_cache_get(
+    struct wl_server_renderer *renderer,
+    const struct wl_server_surface *surface)
+{
+    struct wl_gpu_surface_cache *free_cache = NULL;
+
+    if (!renderer->gpu_surface_cache) {
+        size_t count = WL_SERVER_MAX_CLIENTS * WL_SERVER_MAX_SURFACES;
+
+        renderer->gpu_surface_cache = calloc(
+            count, sizeof(*renderer->gpu_surface_cache));
+        if (!renderer->gpu_surface_cache)
+            return NULL;
+        renderer->gpu_surface_cache_count = count;
+    }
+    for (size_t index = 0u;
+         index < renderer->gpu_surface_cache_count; index++) {
+        struct wl_gpu_surface_cache *cache =
+            &renderer->gpu_surface_cache[index];
+
+        if (cache->surface == surface)
+            return cache;
+        if (!cache->surface && !free_cache)
+            free_cache = cache;
+    }
+    if (free_cache)
+        free_cache->surface = surface;
+    return free_cache;
+}
+
+static bool wl_gpu_surface_cache_configure(
+    struct wl_server_renderer *renderer,
+    struct wl_gpu_surface_cache *cache,
+    uint32_t width, uint32_t height)
+{
+    struct wl_gpu_image_config config;
+    uint64_t stride;
+    uint64_t size;
+
+    if (!renderer || !cache || !width || !height)
+        return false;
+    stride = (uint64_t)width * sizeof(uint32_t);
+    size = stride * height;
+    if (stride > UINT32_MAX || size > SIZE_MAX)
+        return false;
+    if (cache->image && cache->width == width && cache->height == height)
+        return true;
+    wl_gpu_backend_destroy_image(renderer->gpu_backend, cache->image);
+    cache->image = NULL;
+    free(cache->pixels);
+    cache->pixels = NULL;
+    cache->signature = 0u;
+    cache->pixels = calloc(1u, (size_t)size);
+    if (!cache->pixels)
+        return false;
+    memset(&config, 0, sizeof(config));
+    config.width = width;
+    config.height = height;
+    config.stride = (uint32_t)stride;
+    config.alpha = true;
+    cache->image = wl_gpu_backend_create_image(
+        renderer->gpu_backend, &config);
+    if (!cache->image) {
+        free(cache->pixels);
+        cache->pixels = NULL;
+        return false;
+    }
+    cache->width = width;
+    cache->height = height;
+    cache->stride = (uint32_t)stride;
+    return true;
+}
+
+static bool wl_gpu_surface_cache_update(
+    struct wl_server *server, struct wl_gpu_surface_cache *cache,
+    const struct wl_server_surface *surface, bool active)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    struct wl_server_surface local_surface;
+    struct wl_server_renderer local_renderer;
+    struct wl_gpu_rect full;
+    uint64_t signature;
+    uint32_t title_height;
+    uint32_t frame_width;
+    uint32_t frame_height;
+    uint32_t margin_x;
+    uint32_t margin_y;
+    uint32_t width;
+    uint32_t height;
+
+    signature = wl_gpu_surface_signature(surface, active);
+    if (cache->image && cache->signature == signature)
+        return true;
+    title_height = surface->role == WL_SERVER_SURFACE_ROLE_TOPLEVEL &&
+        wl_surface_has_server_decoration(surface) ?
+        WL_WINDOW_TITLE_HEIGHT : 0u;
+    frame_width = wl_renderer_surface_frame_width(surface);
+    frame_height = surface->shaded ? title_height :
+        surface->height + title_height;
+    margin_x = title_height ? 8u : 0u;
+    margin_y = title_height ? 4u : 0u;
+    width = frame_width + margin_x * 2u;
+    height = frame_height + (title_height ? 16u : 0u);
+    if (!width || !height ||
+        !wl_gpu_surface_cache_configure(renderer, cache, width, height))
+        return false;
+    memset(cache->pixels, 0,
+           (size_t)cache->stride * cache->height);
+
+    local_renderer = *renderer;
+    local_renderer.canvas = cache->pixels;
+    local_renderer.canvas_size = (size_t)cache->stride * cache->height;
+    local_renderer.framebuffer.width = cache->width;
+    local_renderer.framebuffer.height = cache->height;
+    local_renderer.framebuffer.pitch = cache->stride;
+    local_renderer.framebuffer.size =
+        (uint32_t)local_renderer.canvas_size;
+    local_renderer.clip_enabled = false;
+    local_surface = *surface;
+    local_surface.parent = NULL;
+    local_surface.x = (int32_t)margin_x;
+    local_surface.y = (int32_t)margin_y;
+    if (wl_surface_is_child_role(surface)) {
+        local_surface.role = WL_SERVER_SURFACE_ROLE_TOPLEVEL;
+        local_surface.server_decorated = false;
+    }
+    wl_renderer_draw_surface(
+        &local_renderer, &local_surface, active, false);
+
+    if (surface->opaque && !surface->shaded) {
+        uint32_t content_y = margin_y + title_height;
+        uint32_t content_width = surface->width < cache->width - margin_x ?
+            surface->width : cache->width - margin_x;
+        uint32_t content_height = surface->height < cache->height - content_y ?
+            surface->height : cache->height - content_y;
+
+        for (uint32_t row = 0u; row < content_height; row++) {
+            uint32_t *pixels = cache->pixels +
+                (size_t)(content_y + row) * (cache->stride / 4u) +
+                margin_x;
+
+            for (uint32_t column = 0u;
+                 column < content_width; column++)
+                pixels[column] |= UINT32_C(0xff000000);
+        }
+    }
+    full.x = 0u;
+    full.y = 0u;
+    full.width = cache->width;
+    full.height = cache->height;
+    if (!wl_gpu_backend_upload(
+            renderer->gpu_backend, cache->image, &full,
+            cache->pixels, cache->stride))
+        return false;
+    cache->offset_x = -(int32_t)margin_x;
+    cache->offset_y = -(int32_t)margin_y;
+    cache->signature = signature;
+    return true;
+}
+
+static bool wl_gpu_blit_clipped(
+    struct wl_server_renderer *renderer, struct wl_gpu_image *image,
+    uint32_t image_width, uint32_t image_height,
+    int32_t destination_x, int32_t destination_y, bool alpha)
+{
+    struct wl_gpu_rect source = {0};
+    struct wl_gpu_rect destination = {0};
+    int64_t x0 = destination_x;
+    int64_t y0 = destination_y;
+    int64_t x1 = x0 + image_width;
+    int64_t y1 = y0 + image_height;
+
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > renderer->framebuffer.width)
+        x1 = renderer->framebuffer.width;
+    if (y1 > renderer->framebuffer.height)
+        y1 = renderer->framebuffer.height;
+    if (renderer->clip_enabled) {
+        if (x0 < renderer->clip_x0)
+            x0 = renderer->clip_x0;
+        if (y0 < renderer->clip_y0)
+            y0 = renderer->clip_y0;
+        if (x1 > renderer->clip_x1)
+            x1 = renderer->clip_x1;
+        if (y1 > renderer->clip_y1)
+            y1 = renderer->clip_y1;
+    }
+    if (x0 >= x1 || y0 >= y1)
+        return true;
+    source.x = (uint32_t)(x0 - destination_x);
+    source.y = (uint32_t)(y0 - destination_y);
+    source.width = (uint32_t)(x1 - x0);
+    source.height = (uint32_t)(y1 - y0);
+    destination.x = (uint32_t)x0;
+    destination.y = (uint32_t)y0;
+    destination.width = source.width;
+    destination.height = source.height;
+    return wl_gpu_backend_blit(
+        renderer->gpu_backend, image, &source, &destination, alpha);
+}
+
+static bool wl_gpu_fill_clipped(
+    struct wl_server_renderer *renderer, int32_t x, int32_t y,
+    int32_t width, int32_t height, uint32_t color)
+{
+    struct wl_gpu_rect rectangle;
+    int64_t x1 = (int64_t)x + width;
+    int64_t y1 = (int64_t)y + height;
+
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x1 > renderer->framebuffer.width)
+        x1 = renderer->framebuffer.width;
+    if (y1 > renderer->framebuffer.height)
+        y1 = renderer->framebuffer.height;
+    if (renderer->clip_enabled) {
+        if (x < renderer->clip_x0)
+            x = renderer->clip_x0;
+        if (y < renderer->clip_y0)
+            y = renderer->clip_y0;
+        if (x1 > renderer->clip_x1)
+            x1 = renderer->clip_x1;
+        if (y1 > renderer->clip_y1)
+            y1 = renderer->clip_y1;
+    }
+    if (x >= x1 || y >= y1)
+        return true;
+    rectangle.x = (uint32_t)x;
+    rectangle.y = (uint32_t)y;
+    rectangle.width = (uint32_t)(x1 - x);
+    rectangle.height = (uint32_t)(y1 - y);
+    return wl_gpu_backend_fill(renderer->gpu_backend, &rectangle, color);
+}
+
+static bool wl_gpu_draw_resize_outline(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+
+    if (!server->resize_surface || !server->resize_surface->used)
+        return true;
+    x = server->resize_x;
+    y = server->resize_y;
+    width = (int32_t)server->resize_width;
+    height = (int32_t)server->resize_height +
+        (int32_t)WL_WINDOW_TITLE_HEIGHT;
+    return
+        wl_gpu_fill_clipped(renderer, x - 1, y - 1, width + 2, 3,
+                            0xff20242au) &&
+        wl_gpu_fill_clipped(renderer, x + width - 2, y - 1, 3,
+                            height + 2, 0xff20242au) &&
+        wl_gpu_fill_clipped(renderer, x - 1, y + height - 2,
+                            width + 2, 3, 0xff20242au) &&
+        wl_gpu_fill_clipped(renderer, x - 1, y - 1, 3,
+                            height + 2, 0xff20242au) &&
+        wl_gpu_fill_clipped(renderer, x, y, width, 1,
+                            WL_WINDOW_TITLE_ACTIVE) &&
+        wl_gpu_fill_clipped(renderer, x + width - 1, y, 1, height,
+                            WL_WINDOW_TITLE_ACTIVE) &&
+        wl_gpu_fill_clipped(renderer, x, y + height - 1, width, 1,
+                            WL_WINDOW_TITLE_ACTIVE) &&
+        wl_gpu_fill_clipped(renderer, x, y, 1, height,
+                            WL_WINDOW_TITLE_ACTIVE);
+}
+
+static bool wl_gpu_prepare_pointer(
+    struct wl_server *server, struct wl_gpu_image **image)
+{
+    struct wl_server local_server;
+    struct wl_gpu_image_config config;
+    struct wl_gpu_rect full;
+    uint32_t pixels[WL_POINTER_DAMAGE_SIZE * WL_POINTER_DAMAGE_SIZE];
+    uint32_t cursor = (uint32_t)server->pointer_cursor;
+
+    if (cursor >= sizeof(server->renderer.gpu_pointer_images) /
+                  sizeof(server->renderer.gpu_pointer_images[0]))
+        return false;
+    *image = server->renderer.gpu_pointer_images[cursor];
+    if (*image)
+        return true;
+    memset(pixels, 0, sizeof(pixels));
+    memset(&local_server, 0, sizeof(local_server));
+    local_server.renderer.canvas = pixels;
+    local_server.renderer.canvas_size = sizeof(pixels);
+    local_server.renderer.framebuffer.width = WL_POINTER_DAMAGE_SIZE;
+    local_server.renderer.framebuffer.height = WL_POINTER_DAMAGE_SIZE;
+    local_server.renderer.framebuffer.pitch =
+        WL_POINTER_DAMAGE_SIZE * sizeof(uint32_t);
+    local_server.pointer_x = WL_POINTER_DAMAGE_OFFSET;
+    local_server.pointer_y = WL_POINTER_DAMAGE_OFFSET;
+    local_server.pointer_cursor = server->pointer_cursor;
+    wl_renderer_draw_pointer(&local_server);
+
+    memset(&config, 0, sizeof(config));
+    config.width = WL_POINTER_DAMAGE_SIZE;
+    config.height = WL_POINTER_DAMAGE_SIZE;
+    config.stride = WL_POINTER_DAMAGE_SIZE * sizeof(uint32_t);
+    config.alpha = true;
+    *image = wl_gpu_backend_create_image(
+        server->renderer.gpu_backend, &config);
+    if (!*image)
+        return false;
+    full.x = 0u;
+    full.y = 0u;
+    full.width = WL_POINTER_DAMAGE_SIZE;
+    full.height = WL_POINTER_DAMAGE_SIZE;
+    if (!wl_gpu_backend_upload(
+            server->renderer.gpu_backend, *image, &full,
+            pixels, config.stride)) {
+        wl_gpu_backend_destroy_image(
+            server->renderer.gpu_backend, *image);
+        *image = NULL;
+        return false;
+    }
+    server->renderer.gpu_pointer_images[cursor] = *image;
+    return true;
+}
+
+static int wl_renderer_compose_gpu(struct wl_server *server)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+    struct wl_renderer_scene scene = {0};
+    struct wl_renderer_rect presentation = {0};
+    struct wl_gpu_frame frame;
+    struct wl_gpu_image *pointer_image = NULL;
+    bool have_damage = false;
+
+    if (!renderer->gpu_backend || !renderer->gpu_presenter ||
+        !wl_gpu_backend_begin_frame(renderer->gpu_backend, &frame))
+        return -1;
+    if (frame.output_count != renderer->present_buffer_count ||
+        frame.output_index >= frame.output_count ||
+        frame.output_index >= WL_GPU_MAX_OUTPUT_BUFFERS ||
+        !renderer->dirty_tile_storage) {
+        errno = EPROTO;
+        goto fail;
+    }
+    renderer->present_draw_buffer = frame.output_index;
+    renderer->dirty_tiles = renderer->dirty_tile_storage +
+        (size_t)frame.output_index * renderer->dirty_tile_word_count;
+    if ((renderer->gpu_output_initialized_mask &
+         (UINT32_C(1) << frame.output_index)) == 0u)
+        memset(renderer->dirty_tiles, 0xff,
+               renderer->dirty_tile_word_count *
+               sizeof(*renderer->dirty_tiles));
+
+    wl_renderer_build_scene(server, &scene);
+    if (!wl_gpu_prepare_pointer(server, &pointer_image))
+        goto fail;
+    for (uint32_t row = 0u; row < renderer->tile_rows; row++) {
+        uint32_t column = 0u;
+
+        while (column < renderer->tile_columns) {
+            struct wl_renderer_rect run;
+            bool opaque_cover;
+            size_t first;
+            uint32_t run_end;
+
+            if (!wl_renderer_tile_dirty(renderer, column, row)) {
+                column++;
+                continue;
+            }
+            run = wl_renderer_tile_rect(renderer, column, row);
+            renderer->clip_enabled = true;
+            renderer->clip_x0 = run.x0;
+            renderer->clip_y0 = run.y0;
+            renderer->clip_x1 = run.x1;
+            renderer->clip_y1 = run.y1;
+            first = wl_renderer_scene_first_visible(
+                server, &scene, &opaque_cover);
+            run_end = column;
+            while (run_end + 1u < renderer->tile_columns &&
+                   wl_renderer_tile_dirty(renderer, run_end + 1u, row)) {
+                struct wl_renderer_rect candidate =
+                    wl_renderer_tile_rect(renderer, run_end + 1u, row);
+                bool candidate_opaque;
+                size_t candidate_first;
+
+                renderer->clip_x0 = candidate.x0;
+                renderer->clip_y0 = candidate.y0;
+                renderer->clip_x1 = candidate.x1;
+                renderer->clip_y1 = candidate.y1;
+                candidate_first = wl_renderer_scene_first_visible(
+                    server, &scene, &candidate_opaque);
+                if (candidate_first != first ||
+                    candidate_opaque != opaque_cover)
+                    break;
+                run.x1 = candidate.x1;
+                run_end++;
+            }
+            renderer->clip_x0 = run.x0;
+            renderer->clip_y0 = run.y0;
+            renderer->clip_x1 = run.x1;
+            renderer->clip_y1 = run.y1;
+            if (!opaque_cover && !wl_gpu_fill_clipped(
+                    renderer, run.x0, run.y0,
+                    run.x1 - run.x0, run.y1 - run.y0,
+                    WL_BACKGROUND))
+                goto fail;
+            for (size_t index = first; index < scene.count; index++) {
+                const struct wl_server_surface *surface =
+                    scene.ordered[index];
+                struct wl_gpu_surface_cache *cache =
+                    wl_gpu_surface_cache_get(renderer, surface);
+                int32_t destination_x;
+                int32_t destination_y;
+                bool alpha;
+
+                if (!cache || !wl_gpu_surface_cache_update(
+                        server, cache, surface,
+                        surface == server->focus_surface))
+                    goto fail;
+                if (wl_surface_is_child_role(surface)) {
+                    if (wl_surface_content_origin(
+                            surface, &destination_x, &destination_y) < 0)
+                        goto fail;
+                } else {
+                    destination_x = surface->x;
+                    destination_y = surface->y;
+                }
+                destination_x += cache->offset_x;
+                destination_y += cache->offset_y;
+                alpha = !surface->opaque ||
+                    wl_surface_has_server_decoration(surface);
+                if (!wl_gpu_blit_clipped(
+                        renderer, cache->image,
+                        cache->width, cache->height,
+                        destination_x, destination_y, alpha))
+                    goto fail;
+            }
+            if (!wl_gpu_draw_resize_outline(server) ||
+                !wl_gpu_blit_clipped(
+                    renderer, pointer_image,
+                    WL_POINTER_DAMAGE_SIZE, WL_POINTER_DAMAGE_SIZE,
+                    server->pointer_x - WL_POINTER_DAMAGE_OFFSET,
+                    server->pointer_y - WL_POINTER_DAMAGE_OFFSET, true))
+                goto fail;
+            if (!have_damage) {
+                presentation = run;
+                have_damage = true;
+            } else {
+                if (run.x0 < presentation.x0)
+                    presentation.x0 = run.x0;
+                if (run.y0 < presentation.y0)
+                    presentation.y0 = run.y0;
+                if (run.x1 > presentation.x1)
+                    presentation.x1 = run.x1;
+                if (run.y1 > presentation.y1)
+                    presentation.y1 = run.y1;
+            }
+            column = run_end + 1u;
+        }
+    }
+    renderer->clip_enabled = false;
+    if (!have_damage) {
+        wl_gpu_backend_end_frame(renderer->gpu_backend);
+        return 0;
+    }
+    {
+        struct wl_gpu_rect damage = {
+            .x = (uint32_t)presentation.x0,
+            .y = (uint32_t)presentation.y0,
+            .width = (uint32_t)(presentation.x1 - presentation.x0),
+            .height = (uint32_t)(presentation.y1 - presentation.y0),
+        };
+        uint64_t started_us = renderer->profile_enabled ?
+            wl_renderer_monotonic_us() : 0u;
+
+        if (!wl_gpu_presenter_present(
+                renderer->gpu_presenter, renderer->gpu_backend, &damage))
+            return -1;
+        if (started_us != 0u) {
+            uint64_t finished_us = wl_renderer_monotonic_us();
+
+            if (finished_us >= started_us)
+                renderer->profile_present_us +=
+                    finished_us - started_us;
+            renderer->profile_present_pixels +=
+                (uint64_t)damage.width * damage.height;
+        }
+    }
+
+    renderer->gpu_output_initialized_mask |=
+        UINT32_C(1) << frame.output_index;
+    server->pointer_presented = true;
+    server->presented_pointer_x = server->pointer_x;
+    server->presented_pointer_y = server->pointer_y;
+    server->presented_pointer_cursor = server->pointer_cursor;
+    server->damage_pending = false;
+    renderer->present_front_buffer = renderer->present_draw_buffer;
+    memset(renderer->dirty_tiles, 0,
+           renderer->dirty_tile_word_count *
+           sizeof(*renderer->dirty_tiles));
+    return 0;
+
+fail:
+    renderer->clip_enabled = false;
+    wl_gpu_backend_end_frame(renderer->gpu_backend);
+    return -1;
+}
+
 static int wl_renderer_build_canvas(struct wl_server *server)
 {
     struct wl_server_renderer *renderer;
@@ -1036,6 +1754,8 @@ int wl_renderer_compose(struct wl_server *server)
         return -1;
     wl_renderer_mark_all_buffers_dirty(&server->renderer);
     wl_renderer_select_draw_buffer(&server->renderer);
+    if (server->renderer.output_backend == WL_RENDERER_OUTPUT_GPU)
+        return wl_renderer_compose_gpu(server);
     if (wl_renderer_build_canvas(server) < 0)
         return -1;
     renderer = &server->renderer;
@@ -1254,6 +1974,8 @@ int wl_renderer_compose_damage(struct wl_server *server)
     if (!server->damage_pending)
         return 0;
     wl_renderer_select_draw_buffer(renderer);
+    if (renderer->output_backend == WL_RENDERER_OUTPUT_GPU)
+        return wl_renderer_compose_gpu(server);
 
     pointer_damage = !server->pointer_presented ||
         server->presented_pointer_x != server->pointer_x ||
@@ -1772,6 +2494,8 @@ int wl_surface_commit(struct wl_server *server,
             if (wl_server_schedule_render(server, false) < 0)
                 return -1;
         }
+        surface->gpu_content_generation =
+            ++server->renderer.gpu_content_generation;
     }
     surface->pending_damage_count = 0u;
     surface->gpu_content_ready = false;

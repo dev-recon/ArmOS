@@ -249,6 +249,7 @@ struct wl_server_surface {
     struct wl_server_client *acquire_client;
     bool acquire_commit_pending;
     bool gpu_content_ready;
+    uint64_t gpu_content_generation;
     bool mapped;
     bool opaque;
     bool buffer_held;
@@ -347,8 +348,14 @@ struct wl_server_client {
 enum wl_renderer_output_backend {
     WL_RENDERER_OUTPUT_HEADLESS = 0,
     WL_RENDERER_OUTPUT_FRAMEBUFFER,
-    WL_RENDERER_OUTPUT_DRM
+    WL_RENDERER_OUTPUT_DRM,
+    WL_RENDERER_OUTPUT_GPU
 };
+
+struct wl_gpu_backend;
+struct wl_gpu_image;
+struct wl_gpu_presenter;
+struct wl_gpu_surface_cache;
 
 struct wl_server_renderer {
     bool headless;
@@ -380,6 +387,13 @@ struct wl_server_renderer {
     int32_t clip_y1;
     uint64_t profile_present_us;
     uint64_t profile_present_pixels;
+    struct wl_gpu_backend *gpu_backend;
+    struct wl_gpu_presenter *gpu_presenter;
+    struct wl_gpu_surface_cache *gpu_surface_cache;
+    size_t gpu_surface_cache_count;
+    struct wl_gpu_image *gpu_pointer_images[5];
+    uint64_t gpu_content_generation;
+    uint32_t gpu_output_initialized_mask;
 };
 
 struct wl_server {
@@ -533,6 +547,9 @@ int wl_surface_apply_commit_tree(
     struct wl_server_surface *surface, bool commit_surface);
 int wl_surface_release_buffer(struct wl_server_client *client,
                               struct wl_server_surface *surface);
+void wl_renderer_release_surface_gpu(
+    struct wl_server_renderer *renderer,
+    const struct wl_server_surface *surface);
 void wl_client_reclaim_buffers(struct wl_server_client *client);
 void wl_client_destroy_buffers(struct wl_server_client *client);
 int wl_server_handle_input(struct wl_server *server);

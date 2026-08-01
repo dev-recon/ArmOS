@@ -20,7 +20,8 @@
 
 struct wl_gpu_backend_ops {
     void (*destroy)(struct wl_gpu_backend *backend);
-    bool (*begin_frame)(struct wl_gpu_backend *backend);
+    bool (*begin_frame)(struct wl_gpu_backend *backend,
+                        struct wl_gpu_frame *frame);
     void (*end_frame)(struct wl_gpu_backend *backend);
     bool (*export_output)(struct wl_gpu_backend *backend,
                           struct wl_gpu_output *output);

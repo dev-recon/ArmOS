@@ -117,12 +117,13 @@ main(void)
     }
     for (uint32_t frame = 0u;
          frame < WL_GPU_MAX_OUTPUT_BUFFERS; frame++) {
+        struct wl_gpu_frame frame_info;
         struct wl_gpu_rect destination;
         static const uint32_t backgrounds[WL_GPU_MAX_OUTPUT_BUFFERS] = {
             0xff18232fu, 0xff203448u, 0xff28475cu,
         };
 
-        if (!wl_gpu_backend_begin_frame(backend)) {
+        if (!wl_gpu_backend_begin_frame(backend, &frame_info)) {
             fputs("armgl-compositor-smoke: frame begin failed\n", stderr);
             goto out;
         }

@@ -2313,6 +2313,8 @@ static int wl_dispatch_surface(struct wl_server *server,
             struct wl_server_surface *child = &client->surfaces[index];
 
             if (child->used && child->parent == surface) {
+                wl_renderer_release_surface_gpu(
+                    &server->renderer, child);
                 child->parent = NULL;
                 child->subsurface_synchronized = false;
                 child->mapped = false;
@@ -2349,6 +2351,7 @@ static int wl_dispatch_surface(struct wl_server *server,
             (void)wl_event_source_remove(surface->acquire_fence_source);
         if (surface->pending_acquire_fence_fd >= 0)
             close(surface->pending_acquire_fence_fd);
+        wl_renderer_release_surface_gpu(&server->renderer, surface);
         memset(surface, 0, sizeof(*surface));
         wl_client_remove_object(client, object->id, true);
         wl_client_reclaim_buffers(client);

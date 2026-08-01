@@ -77,11 +77,13 @@ wl_gpu_armgl_destroy(struct wl_gpu_backend *base)
 }
 
 static bool
-wl_gpu_armgl_begin_frame(struct wl_gpu_backend *base)
+wl_gpu_armgl_begin_frame(struct wl_gpu_backend *base,
+                         struct wl_gpu_frame *frame)
 {
     struct wl_gpu_armgl_backend *backend = wl_gpu_armgl_backend(base);
 
-    if (!backend || backend->frame_active || backend->output_count == 0u)
+    if (!backend || !frame || backend->frame_active ||
+        backend->output_count == 0u)
         return false;
     backend->draw_index =
         (backend->draw_index + 1u) % backend->output_count;
@@ -90,6 +92,8 @@ wl_gpu_armgl_begin_frame(struct wl_gpu_backend *base)
                             backend->outputs[backend->draw_index]))
         return false;
     backend->frame_active = true;
+    frame->output_index = backend->draw_index;
+    frame->output_count = backend->output_count;
     return true;
 }
 

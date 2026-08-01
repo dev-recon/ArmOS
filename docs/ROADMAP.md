@@ -104,12 +104,12 @@ selected VirGL capset without leaking VirtIO details into common code.
 `libarmos-virgl-winsys` validates the complete lifecycle with a real off-screen
 triangle, fence wait, readback and pixel verification. The reproducible
 Mesa/Gallium VirGL port and explicit EGL/Wayland buffer exchange are now
-implemented. The accelerated-compositor provider contract and its ArmGL
-primitives are in place. Its explicit begin/draw/fence/present/end lifecycle
-now rotates three provider-owned outputs without rendering into the active
-scanout. The next milestone is switching the complete scene (SHM and GPU
-clients, decorations, pointer and output) atomically to that provider before
-starting the common Raylib GLES2 port. VC4/V3D remains a platform
+implemented. The accelerated-compositor provider composes cached SHM layers,
+decorations, pointer and resize feedback into three provider-owned outputs.
+Per-output tile damage, clipping and conservative opaque occlusion preserve
+triple-buffer contents without full-screen redraws. The next milestone is
+direct import of client GPU buffers and release fences, followed by the common
+Raylib GLES2 port. VC4/V3D remains a platform
 implementation behind the
 same object and synchronization model.
 

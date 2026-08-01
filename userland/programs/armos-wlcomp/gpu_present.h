@@ -24,6 +24,7 @@
 
 struct wl_gpu_presenter {
     int card_fd;
+    bool owns_card_fd;
     uint32_t handles[WL_GPU_MAX_OUTPUT_BUFFERS];
     uint32_t buffer_count;
     uint32_t width;
@@ -43,6 +44,9 @@ struct wl_gpu_presenter {
 bool wl_gpu_presenter_init(struct wl_gpu_presenter *presenter,
                            const char *card_node,
                            uint32_t width, uint32_t height);
+bool wl_gpu_presenter_init_fd(struct wl_gpu_presenter *presenter,
+                              int card_fd, bool take_ownership,
+                              uint32_t width, uint32_t height);
 void wl_gpu_presenter_destroy(struct wl_gpu_presenter *presenter);
 bool wl_gpu_presenter_present(struct wl_gpu_presenter *presenter,
                               struct wl_gpu_backend *backend,

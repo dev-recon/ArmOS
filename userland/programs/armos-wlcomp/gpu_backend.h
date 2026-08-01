@@ -57,6 +57,11 @@ struct wl_gpu_output {
     uint32_t count;
 };
 
+struct wl_gpu_frame {
+    uint32_t output_index;
+    uint32_t output_count;
+};
+
 /* Returns NULL when no provider is linked or the device is unsupported. */
 struct wl_gpu_backend *wl_gpu_backend_create(
     const struct wl_gpu_backend_config *config);
@@ -67,7 +72,8 @@ void wl_gpu_backend_destroy(struct wl_gpu_backend *backend);
  * between begin_frame() and the matching presenter call. The presenter ends
  * the transaction on both success and failure.
  */
-bool wl_gpu_backend_begin_frame(struct wl_gpu_backend *backend);
+bool wl_gpu_backend_begin_frame(struct wl_gpu_backend *backend,
+                                struct wl_gpu_frame *frame);
 void wl_gpu_backend_end_frame(struct wl_gpu_backend *backend);
 
 /* The caller owns the returned output descriptor and fence descriptor. */

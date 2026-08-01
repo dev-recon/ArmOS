@@ -17,6 +17,7 @@
 #include "gpu_backend_provider.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* Defined by a provider archive when GPU composition is enabled. */
 extern struct wl_gpu_backend *wl_gpu_backend_provider_create(
@@ -58,10 +59,13 @@ wl_gpu_backend_destroy(struct wl_gpu_backend *backend)
 }
 
 bool
-wl_gpu_backend_begin_frame(struct wl_gpu_backend *backend)
+wl_gpu_backend_begin_frame(struct wl_gpu_backend *backend,
+                           struct wl_gpu_frame *frame)
 {
-    return wl_gpu_backend_valid(backend) &&
-        backend->ops->begin_frame(backend);
+    if (frame)
+        memset(frame, 0, sizeof(*frame));
+    return wl_gpu_backend_valid(backend) && frame &&
+        backend->ops->begin_frame(backend, frame);
 }
 
 void

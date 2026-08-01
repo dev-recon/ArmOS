@@ -552,6 +552,14 @@ void wl_server_disconnect_client(struct wl_server *server,
             }
         }
     }
+    if (server) {
+        for (size_t index = 0u;
+             index < WL_SERVER_MAX_SURFACES; index++) {
+            if (client->surfaces[index].used)
+                wl_renderer_release_surface_gpu(
+                    &server->renderer, &client->surfaces[index]);
+        }
+    }
     wl_client_destroy_buffers(client);
     for (size_t index = 0; index < WL_SERVER_MAX_POOLS; index++) {
         if (!client->pools[index].used)

@@ -166,11 +166,12 @@ Image layout metadata is published once, after Gallium has finalized the
 stride and before the BO is exported. Width, height, stride and format are
 then immutable, so every importer validates and observes the same layout.
 
-The current compositor maps an imported GPU buffer and performs an explicit
-device-to-CPU transfer before its existing damage-based software composition.
-This validates GPU rendering, cross-process ownership and synchronization but
-does not yet accelerate composition. The later renderer may emit fenced
-releases while retaining the same client protocol and swapchain lifecycle.
+The compositor now has two content paths behind the same surface lifecycle.
+SHM surfaces are retained in compositor memory and uploaded to cached GPU
+images only when their committed generation changes. Imported GPU buffers
+still use the validated device-to-CPU transfer path pending direct image
+attachment. Both paths preserve the same acquire/release fence and swapchain
+ownership contract.
 
 Command sets may require resource metadata that does not belong in the common
 BO model. `BO_CREATE` therefore accepts a size-bounded opaque resource
@@ -235,17 +236,13 @@ not be hard-coded by clients. Failure to negotiate a usable capset leaves the
 3D capabilities unpublished, so applications can select their software path
 without platform checks.
 
-The compositor first tries the architecture-neutral card-node contract. It
-creates a CPU-mappable scanout BO, composes directly into that mapping and
-presents only its damaged rectangle through `BO_PRESENT`. The common DRM core
-validates ownership and bounds and performs architecture-neutral cache
-maintenance; the qemu-virt backend translates presentation into
-`TRANSFER_TO_HOST_2D`, `SET_SCANOUT` and `RESOURCE_FLUSH`. If those
-capabilities are unavailable, the compositor retains its framebuffer backend.
-This connects display presentation to DRM but does not yet make the compositor
-render its UI with VirGL. The raw protocol smoke test validates the kernel and
-winsys lifecycle; Mesa/Gallium remains responsible for the production command
-encoder and graphics API.
+The compositor first tries the architecture-neutral GPU provider and card-node
+contracts. When both are available, it composes cached surface images,
+decorations, resize outlines and the pointer into provider-owned scanout
+resources, then presents those resources without a CPU framebuffer copy. If
+the provider is absent it falls back to the CPU-mappable DRM path, and then to
+the framebuffer backend. The common compositor contains no VirtIO, VirGL,
+VC4, V3D or architecture conditionals.
 
 The production GPU-composition boundary is now explicit. The compositor core
 knows only `gpu_backend.h`: output creation, image import/allocation, damaged
@@ -272,6 +269,14 @@ retains exactly one card-node handle per slot, so rendering never overwrites
 the resource currently scanned out. A failed frame still closes every shared
 descriptor and ends the transaction; no half-open frame can poison the next
 submission.
+
+`begin_frame` reports the selected output slot before rendering. The common
+tile-damage bitmap is retained independently for every slot: damage is added
+to all outputs and cleared only from the output that was successfully
+presented. Dirty 32x32 tiles are merged into horizontal runs. Each run is
+cleared and replayed with clipping, while a fully covered opaque run starts at
+its topmost covering surface. This preserves triple-buffer contents without
+full-screen redraws and keeps the established conservative occlusion rules.
 
 ArmGL output resources may now request scanout at creation. VirGL translates
 that generic bind into a scanout-capable 3D resource, while CPU-created legacy
@@ -371,11 +376,10 @@ armgl-compositor-smoke: three GPU buffers exported, fenced and presented
 ```
 
 The compositor pipeline smoke validates a complete provider frame through
-cross-node BO sharing and copy-free presentation. The desktop remains
-software-composited until the compositor renders its
-damage rectangles through the imported Gallium images; running through
-`virtio-gpu-gl-device` alone must not be described as GPU-accelerated window
-composition.
+cross-node BO sharing and copy-free presentation. `armos-wlcomp` then validates
+production GPU composition: cached SHM layers, decorations, pointer, per-output
+damage, clipping and conservative occlusion all pass through the same provider
+transaction.
 
 The qemu-virt scanout geometry is not compiled into the common framebuffer.
 The launcher passes `GPU_XRES` and `GPU_YRES` to VirtIO-GPU, then the platform
@@ -441,13 +445,11 @@ common DRM core and in the VirtIO backend.
    attaches the resource. ARM32 source and ABI compilation is validated;
    the complete Mesa bundle and runtime remain required before enabling the
    option in the tracked ARM32 profile.
-2. Use the validated external-image primitive in the compositor and compose
-   textured damage rectangles before copy-free DRM presentation. Client BO
-   import and explicit acquire fences are already wired. ArmGL scanout
-   surfaces allocate renderable command-backend resources; qemu-virt keeps
-   these separate from CPU-backed 2D scanouts and presents them without a
-   redundant host transfer. The remaining change replaces the device-to-CPU
-   transfer and software blend in the compositor.
+2. Import committed client GPU buffers directly as compositor images. Client
+   BO transport and explicit acquire fences are already wired; the remaining
+   work removes the transitional device-to-CPU transfer, retains imported
+   images until release and emits the release fence from the composition
+   transaction.
 3. Port Raylib on the common EGL/OpenGL ES 2 path.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.

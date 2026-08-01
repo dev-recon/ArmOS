@@ -69,19 +69,37 @@ wl_gpu_wait_fence(int fence_fd)
 }
 
 bool
+wl_gpu_presenter_init_fd(struct wl_gpu_presenter *presenter,
+                         int card_fd, bool take_ownership,
+                         uint32_t width, uint32_t height)
+{
+    if (!presenter || card_fd < 0 || !width || !height)
+        return false;
+    memset(presenter, 0, sizeof(*presenter));
+    presenter->card_fd = card_fd;
+    presenter->owns_card_fd = take_ownership;
+    presenter->width = width;
+    presenter->height = height;
+    return true;
+}
+
+bool
 wl_gpu_presenter_init(struct wl_gpu_presenter *presenter,
                       const char *card_node,
                       uint32_t width, uint32_t height)
 {
+    int card_fd;
+
     if (!presenter || !card_node || !width || !height)
         return false;
-    memset(presenter, 0, sizeof(*presenter));
-    presenter->card_fd = -1;
-    presenter->card_fd = open(card_node, O_RDWR, 0);
-    if (presenter->card_fd < 0)
+    card_fd = open(card_node, O_RDWR, 0);
+    if (card_fd < 0)
         return false;
-    presenter->width = width;
-    presenter->height = height;
+    if (!wl_gpu_presenter_init_fd(
+            presenter, card_fd, true, width, height)) {
+        close(card_fd);
+        return false;
+    }
     return true;
 }
 
@@ -103,7 +121,7 @@ wl_gpu_presenter_destroy(struct wl_gpu_presenter *presenter)
                         ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
         }
     }
-    if (presenter->card_fd >= 0)
+    if (presenter->card_fd >= 0 && presenter->owns_card_fd)
         close(presenter->card_fd);
     memset(presenter, 0, sizeof(*presenter));
     presenter->card_fd = -1;
