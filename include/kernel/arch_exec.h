@@ -22,7 +22,8 @@
 #include <kernel/exec.h>
 #include <kernel/types.h>
 
-int arch_exec_parse_image(const void *image, size_t image_size,
+int arch_exec_parse_image(const void *image, size_t header_size,
+                          size_t file_size,
                           exec_image_layout_t *layout);
 /*
  * The page has just been filled through a kernel temporary mapping.  The arch

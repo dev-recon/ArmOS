@@ -88,4 +88,21 @@ if ARMOS_CONFIG="$TMP_CONFIG" "$ROOT_DIR/tools/armos_config.sh" --show \
     exit 1
 fi
 
+printf '%s\n' \
+    'TARGET_ARCH=arm32' \
+    'TARGET_PLATFORM=qemu-virt' \
+    'BUILD_MESA=yes' > "$TMP_CONFIG"
+if ARMOS_CONFIG="$TMP_CONFIG" "$ROOT_DIR/tools/armos_config.sh" --show \
+    >/dev/null 2>&1; then
+    echo "configuration enabled the unvalidated ARM32 Mesa runtime" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    'TARGET_ARCH=arm64' \
+    'TARGET_PLATFORM=qemu-virt' \
+    'BUILD_MESA=yes' > "$TMP_CONFIG"
+ARMOS_CONFIG="$TMP_CONFIG" "$ROOT_DIR/tools/armos_config.sh" --show \
+    >/dev/null
+
 echo ARMOS_CONFIG_TEST_OK

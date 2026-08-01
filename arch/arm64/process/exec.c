@@ -36,7 +36,8 @@ static const elf64_program_header_t *program_header(
         image + header->phoff + (uint64_t)index * header->phentsize);
 }
 
-static int validate_image(const void *image, size_t image_size)
+static int validate_image(const void *image, size_t header_size,
+                          size_t file_size)
 {
     const uint8_t *bytes = image;
     const elf64_header_t *header = image;
@@ -45,7 +46,7 @@ static int validate_image(const void *image, size_t image_size)
     bool executable_entry = false;
     bool tls_seen = false;
 
-    if (!image || image_size < sizeof(*header))
+    if (!image || header_size < sizeof(*header))
         return -1;
     if (bytes[0] != 0x7f || bytes[1] != 'E' || bytes[2] != 'L' ||
         bytes[3] != 'F' || bytes[4] != 2 || bytes[5] != 1 ||
@@ -58,7 +59,7 @@ static int validate_image(const void *image, size_t image_size)
         add_overflows_u64(header->phoff,
                           (uint64_t)header->phnum * header->phentsize) ||
         header->phoff + (uint64_t)header->phnum * header->phentsize >
-            image_size)
+            header_size)
         return -1;
 
     for (index = 0; index < header->phnum; index++) {
@@ -72,7 +73,7 @@ static int validate_image(const void *image, size_t image_size)
             if (tls_seen || segment->memsz == 0 ||
                 segment->filesz > segment->memsz ||
                 add_overflows_u64(segment->offset, segment->filesz) ||
-                segment->offset + segment->filesz > image_size ||
+                segment->offset + segment->filesz > file_size ||
                 add_overflows_u64(segment->vaddr, segment->memsz) ||
                 segment->vaddr < USER_SPACE_START ||
                 segment->vaddr + segment->memsz > USER_SPACE_END ||
@@ -87,7 +88,7 @@ static int validate_image(const void *image, size_t image_size)
         loadable = true;
         if (segment->memsz < segment->filesz || segment->memsz == 0 ||
             add_overflows_u64(segment->offset, segment->filesz) ||
-            segment->offset + segment->filesz > image_size ||
+            segment->offset + segment->filesz > file_size ||
             add_overflows_u64(segment->vaddr, segment->memsz) ||
             segment->vaddr < USER_SPACE_START ||
             segment->vaddr + segment->memsz > USER_SPACE_END ||
@@ -109,14 +110,15 @@ static int validate_image(const void *image, size_t image_size)
     return loadable && executable_entry ? 0 : -1;
 }
 
-int arch_exec_parse_image(const void *image, size_t image_size,
+int arch_exec_parse_image(const void *image, size_t header_size,
+                          size_t file_size,
                           exec_image_layout_t *layout)
 {
     const uint8_t *bytes = image;
     const elf64_header_t *header = image;
     uint32_t index;
 
-    if (!layout || validate_image(image, image_size) != 0)
+    if (!layout || validate_image(image, header_size, file_size) != 0)
         return -1;
 
     memset(layout, 0, sizeof(*layout));

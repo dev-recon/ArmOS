@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <poll.h>
 #include <unistd.h>
 #include <uapi/armos/drm.h>
 
@@ -41,6 +42,8 @@ static const capability_name_t capability_names[] = {
     { ARMOS_DRM_CAP_CPU_MAPPABLE, "cpu-mappable" },
     { ARMOS_DRM_CAP_RENDER_3D, "render-3d" },
     { ARMOS_DRM_CAP_RESOURCE_TRANSFER, "resource-transfer" },
+    { ARMOS_DRM_CAP_SHARED_BUFFERS, "shared-buffers" },
+    { ARMOS_DRM_CAP_SYNC_FDS, "sync-fds" },
 };
 
 static const char *backend_class_name(unsigned int backend_class)
@@ -64,14 +67,22 @@ int main(void)
     armos_drm_context_destroy_t destroy;
     armos_drm_bo_create_t bo_create;
     armos_drm_bo_destroy_t bo_destroy;
+    armos_drm_bo_export_t bo_export;
+    armos_drm_bo_import_t bo_import;
+    armos_drm_bo_set_metadata_t bo_metadata;
     armos_drm_resource_attachment_t attachment;
     armos_drm_submit_t submit;
     armos_drm_fence_wait_t wait;
+    armos_drm_fence_export_t fence_export;
+    armos_drm_fence_result_t fence_result;
     armos_drm_fence_destroy_t fence_destroy;
+    struct pollfd fence_poll;
     unsigned int virgl_noop = 0u;
     void *mapping;
     unsigned int index;
     int fd;
+    int fence_fd = -1;
+    int import_fd = -1;
 
     fd = open("/dev/dri/renderD128", O_RDWR, 0);
     if (fd < 0) {
@@ -148,6 +159,45 @@ int main(void)
                 close(fd);
                 return 1;
             }
+            if (info.capabilities & ARMOS_DRM_CAP_SYNC_FDS) {
+                memset(&fence_export, 0, sizeof(fence_export));
+                fence_export.fence_id = submit.fence_id;
+                fence_export.flags = ARMOS_DRM_SHARE_CLOEXEC;
+                if (ioctl(fd, ARMOS_DRM_IOCTL_FENCE_EXPORT,
+                          &fence_export) < 0) {
+                    fprintf(stderr, "drm-info: fence export: %s\n",
+                            strerror(errno));
+                    close(fd);
+                    return 1;
+                }
+                fence_fd = fence_export.fd;
+                memset(&fence_poll, 0, sizeof(fence_poll));
+                fence_poll.fd = fence_fd;
+                fence_poll.events = POLLIN;
+                if (poll(&fence_poll, 1, 2000) != 1 ||
+                    (fence_poll.revents & POLLIN) == 0) {
+                    fprintf(stderr, "drm-info: sync fd poll: %s\n",
+                            errno ? strerror(errno) : "timeout");
+                    close(fence_fd);
+                    close(fd);
+                    return 1;
+                }
+                memset(&fence_result, 0, sizeof(fence_result));
+                if (read(fence_fd, &fence_result,
+                         sizeof(fence_result)) != sizeof(fence_result) ||
+                    fence_result.status != 0) {
+                    fprintf(stderr, "drm-info: sync fd result: %s\n",
+                            fence_result.status ?
+                                strerror(-fence_result.status) :
+                                "short read");
+                    close(fence_fd);
+                    close(fd);
+                    return 1;
+                }
+                close(fence_fd);
+                fence_fd = -1;
+                printf("fence-smoke: sync fd poll/read signaled\n");
+            }
             memset(&wait, 0, sizeof(wait));
             wait.fence_id = submit.fence_id;
             wait.timeout_ns = 2000000000LL;
@@ -201,6 +251,115 @@ int main(void)
                         strerror(errno));
                 close(fd);
                 return 1;
+            }
+            memset(&bo_metadata, 0, sizeof(bo_metadata));
+            bo_metadata.abi_version = ARMOS_DRM_ABI_VERSION;
+            bo_metadata.handle = bo_create.handle;
+            bo_metadata.width = 16;
+            bo_metadata.height = 16;
+            bo_metadata.stride = 64;
+            bo_metadata.format = ARMOS_DRM_FORMAT_BGRA8888;
+            if (ioctl(fd, ARMOS_DRM_IOCTL_BO_SET_METADATA,
+                      &bo_metadata) < 0) {
+                fprintf(stderr, "drm-info: BO metadata: %s\n",
+                        strerror(errno));
+                close(fd);
+                return 1;
+            }
+            if (info.capabilities & ARMOS_DRM_CAP_SHARED_BUFFERS) {
+                memset(&bo_export, 0, sizeof(bo_export));
+                bo_export.handle = bo_create.handle;
+                bo_export.flags = ARMOS_DRM_SHARE_CLOEXEC;
+                if (ioctl(fd, ARMOS_DRM_IOCTL_BO_EXPORT, &bo_export) < 0) {
+                    fprintf(stderr, "drm-info: BO export: %s\n",
+                            strerror(errno));
+                    close(fd);
+                    return 1;
+                }
+                bo_metadata.width = 8;
+                errno = 0;
+                if (ioctl(fd, ARMOS_DRM_IOCTL_BO_SET_METADATA,
+                          &bo_metadata) == 0 || errno != EBUSY) {
+                    fprintf(stderr,
+                            "drm-info: mutable exported BO metadata\n");
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                bo_metadata.width = 16;
+                if (ioctl(fd, ARMOS_DRM_IOCTL_BO_SET_METADATA,
+                          &bo_metadata) < 0) {
+                    fprintf(stderr,
+                            "drm-info: idempotent BO metadata: %s\n",
+                            strerror(errno));
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                import_fd = open("/dev/dri/renderD128", O_RDWR, 0);
+                if (import_fd < 0) {
+                    fprintf(stderr, "drm-info: second render node: %s\n",
+                            strerror(errno));
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                memset(&bo_import, 0, sizeof(bo_import));
+                bo_import.abi_version = ARMOS_DRM_ABI_VERSION;
+                bo_import.fd = bo_export.fd;
+                if (ioctl(import_fd, ARMOS_DRM_IOCTL_BO_IMPORT,
+                          &bo_import) < 0) {
+                    fprintf(stderr, "drm-info: BO import: %s\n",
+                            strerror(errno));
+                    close(import_fd);
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                if (bo_import.width != 16 || bo_import.height != 16 ||
+                    bo_import.stride != 64 ||
+                    bo_import.format != ARMOS_DRM_FORMAT_BGRA8888) {
+                    fprintf(stderr,
+                            "drm-info: imported BO metadata mismatch\n");
+                    close(import_fd);
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                mapping = mmap(NULL, (size_t)bo_import.size,
+                               PROT_READ | PROT_WRITE, MAP_SHARED,
+                               import_fd, (off_t)bo_import.map_offset);
+                if (mapping == MAP_FAILED ||
+                    ((const unsigned char *)mapping)[0] != 0xa5) {
+                    fprintf(stderr, "drm-info: imported BO mapping mismatch\n");
+                    close(import_fd);
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                if (munmap(mapping, (size_t)bo_import.size) < 0) {
+                    fprintf(stderr, "drm-info: imported BO munmap: %s\n",
+                            strerror(errno));
+                    close(import_fd);
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                memset(&bo_destroy, 0, sizeof(bo_destroy));
+                bo_destroy.handle = bo_import.handle;
+                if (ioctl(import_fd, ARMOS_DRM_IOCTL_BO_DESTROY,
+                          &bo_destroy) < 0) {
+                    fprintf(stderr, "drm-info: imported BO destroy: %s\n",
+                            strerror(errno));
+                    close(import_fd);
+                    close(bo_export.fd);
+                    close(fd);
+                    return 1;
+                }
+                close(import_fd);
+                import_fd = -1;
+                close(bo_export.fd);
+                printf("buffer-share-smoke: immutable metadata and mmap verified\n");
             }
             memset(&attachment, 0, sizeof(attachment));
             attachment.context_id = create.context_id;

@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -40,7 +41,7 @@ struct wl_request {
 
 static bool wl_surface_effectively_synchronized(
     const struct wl_server_surface *surface);
-static int wl_surface_apply_commit_tree(
+int wl_surface_apply_commit_tree(
     struct wl_server *server, struct wl_server_client *client,
     struct wl_server_surface *surface, bool commit_surface);
 
@@ -176,7 +177,62 @@ static struct wl_server_buffer *wl_allocate_buffer(
     return NULL;
 }
 
-void wl_client_reclaim_shm(struct wl_server_client *client)
+static void wl_destroy_gpu_buffer(struct wl_server_client *client,
+                                  struct wl_server_buffer *buffer)
+{
+    struct wl_server_renderer *renderer;
+
+    if (!client || !buffer || !buffer->gpu_backed)
+        return;
+    renderer = client->server ? &client->server->renderer : NULL;
+    if (buffer->drm_mapping && buffer->drm_mapping != MAP_FAILED)
+        (void)munmap(buffer->drm_mapping, buffer->drm_size);
+    if (renderer && renderer->drm_fd >= 0 && buffer->drm_handle != 0u) {
+        if (renderer->drm_context_id != 0u) {
+            armos_drm_resource_attachment_t detach = {
+                .context_id = renderer->drm_context_id,
+                .handle = buffer->drm_handle,
+            };
+
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_RESOURCE_DETACH, &detach);
+        }
+        {
+            armos_drm_bo_destroy_t destroy = {
+                .handle = buffer->drm_handle,
+            };
+
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
+        }
+    }
+}
+
+void wl_client_destroy_buffers(struct wl_server_client *client)
+{
+    if (!client)
+        return;
+    for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
+        struct wl_server_surface *surface = &client->surfaces[index];
+
+        if (!surface->used)
+            continue;
+        if (surface->acquire_fence_source) {
+            (void)wl_event_source_remove(surface->acquire_fence_source);
+            surface->acquire_fence_source = NULL;
+        }
+        if (surface->pending_acquire_fence_fd >= 0) {
+            close(surface->pending_acquire_fence_fd);
+            surface->pending_acquire_fence_fd = -1;
+        }
+    }
+    for (size_t index = 0u; index < WL_SERVER_MAX_BUFFERS; index++) {
+        if (client->buffers[index].used)
+            wl_destroy_gpu_buffer(client, &client->buffers[index]);
+    }
+}
+
+void wl_client_reclaim_buffers(struct wl_server_client *client)
 {
     if (!client)
         return;
@@ -205,8 +261,10 @@ void wl_client_reclaim_shm(struct wl_server_client *client)
                 break;
             }
         }
-        if (!referenced)
+        if (!referenced) {
+            wl_destroy_gpu_buffer(client, buffer);
             memset(buffer, 0, sizeof(*buffer));
+        }
     }
 
     for (size_t pool_index = 0u;
@@ -249,6 +307,7 @@ static struct wl_server_surface *wl_allocate_surface(
 
             memset(surface, 0, sizeof(*surface));
             surface->used = true;
+            surface->pending_acquire_fence_fd = -1;
             surface->server_decorated = true;
             surface->z_order = ++server->next_surface_z;
             surface->x = (int32_t)(24u + (position * 36u) %
@@ -321,6 +380,11 @@ static int wl_dispatch_display(struct wl_server *server,
             return -1;
         if (wl_client_send_global(client, new_id, WL_GLOBAL_ARMOS_SHELL,
                                   "armos_shell_v1", 1u) < 0)
+            return -1;
+        if (server->renderer.gpu_buffer_import &&
+            wl_client_send_global(
+                client, new_id, WL_GLOBAL_ARMOS_GPU_BUFFER,
+                "armos_gpu_buffer_manager_v1", 1u) < 0)
             return -1;
         return 0;
     }
@@ -423,6 +487,13 @@ static int wl_dispatch_registry(struct wl_server *server,
         return wl_client_add_object(client, new_id,
                                     WL_SERVER_OBJECT_ARMOS_SHELL,
                                     1u, NULL);
+    }
+    if (name == WL_GLOBAL_ARMOS_GPU_BUFFER &&
+        strcmp(interface_name, "armos_gpu_buffer_manager_v1") == 0 &&
+        server->renderer.gpu_buffer_import) {
+        return wl_client_add_object(
+            client, new_id, WL_SERVER_OBJECT_ARMOS_GPU_BUFFER_MANAGER,
+            1u, NULL);
     }
     return wl_protocol_fail(client, object->id,
                             WL_PROTOCOL_ERROR_INVALID_OBJECT,
@@ -1646,6 +1717,162 @@ static int wl_dispatch_region(struct wl_server_client *client,
                             "malformed wl_region request");
 }
 
+static int wl_dispatch_gpu_buffer_manager(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_object *object, uint16_t opcode,
+    struct wl_request *request)
+{
+    struct wl_server_renderer *renderer = &server->renderer;
+
+    if (!renderer->gpu_buffer_import || renderer->drm_fd < 0 ||
+        renderer->drm_context_id == 0u)
+        return wl_protocol_fail(client, object->id,
+                                WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                "GPU buffer import is unavailable");
+    if (opcode == 0u) {
+        armos_drm_bo_import_t import_request;
+        armos_drm_resource_attachment_t attach;
+        struct wl_server_buffer *buffer;
+        uint32_t new_id;
+        int fd;
+
+        if (wl_request_u32(request, &new_id) < 0 ||
+            !wl_request_complete(request))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "malformed GPU buffer creation");
+        fd = wl_client_take_fd(client);
+        if (fd < 0)
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "GPU buffer creation needs one fd");
+        memset(&import_request, 0, sizeof(import_request));
+        import_request.abi_version = ARMOS_DRM_ABI_VERSION;
+        import_request.fd = fd;
+        if (ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_IMPORT,
+                  &import_request) < 0) {
+            close(fd);
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "cannot import GPU buffer");
+        }
+        close(fd);
+        if (import_request.width == 0u || import_request.height == 0u ||
+            import_request.stride < import_request.width * 4u ||
+            import_request.format != ARMOS_DRM_FORMAT_BGRA8888 ||
+            import_request.size == 0u || import_request.size > SIZE_MAX ||
+            (import_request.bo_flags & ARMOS_DRM_BO_CPU_READ) == 0u) {
+            armos_drm_bo_destroy_t destroy = {
+                .handle = import_request.handle,
+            };
+
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "unsupported GPU buffer metadata");
+        }
+        memset(&attach, 0, sizeof(attach));
+        attach.context_id = renderer->drm_context_id;
+        attach.handle = import_request.handle;
+        if (ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_RESOURCE_ATTACH,
+                  &attach) < 0) {
+            armos_drm_bo_destroy_t destroy = {
+                .handle = import_request.handle,
+            };
+
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                    "cannot attach GPU buffer");
+        }
+        buffer = wl_allocate_buffer(client);
+        if (!buffer) {
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_RESOURCE_DETACH, &attach);
+            {
+                armos_drm_bo_destroy_t destroy = {
+                    .handle = import_request.handle,
+                };
+
+                (void)ioctl(renderer->drm_fd,
+                            ARMOS_DRM_IOCTL_BO_DESTROY, &destroy);
+            }
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                    "buffer limit reached");
+        }
+        buffer->drm_mapping = mmap(
+            NULL, (size_t)import_request.size, PROT_READ,
+            MAP_SHARED, renderer->drm_fd,
+            (off_t)import_request.map_offset);
+        if (buffer->drm_mapping == MAP_FAILED) {
+            buffer->drm_mapping = NULL;
+            buffer->gpu_backed = true;
+            buffer->drm_handle = import_request.handle;
+            wl_destroy_gpu_buffer(client, buffer);
+            memset(buffer, 0, sizeof(*buffer));
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                                    "cannot map GPU buffer");
+        }
+        buffer->object_id = new_id;
+        buffer->object_alive = true;
+        buffer->gpu_backed = true;
+        buffer->manager_object_id = object->id;
+        buffer->drm_handle = import_request.handle;
+        buffer->drm_command_handle = import_request.command_handle;
+        buffer->drm_size = (size_t)import_request.size;
+        buffer->width = import_request.width;
+        buffer->height = import_request.height;
+        buffer->stride = import_request.stride;
+        buffer->format = WL_SHM_FORMAT_ARGB8888;
+        if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_BUFFER,
+                                 1u, buffer) < 0) {
+            wl_destroy_gpu_buffer(client, buffer);
+            memset(buffer, 0, sizeof(*buffer));
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_OBJECT,
+                                    "invalid GPU buffer object id");
+        }
+        return 0;
+    }
+    if (opcode == 1u) {
+        struct wl_server_object *surface_object;
+        struct wl_server_surface *surface;
+        uint32_t surface_id;
+        int fd;
+
+        if (wl_request_u32(request, &surface_id) < 0 ||
+            !wl_request_complete(request))
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "malformed acquire fence");
+        fd = wl_client_take_fd(client);
+        surface_object = wl_client_find_object(client, surface_id);
+        if (fd < 0 || !surface_object ||
+            surface_object->type != WL_SERVER_OBJECT_SURFACE ||
+            !(surface = surface_object->resource) || !surface->used ||
+            surface->pending_acquire_fence_fd >= 0) {
+            if (fd >= 0)
+                close(fd);
+            return wl_protocol_fail(client, object->id,
+                                    WL_PROTOCOL_ERROR_INVALID_METHOD,
+                                    "invalid acquire fence target");
+        }
+        surface->pending_acquire_fence_fd = fd;
+        return 0;
+    }
+    if (opcode == 2u && wl_request_complete(request)) {
+        wl_client_remove_object(client, object->id, true);
+        return 0;
+    }
+    return wl_protocol_fail(client, object->id,
+                            WL_PROTOCOL_ERROR_INVALID_METHOD,
+                            "unsupported GPU buffer manager request");
+}
+
 static int wl_dispatch_shm(struct wl_server_client *client,
                            struct wl_server_object *object,
                            uint16_t opcode, struct wl_request *request)
@@ -1767,7 +1994,7 @@ static int wl_dispatch_pool(struct wl_server_client *client,
     if (opcode == 1u && wl_request_complete(request)) {
         pool->object_alive = false;
         wl_client_remove_object(client, object->id, true);
-        wl_client_reclaim_shm(client);
+        wl_client_reclaim_buffers(client);
         return 0;
     }
     if (opcode == 2u) {
@@ -1817,7 +2044,7 @@ static int wl_dispatch_buffer(struct wl_server_client *client,
                                 "malformed wl_buffer.destroy");
     buffer->object_alive = false;
     wl_client_remove_object(client, object->id, true);
-    wl_client_reclaim_shm(client);
+    wl_client_reclaim_buffers(client);
     return 0;
 }
 
@@ -1881,7 +2108,7 @@ static bool wl_surface_effectively_synchronized(
     return false;
 }
 
-static int wl_surface_apply_commit_tree(
+static int wl_surface_apply_commit_subtree(
     struct wl_server *server, struct wl_server_client *client,
     struct wl_server_surface *surface, bool commit_surface)
 {
@@ -1892,8 +2119,12 @@ static int wl_surface_apply_commit_tree(
         return 0;
     was_mapped = surface->mapped;
     if (commit_surface) {
-        if (wl_surface_commit(server, client, surface) < 0)
+        int result = wl_surface_commit(server, client, surface);
+
+        if (result < 0)
             return -1;
+        if (result > 0)
+            return result;
         surface->subsurface_commit_pending = false;
         if (!was_mapped && surface->mapped &&
             wl_server_surface_enter_output(
@@ -1916,14 +2147,34 @@ static int wl_surface_apply_commit_tree(
             child->subsurface_position_pending = false;
         }
         commit_child = child->subsurface_commit_pending;
-        if (wl_surface_apply_commit_tree(
-                server, client, child, commit_child) < 0)
+        int result = wl_surface_apply_commit_subtree(
+            server, client, child, commit_child);
+
+        if (result < 0)
             return -1;
+        if (result > 0)
+            return result;
     }
     if (scene_position_changed &&
         wl_server_schedule_render(server, true) < 0)
         return -1;
     return 0;
+}
+
+int wl_surface_apply_commit_tree(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_surface *surface, bool commit_surface)
+{
+    int result = wl_surface_apply_commit_subtree(
+        server, client, surface, commit_surface);
+
+    if (client) {
+        if (result > 0)
+            client->blocked_commit_root = surface;
+        else if (client->blocked_commit_root == surface)
+            client->blocked_commit_root = NULL;
+    }
+    return result;
 }
 
 static int wl_surface_add_damage(struct wl_server_client *client,
@@ -2094,9 +2345,13 @@ static int wl_dispatch_surface(struct wl_server *server,
         }
         if (wl_surface_release_buffer(client, surface) < 0)
             return -1;
+        if (surface->acquire_fence_source)
+            (void)wl_event_source_remove(surface->acquire_fence_source);
+        if (surface->pending_acquire_fence_fd >= 0)
+            close(surface->pending_acquire_fence_fd);
         memset(surface, 0, sizeof(*surface));
         wl_client_remove_object(client, object->id, true);
-        wl_client_reclaim_shm(client);
+        wl_client_reclaim_buffers(client);
         return wl_renderer_compose(server);
     }
     if (opcode == 1u) {
@@ -2794,6 +3049,9 @@ int wl_server_dispatch_message(struct wl_server *server,
         return wl_dispatch_pool(client, object, opcode, &request);
     case WL_SERVER_OBJECT_BUFFER:
         return wl_dispatch_buffer(client, object, opcode, &request);
+    case WL_SERVER_OBJECT_ARMOS_GPU_BUFFER_MANAGER:
+        return wl_dispatch_gpu_buffer_manager(
+            server, client, object, opcode, &request);
     case WL_SERVER_OBJECT_SURFACE:
         return wl_dispatch_surface(server, client, object, opcode, &request);
     case WL_SERVER_OBJECT_SEAT:

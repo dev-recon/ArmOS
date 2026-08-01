@@ -57,13 +57,24 @@ void wl_wire_store_u32(uint8_t *data, uint32_t value)
 
 static int wl_client_update_output_watch(struct wl_server_client *client)
 {
-    uint32_t mask = WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR;
+    uint32_t mask = WL_EVENT_HANGUP | WL_EVENT_ERROR;
 
     if (!client || !client->event_source)
         return 0;
+    if (!client->dispatch_blocked)
+        mask |= WL_EVENT_READABLE;
     if (client->output_head)
         mask |= WL_EVENT_WRITABLE;
     return wl_event_source_fd_update(client->event_source, mask);
+}
+
+int wl_client_set_dispatch_blocked(struct wl_server_client *client,
+                                   bool blocked)
+{
+    if (!client)
+        return -1;
+    client->dispatch_blocked = blocked;
+    return wl_client_update_output_watch(client);
 }
 
 static int wl_client_queue_output(struct wl_server_client *client,
@@ -421,7 +432,8 @@ int wl_server_dispatch_client_pending(struct wl_server *server,
 
     if (!server || !client)
         return -1;
-    while (client->receive_length >= WL_WIRE_HEADER_SIZE &&
+    while (!client->dispatch_blocked &&
+           client->receive_length >= WL_WIRE_HEADER_SIZE &&
            dispatched < WL_SERVER_CLIENT_DISPATCH_BUDGET) {
         uint32_t header = wl_wire_u32(client->receive + 4);
         uint32_t size = header >> 16;
@@ -441,7 +453,8 @@ int wl_server_dispatch_client_pending(struct wl_server *server,
         }
         dispatched++;
     }
-    if (client->receive_length >= WL_WIRE_HEADER_SIZE) {
+    if (!client->dispatch_blocked &&
+        client->receive_length >= WL_WIRE_HEADER_SIZE) {
         uint32_t header = wl_wire_u32(client->receive + 4);
         uint32_t size = header >> 16;
 
@@ -465,6 +478,8 @@ int wl_server_receive_client(struct wl_server *server,
 
     if (!server || !client)
         return -1;
+    if (client->dispatch_blocked)
+        return 0;
     pending = wl_server_dispatch_client_pending(server, client);
     if (pending != 0)
         return pending;
@@ -537,6 +552,7 @@ void wl_server_disconnect_client(struct wl_server *server,
             }
         }
     }
+    wl_client_destroy_buffers(client);
     for (size_t index = 0; index < WL_SERVER_MAX_POOLS; index++) {
         if (!client->pools[index].used)
             continue;

@@ -219,6 +219,7 @@ BUILD_HARFBUZZ=no
 BUILD_FCFT=no
 BUILD_FOOT=no
 BUILD_NUKLEAR=no
+BUILD_MESA=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -247,6 +248,31 @@ engine-independent `/usr/lib/libarmui.a` and `<armui/armui.h>` interface;
 Nuklear types remain private to its implementation. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
+
+`BUILD_MESA=yes` cross-builds the pinned minimal Mesa bundle with Gallium
+VirGL, surfaceless and Wayland EGL, and OpenGL ES 2. It installs `/opt/mesa`,
+the off-screen `egl-smoke` diagnostic, the cross-context
+`armgl-import-smoke` external-image diagnostic, the visible
+`egl-wayland-smoke` swapchain diagnostic and `armgl-compositor-smoke`. The
+latter exercises the complete compositor path: Gallium rendering, exported
+triple-buffered object, explicit fence, DRM import and scanout presentation. The Mesa
+stage also relinks `armos-wlcomp` with its optional ArmGL provider; the desktop
+continues to use the software scene until every layer can switch atomically to
+the GPU pipeline. Its M4, Bison, Meson, Ninja and Python modules come from the
+reproducible host-tools prefix; no arbitrary host installation is used. The
+build rejects stale userland archives before starting Mesa. The complete
+runtime bundle is currently restricted to arm64/qemu-virt; ARM32 is covered by
+the private source and ABI contract check until its full Mesa runtime milestone
+is enabled.
+
+Mesa is the sole C++ exception in this graphics stack. Its upstream GLSL
+compiler contains C++ translation units, so the host cross-compiler builds the
+private Mesa implementation with exceptions and RTTI disabled. ArmOS adds only
+`cxx_runtime_armos.cpp` for the required allocation operators and
+`lower_precision_armos.cpp` as a no-STL precision-lowering fallback. Neither
+source, the C++ standard library nor C++ headers are installed in `userfs`.
+Applications, TCC, EGL and GLES continue to consume C interfaces exclusively;
+this exception does not add C++ to the native ArmOS toolchain contract.
 
 The repository intentionally shares one `userfs` source tree between ARM32
 and ARM64 builds. Before rebuilding, `build.sh` checks every installed ELF.

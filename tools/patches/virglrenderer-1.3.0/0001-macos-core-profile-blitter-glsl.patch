@@ -1,0 +1,41 @@
+From: ArmOS Project
+Subject: [PATCH] vrend: use core GLSL for the macOS desktop blitter
+
+macOS exposes OpenGL 3.2 and newer only through a core profile.  Its shader
+compiler consequently rejects the GLSL 1.30 compatibility version hard-coded
+in the internal VirGL blitter.  The renderer already selects its separate GLES
+headers for an ES context, so select GLSL 1.50 core for desktop builds on Apple
+and retain the upstream GLSL 1.30 contract everywhere else.
+
+This covers every internal color, depth and multisample blitter shader through
+the two shared desktop headers.  Guest shaders and advertised capsets remain
+unchanged.
+
+diff --git a/src/vrend/vrend_blitter.h b/src/vrend/vrend_blitter.h
+--- a/src/vrend/vrend_blitter.h
++++ b/src/vrend/vrend_blitter.h
+@@ -29,8 +29,14 @@
+ 
+ /* shaders for blitting */
+ 
++#if defined(__APPLE__)
++#define VREND_DESKTOP_BLITTER_GLSL_HEADER "#version 150 core\n"
++#else
++#define VREND_DESKTOP_BLITTER_GLSL_HEADER "#version 130\n"
++#endif
++
+ #define FS_HEADER_GL                               \
+-   "#version 130\n"                             \
++   VREND_DESKTOP_BLITTER_GLSL_HEADER              \
+    "// Blitter\n"                               \
+    "%s"                                         \
+ 
+@@ -48,7 +54,7 @@
+ 
+ 
+ #define HEADER_GL                               \
+-   "#version 130\n"                             \
++   VREND_DESKTOP_BLITTER_GLSL_HEADER              \
+    "// Blitter\n"                               \
+ 
+ #define HEADER_GLES                             \

@@ -869,6 +869,9 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_TIMERFD)
         return timerfd_read_ready(file);
 
+    if (file->type == FILE_TYPE_DRM_FENCE)
+        return armos_drm_fence_file_read_ready(file);
+
     return file->f_op && file->f_op->read;
 }
 

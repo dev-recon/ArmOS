@@ -265,6 +265,84 @@ int armos_virgl_buffer_destroy(armos_virgl_device_t *device,
     return result;
 }
 
+int armos_virgl_buffer_set_metadata(armos_virgl_device_t *device,
+                                    armos_virgl_buffer_t *buffer,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t stride, uint32_t format)
+{
+    armos_drm_bo_set_metadata_t request;
+
+    if (!device || !buffer || buffer->handle == 0 || width == 0 ||
+        height == 0 || width > UINT32_MAX / 4u || stride < width * 4u) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    request.abi_version = ARMOS_DRM_ABI_VERSION;
+    request.handle = buffer->handle;
+    request.width = width;
+    request.height = height;
+    request.stride = stride;
+    request.format = format;
+    if (armos_virgl_ioctl(device->fd,
+                          ARMOS_DRM_IOCTL_BO_SET_METADATA, &request) < 0)
+        return -1;
+    buffer->width = width;
+    buffer->height = height;
+    buffer->stride = stride;
+    buffer->format = format;
+    return 0;
+}
+
+int armos_virgl_buffer_export(armos_virgl_device_t *device,
+                              const armos_virgl_buffer_t *buffer,
+                              int cloexec)
+{
+    armos_drm_bo_export_t request;
+
+    if (!device || !buffer || buffer->handle == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    request.handle = buffer->handle;
+    if (cloexec)
+        request.flags = ARMOS_DRM_SHARE_CLOEXEC;
+    if (armos_virgl_ioctl(device->fd, ARMOS_DRM_IOCTL_BO_EXPORT,
+                          &request) < 0)
+        return -1;
+    return request.fd;
+}
+
+int armos_virgl_buffer_import(armos_virgl_device_t *device,
+                              armos_virgl_buffer_t *buffer,
+                              int shared_fd)
+{
+    armos_drm_bo_import_t request;
+
+    if (!device || !buffer || shared_fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(buffer, 0, sizeof(*buffer));
+    memset(&request, 0, sizeof(request));
+    request.abi_version = ARMOS_DRM_ABI_VERSION;
+    request.fd = shared_fd;
+    if (armos_virgl_ioctl(device->fd, ARMOS_DRM_IOCTL_BO_IMPORT,
+                          &request) < 0)
+        return -1;
+    buffer->handle = request.handle;
+    buffer->command_handle = request.command_handle;
+    buffer->flags = request.bo_flags;
+    buffer->width = request.width;
+    buffer->height = request.height;
+    buffer->stride = request.stride;
+    buffer->format = request.format;
+    buffer->size = request.size;
+    buffer->map_offset = request.map_offset;
+    return 0;
+}
+
 static int armos_virgl_buffer_change(armos_virgl_device_t *device,
                                      uint32_t context_id,
                                      const armos_virgl_buffer_t *buffer,
@@ -365,6 +443,25 @@ int armos_virgl_fence_wait(armos_virgl_device_t *device, uint64_t fence_id,
     request.timeout_ns = timeout_ns;
     return armos_virgl_ioctl(device ? device->fd : -1,
                              ARMOS_DRM_IOCTL_FENCE_WAIT, &request);
+}
+
+int armos_virgl_fence_export(armos_virgl_device_t *device,
+                             uint64_t fence_id, int cloexec)
+{
+    armos_drm_fence_export_t request;
+
+    if (!device || device->fd < 0 || fence_id == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    request.fence_id = fence_id;
+    if (cloexec)
+        request.flags = ARMOS_DRM_SHARE_CLOEXEC;
+    if (armos_virgl_ioctl(device->fd, ARMOS_DRM_IOCTL_FENCE_EXPORT,
+                          &request) < 0)
+        return -1;
+    return request.fd;
 }
 
 int armos_virgl_fence_destroy(armos_virgl_device_t *device,

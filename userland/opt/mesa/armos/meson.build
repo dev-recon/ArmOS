@@ -10,10 +10,8 @@ if armos_virgl_winsys_dir == ''
   error('-Darmos-virgl-winsys-dir must name the target ArmOS library directory')
 endif
 
-dep_armos_virgl_winsys = cc.find_library(
-  'armos-virgl-winsys',
-  dirs : armos_virgl_winsys_dir,
-  required : true,
+dep_armos_virgl_winsys = declare_dependency(
+  link_args : ['-larmos-virgl-winsys'],
 )
 
 libvirglarmos = static_library(

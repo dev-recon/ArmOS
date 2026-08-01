@@ -1,0 +1,46 @@
+/*
+ * ArmOS
+ * Copyright (c) 2026 Mohamed Ennassiri
+ *
+ * Licensed under the Apache License, Version 2.0.
+ * See LICENSE for details.
+ *
+ * File: userland/opt/mesa/armos/new_armos
+ * Layer: Mesa-private C++ compatibility
+ *
+ * Mesa's GLSL compiler uses C++17 syntax and placement new, but no C++
+ * standard-library containers in the ArmOS profile.  Keep this header private
+ * to the Mesa build; it is not an ArmOS public toolchain contract.
+ */
+
+#ifndef ARMOS_MESA_PRIVATE_NEW_H
+#define ARMOS_MESA_PRIVATE_NEW_H
+
+typedef __SIZE_TYPE__ size_t;
+
+void *operator new(size_t size);
+void *operator new[](size_t size);
+void operator delete(void *pointer) noexcept;
+void operator delete[](void *pointer) noexcept;
+void operator delete(void *pointer, size_t size) noexcept;
+void operator delete[](void *pointer, size_t size) noexcept;
+
+inline void *operator new(size_t, void *pointer) noexcept
+{
+    return pointer;
+}
+
+inline void *operator new[](size_t, void *pointer) noexcept
+{
+    return pointer;
+}
+
+inline void operator delete(void *, void *) noexcept
+{
+}
+
+inline void operator delete[](void *, void *) noexcept
+{
+}
+
+#endif /* ARMOS_MESA_PRIVATE_NEW_H */

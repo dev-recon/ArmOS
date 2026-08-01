@@ -42,7 +42,7 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
 static void wl_server_client_dispatch_idle(void *data);
 
-static int wl_server_defer_client_dispatch(struct wl_server_client *client)
+int wl_server_defer_client_dispatch(struct wl_server_client *client)
 {
     if (!client || !client->server)
         return -1;

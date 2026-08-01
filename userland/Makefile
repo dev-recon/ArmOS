@@ -120,6 +120,10 @@ PROGRAMS := $(filter-out armos-control-center,$(PROGRAMS))
 PROGRAMS := $(filter-out armos-shell,$(PROGRAMS))
 # Linked explicitly against the ArmOS VirGL winsys library.
 PROGRAMS := $(filter-out virgl-smoke,$(PROGRAMS))
+# Mesa bundle validation programs use the private static EGL/GLES and
+# compositor-provider archives and are linked by tools/build_mesa.sh.
+PROGRAMS := $(filter-out egl-smoke egl-wayland-smoke armgl-import-smoke \
+	armgl-compositor-smoke,$(PROGRAMS))
 
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
@@ -164,6 +168,7 @@ $(ARMOS_WLCOMP_OBJECTS): CFLAGS += -O3
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
+WAYLAND_EGL_OBJECTS := $(BUILD_DIR)/lib/wayland/egl.o
 XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
 THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
 SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
@@ -171,12 +176,17 @@ VIRGL_WINSYS_OBJECTS := $(BUILD_DIR)/lib/virgl/winsys.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
+WAYLAND_EGL_LIBRARY := $(OUT_USR_LIB)/libwayland-egl.a
 XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
 THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
 SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
 VIRGL_WINSYS_LIBRARY := $(OUT_USR_LIB)/libarmos-virgl-winsys.a
+ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY ?=
+ARMOS_MESA_EGL_LIBRARY ?=
+ARMOS_MESA_GLES2_LIBRARY ?=
 WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
-                     $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
+                     $(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_EGL_LIBRARY) \
+                     $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
@@ -217,7 +227,7 @@ $(NUKLEAR_OBJECT) $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) $(ARMUI_DEMO_OBJECT) 
 	$(TEAPOT_DEMO_OBJECT): CFLAGS += -Iopt/nuklear/include
 
 .PHONY: all clean install check-newlib newlib-port list init mash hello64 \
-	armos-wlcomp armui-demo virgl-smoke
+	armos-wlcomp armos-wlcomp-gpu armui-demo virgl-smoke
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
 # Pattern-generated program objects are final cache entries, not disposable
@@ -257,6 +267,37 @@ init: $(OUT_SBIN)/init
 mash: $(OUT_SBIN)/mash
 hello64: $(OUT_USR_BIN)/hello64
 armos-wlcomp: $(ARMOS_WLCOMP_TARGET)
+
+# Mesa is built after the base userland so the normal compositor must remain
+# independently linkable.  This explicit second-stage target installs the
+# optional provider without changing the software-only dependency graph.  The
+# provider factory is referenced weakly by gpu_backend.c; --whole-archive is
+# therefore required so a static linker cannot discard the implementation.
+armos-wlcomp-gpu: $(LINK_DEPS) $(ARMOS_WLCOMP_OBJECTS) \
+		$(WAYLAND_SERVER_LIBRARY) $(VIRGL_WINSYS_LIBRARY) \
+		$(SYSLOG_LIBRARY)
+	@test -f "$(ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY)" || { \
+		echo "Error: ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY is missing."; \
+		exit 1; \
+	}
+	@test -f "$(ARMOS_MESA_EGL_LIBRARY)" || { \
+		echo "Error: ARMOS_MESA_EGL_LIBRARY is missing."; \
+		exit 1; \
+	}
+	@test -f "$(ARMOS_MESA_GLES2_LIBRARY)" || { \
+		echo "Error: ARMOS_MESA_GLES2_LIBRARY is missing."; \
+		exit 1; \
+	}
+	mkdir -p $(OUT_SBIN)
+	$(CC) $(LDFLAGS) -o $(ARMOS_WLCOMP_TARGET) \
+		$(PORT_OBJECTS) $(ARMOS_WLCOMP_OBJECTS) \
+		-Wl,-u,wl_gpu_backend_provider_create \
+		-Wl,--whole-archive "$(ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY)" \
+		-Wl,--no-whole-archive -Wl,--start-group \
+		"$(ARMOS_MESA_EGL_LIBRARY)" "$(ARMOS_MESA_GLES2_LIBRARY)" \
+		$(VIRGL_WINSYS_LIBRARY) $(SYSLOG_LIBRARY) \
+		$(WAYLAND_SERVER_LIBRARY) "$(NEWLIB_LIBM)" \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)" -Wl,--end-group
 armui-demo: $(ARMUI_DEMO_TARGET)
 $(SYSTEM_TOOLS): %: $(OUT_SBIN)/%
 $(COREUTILS): %: $(OUT_BIN)/%
@@ -318,6 +359,10 @@ $(WAYLAND_SERVER_LIBRARY): $(WAYLAND_SERVER_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(WAYLAND_CURSOR_LIBRARY): $(WAYLAND_CURSOR_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_EGL_LIBRARY): $(WAYLAND_EGL_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -502,6 +547,7 @@ install: $(TARGETS)
 	cp $(WAYLAND_CLIENT_LIBRARY) $(USERFS_USR_LIB)/libwayland-client.a
 	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
 	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
+	cp $(WAYLAND_EGL_LIBRARY) $(USERFS_USR_LIB)/libwayland-egl.a
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
@@ -515,6 +561,12 @@ install: $(TARGETS)
 		$(USERFS_ROOT)/usr/include/uapi/armos/drm.h
 	cp ../include/uapi/armos/drm_virgl.h \
 		$(USERFS_ROOT)/usr/include/uapi/armos/drm_virgl.h
+	cp include/wayland-egl-core.h \
+		$(USERFS_ROOT)/usr/include/wayland-egl-core.h
+	cp include/wayland-egl-backend.h \
+		$(USERFS_ROOT)/usr/include/wayland-egl-backend.h
+	cp include/wayland-armos-gpu-client-protocol.h \
+		$(USERFS_ROOT)/usr/include/wayland-armos-gpu-client-protocol.h
 	rm -f $(USERFS_USR_BIN)/gpu-info
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test

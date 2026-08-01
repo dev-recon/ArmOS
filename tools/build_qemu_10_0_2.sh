@@ -15,6 +15,30 @@ BUILD_DIR="$WORK_DIR/build"
 PREFIX="${PREFIX:-$WORK_DIR/install}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 PATCH_DIR="$ROOT_DIR/tools/patches/qemu-$QEMU_VERSION"
+INSTALL_DEPS=0
+
+usage() {
+    cat <<'EOF'
+Usage: ./tools/build_qemu_10_0_2.sh [--install-deps]
+
+  --install-deps  Install missing SDL/OpenGL/VirGL host prerequisites first.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --install-deps) INSTALL_DEPS=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ "$INSTALL_DEPS" -eq 1 ]; then
+    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --install
+else
+    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --check
+fi
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -39,32 +63,18 @@ QEMU_CONFIGURE_ARGS=(
     --target-list=arm-softmmu,aarch64-softmmu
     --disable-docs
     --disable-werror
+    --enable-sdl
+    --enable-opengl
+    --enable-virglrenderer
+    --disable-nettle
+    --disable-spice
+    --disable-spice-protocol
 )
-QEMU_REQUIRED_DISPLAY_BACKEND=""
+QEMU_REQUIRED_DISPLAY_BACKEND=sdl
 if [ "$(uname -s)" = "Linux" ]; then
-    if ! pkg-config --exists gtk+-3.0; then
-        echo "error: GTK 3 development files are required for graphical QEMU on Linux" >&2
-        echo "hint: sudo apt install libgtk-3-dev" >&2
-        exit 1
-    fi
-    QEMU_CONFIGURE_ARGS+=(--enable-gtk)
-    QEMU_REQUIRED_DISPLAY_BACKEND=gtk
+    QEMU_CONFIGURE_ARGS+=(--disable-gtk)
 elif [ "$(uname -s)" = "Darwin" ]; then
-    for package in sdl2 epoxy virglrenderer; do
-        if ! pkg-config --exists "$package"; then
-            echo "error: host package '$package' is required for VirGL on macOS" >&2
-            exit 1
-        fi
-    done
-    QEMU_CONFIGURE_ARGS+=(
-        --enable-sdl
-        --enable-opengl
-        --enable-virglrenderer
-        --disable-nettle
-        --disable-spice
-        --disable-spice-protocol
-    )
-    QEMU_REQUIRED_DISPLAY_BACKEND=sdl
+    QEMU_CONFIGURE_ARGS+=(--disable-cocoa)
 fi
 
 mkdir -p "$DOWNLOAD_DIR" "$WORK_DIR"
@@ -127,8 +137,7 @@ for qemu_name in qemu-system-arm qemu-system-aarch64; do
         echo "error: $QEMU_BINARY lacks the required '$QEMU_REQUIRED_DISPLAY_BACKEND' display backend" >&2
         exit 1
     fi
-    if [ "$(uname -s)" = "Darwin" ] &&
-       ! "$QEMU_BINARY" -device help 2>/dev/null |
+    if ! "$QEMU_BINARY" -device help 2>/dev/null |
            grep -q 'name "virtio-gpu-gl-device"'; then
         echo "error: $QEMU_BINARY lacks VirGL support" >&2
         exit 1

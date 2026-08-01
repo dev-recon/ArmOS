@@ -997,6 +997,7 @@ static int sys_open_resolved(task_t *task, char *full_path,
     file_t* net_control_file;
 
     int fd;
+    int drm_error;
 
     /* Suppression du warning unused parameter */
     (void)mode;
@@ -1140,13 +1141,13 @@ static int sys_open_resolved(task_t *task, char *full_path,
                 kfree(full_path);
                 return fd;
             }
-            drm_file = create_armos_drm_device_file(
+            drm_error = create_armos_drm_device_file(
                 drm_node == ARMOS_DRM_NODE_CARD ? "card0" : "renderD128",
-                flags & ~O_CLOEXEC, drm_node);
-            if (!drm_file) {
+                flags & ~O_CLOEXEC, drm_node, &drm_file);
+            if (drm_error < 0) {
                 free_fd(task, fd);
                 kfree(full_path);
-                return -ENODEV;
+                return drm_error;
             }
             task->process->files[fd] = drm_file;
             task->process->fd_flags[fd] = flags & O_CLOEXEC;

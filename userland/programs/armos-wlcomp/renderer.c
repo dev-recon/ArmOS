@@ -9,7 +9,7 @@
  * Layer: Userland / graphical services
  *
  * Responsibilities:
- * - Composite committed Wayland SHM surfaces into an ARGB8888 canvas.
+ * - Composite committed Wayland SHM or GPU surfaces into an ARGB8888 canvas.
  * - Present the canvas through the architecture-neutral framebuffer ABI.
  * - Retain committed pixels independently from client buffer lifetimes.
  *
@@ -105,6 +105,7 @@ static int wl_renderer_try_drm(struct wl_server_renderer *renderer)
         ARMOS_DRM_CAP_CPU_MAPPABLE;
     armos_drm_info_t info;
     armos_drm_bo_create_t create;
+    armos_drm_context_create_t context_create;
     uint64_t size;
     void *mapping;
     int fd;
@@ -172,6 +173,23 @@ static int wl_renderer_try_drm(struct wl_server_renderer *renderer)
     renderer->present_draw_buffer = 0u;
     renderer->direct_present = true;
     renderer->canvas = mapping;
+    if ((info.capabilities &
+         (ARMOS_DRM_CAP_CONTEXTS |
+          ARMOS_DRM_CAP_RESOURCE_TRANSFER |
+          ARMOS_DRM_CAP_SHARED_BUFFERS |
+          ARMOS_DRM_CAP_SYNC_FDS)) ==
+        (ARMOS_DRM_CAP_CONTEXTS |
+         ARMOS_DRM_CAP_RESOURCE_TRANSFER |
+         ARMOS_DRM_CAP_SHARED_BUFFERS |
+         ARMOS_DRM_CAP_SYNC_FDS)) {
+        memset(&context_create, 0, sizeof(context_create));
+        context_create.abi_version = ARMOS_DRM_ABI_VERSION;
+        if (ioctl(fd, ARMOS_DRM_IOCTL_CONTEXT_CREATE,
+                  &context_create) == 0) {
+            renderer->drm_context_id = context_create.context_id;
+            renderer->gpu_buffer_import = true;
+        }
+    }
     return 0;
 }
 
@@ -309,6 +327,15 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
     renderer->mapped_buffers_size = 0u;
     renderer->canvas = NULL;
     if (renderer->drm_fd >= 0) {
+        if (renderer->drm_context_id != 0u) {
+            armos_drm_context_destroy_t context_destroy = {
+                .context_id = renderer->drm_context_id,
+            };
+
+            (void)ioctl(renderer->drm_fd,
+                        ARMOS_DRM_IOCTL_CONTEXT_DESTROY,
+                        &context_destroy);
+        }
         if (renderer->drm_handle != 0u) {
             armos_drm_bo_destroy_t destroy = {
                 .handle = renderer->drm_handle,
@@ -321,6 +348,8 @@ void wl_renderer_destroy(struct wl_server_renderer *renderer)
     }
     renderer->drm_fd = -1;
     renderer->drm_handle = 0u;
+    renderer->drm_context_id = 0u;
+    renderer->gpu_buffer_import = false;
     if (renderer->framebuffer_fd >= 0)
         close(renderer->framebuffer_fd);
     renderer->framebuffer_fd = -1;
@@ -1371,15 +1400,108 @@ static int wl_surface_buffer_valid(const struct wl_server_buffer *buffer)
     uint64_t last_row;
     uint64_t end;
 
-    if (!buffer || !buffer->used || !buffer->pool ||
-        !buffer->pool->used || !buffer->pool->mapping ||
+    if (!buffer || !buffer->used ||
         buffer->width == 0 || buffer->height == 0 ||
         buffer->stride < buffer->width * 4u)
+        return 0;
+    if (buffer->gpu_backed) {
+        last_row = (uint64_t)(buffer->height - 1u) * buffer->stride;
+        end = last_row + (uint64_t)buffer->width * 4u;
+        return buffer->drm_mapping && buffer->drm_size != 0u &&
+            end <= buffer->drm_size &&
+            (uint64_t)buffer->stride * buffer->height <= UINT32_MAX;
+    }
+    if (!buffer->pool || !buffer->pool->used ||
+        !buffer->pool->mapping)
         return 0;
     last_row = (uint64_t)buffer->offset +
                (uint64_t)(buffer->height - 1u) * buffer->stride;
     end = last_row + (uint64_t)buffer->width * 4u;
     return end <= buffer->pool->size;
+}
+
+static int wl_surface_gpu_transfer(
+    struct wl_server_renderer *renderer,
+    const struct wl_server_buffer *buffer)
+{
+    armos_drm_bo_transfer_t transfer;
+
+    if (!renderer || !buffer || !buffer->gpu_backed ||
+        !wl_surface_buffer_valid(buffer))
+        return -1;
+    memset(&transfer, 0, sizeof(transfer));
+    transfer.context_id = renderer->drm_context_id;
+    transfer.handle = buffer->drm_handle;
+    transfer.direction = ARMOS_DRM_TRANSFER_DEVICE_TO_CPU;
+    transfer.width = buffer->width;
+    transfer.height = buffer->height;
+    transfer.depth = 1u;
+    transfer.stride = buffer->stride;
+    transfer.layer_stride = buffer->stride * buffer->height;
+    return ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_TRANSFER, &transfer);
+}
+
+static int wl_surface_acquire_fence_event(
+    int fd, uint32_t mask, void *data)
+{
+    struct wl_server_surface *surface = data;
+    struct wl_server_client *client;
+    struct wl_server *server;
+    struct wl_server_surface *root;
+    struct wl_server_buffer *buffer;
+    struct wl_event_source *source;
+    armos_drm_fence_result_t fence_result;
+    ssize_t count;
+    int result;
+
+    if (!surface || !(client = surface->acquire_client) ||
+        !client->used || !(server = client->server))
+        return 0;
+    source = surface->acquire_fence_source;
+    surface->acquire_fence_source = NULL;
+    if (source)
+        (void)wl_event_source_remove(source);
+    memset(&fence_result, 0, sizeof(fence_result));
+    count = (mask & WL_EVENT_READABLE) != 0u ?
+        read(fd, &fence_result, sizeof(fence_result)) : -1;
+    close(fd);
+    surface->pending_acquire_fence_fd = -1;
+    surface->acquire_fence_source = NULL;
+    surface->acquire_client = NULL;
+    surface->acquire_commit_pending = false;
+    buffer = surface->pending_attach ?
+        surface->pending_buffer : surface->current_buffer;
+    if (count != (ssize_t)sizeof(fence_result) ||
+        fence_result.status != 0 ||
+        (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u ||
+        wl_surface_gpu_transfer(&server->renderer, buffer) < 0) {
+        (void)wl_client_send_error(
+            client, surface->object_id, 3u,
+            "GPU acquire fence or transfer failed");
+        wl_server_disconnect_client(server, client);
+        return 0;
+    }
+    surface->gpu_content_ready = true;
+    root = client->blocked_commit_root ?
+        client->blocked_commit_root : surface;
+    result = wl_surface_apply_commit_tree(server, client, root, true);
+    if (result < 0) {
+        (void)wl_client_send_error(
+            client, surface->object_id, 3u,
+            "deferred GPU surface commit failed");
+        wl_server_disconnect_client(server, client);
+        return 0;
+    }
+    if (result > 0)
+        return 0;
+    if (wl_client_set_dispatch_blocked(client, false) < 0) {
+        wl_server_disconnect_client(server, client);
+        return 0;
+    }
+    if (client->receive_length > 0u &&
+        wl_server_defer_client_dispatch(client) < 0)
+        wl_server_disconnect_client(server, client);
+    return 0;
 }
 
 static int wl_surface_content_origin(
@@ -1435,6 +1557,8 @@ int wl_surface_release_buffer(struct wl_server_client *client,
                               struct wl_server_surface *surface)
 {
     struct wl_server_buffer *buffer;
+    struct wl_server_object *manager;
+    uint32_t buffer_id;
 
     if (!client || !surface || !surface->buffer_held)
         return 0;
@@ -1442,6 +1566,17 @@ int wl_surface_release_buffer(struct wl_server_client *client,
     surface->buffer_held = false;
     if (!buffer || !buffer->object_alive)
         return 0;
+    if (buffer->gpu_backed) {
+        manager = wl_client_find_object(
+            client, buffer->manager_object_id);
+        if (manager &&
+            manager->type == WL_SERVER_OBJECT_ARMOS_GPU_BUFFER_MANAGER) {
+            buffer_id = buffer->object_id;
+            if (wl_client_send_words(
+                    client, manager->id, 1u, &buffer_id, 1u) < 0)
+                return -1;
+        }
+    }
     return wl_client_send_words(client, buffer->object_id, 0u, NULL, 0u);
 }
 
@@ -1465,6 +1600,37 @@ int wl_surface_commit(struct wl_server *server,
 
     if (!server || !client || !surface)
         return -1;
+    content_changed = surface->pending_attach ||
+        surface->pending_damage_count != 0u;
+    buffer = surface->pending_attach ?
+        surface->pending_buffer : surface->current_buffer;
+    if (surface->pending_acquire_fence_fd >= 0 &&
+        (!buffer || !buffer->gpu_backed || !content_changed))
+        return -1;
+    if (buffer && buffer->gpu_backed && content_changed &&
+        !surface->gpu_content_ready) {
+        if (surface->pending_acquire_fence_fd < 0 ||
+            surface->acquire_fence_source ||
+            surface->acquire_commit_pending)
+            return -1;
+        surface->acquire_client = client;
+        surface->acquire_commit_pending = true;
+        surface->acquire_fence_source = wl_event_loop_add_fd(
+            server->event_loop, surface->pending_acquire_fence_fd,
+            WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+            wl_surface_acquire_fence_event, surface);
+        if (!surface->acquire_fence_source ||
+            wl_client_set_dispatch_blocked(client, true) < 0) {
+            if (surface->acquire_fence_source)
+                (void)wl_event_source_remove(
+                    surface->acquire_fence_source);
+            surface->acquire_fence_source = NULL;
+            surface->acquire_client = NULL;
+            surface->acquire_commit_pending = false;
+            return -1;
+        }
+        return 1;
+    }
     for (size_t pending_index = 0u;
          pending_index < WL_SERVER_MAX_CALLBACKS; pending_index++) {
         struct wl_server_callback *pending =
@@ -1508,10 +1674,6 @@ int wl_surface_commit(struct wl_server *server,
             previous_origin_valid = true;
         }
     }
-    content_changed = surface->pending_attach ||
-        surface->pending_damage_count != 0u;
-    buffer = surface->pending_attach ?
-        surface->pending_buffer : surface->current_buffer;
     full_copy = surface->pending_damage_count == 0u;
     if (surface->pending_attach) {
         surface->pending_attach = false;
@@ -1551,8 +1713,9 @@ int wl_surface_commit(struct wl_server *server,
                  (int32_t)WL_WINDOW_TITLE_HEIGHT : 0);
         surface->resize_from_left = false;
         surface->resize_from_top = false;
-        surface->pixels = (uint32_t *)(void *)(
-            buffer->pool->mapping + buffer->offset);
+        surface->pixels = buffer->gpu_backed ?
+            (uint32_t *)(void *)buffer->drm_mapping :
+            (uint32_t *)(void *)(buffer->pool->mapping + buffer->offset);
         surface->pixels_pitch = buffer->stride / sizeof(uint32_t);
         if (!same_extent)
             full_copy = true;
@@ -1611,6 +1774,7 @@ int wl_surface_commit(struct wl_server *server,
         }
     }
     surface->pending_damage_count = 0u;
+    surface->gpu_content_ready = false;
     for (size_t index = 0; index < WL_SERVER_MAX_CALLBACKS; index++) {
         if (surface->callbacks[index].used) {
             callback_pending = true;
@@ -1620,7 +1784,7 @@ int wl_surface_commit(struct wl_server *server,
     if (callback_pending && !content_changed &&
         wl_server_schedule_render(server, false) < 0)
         return -1;
-    wl_client_reclaim_shm(client);
+    wl_client_reclaim_buffers(client);
     return 0;
 }
 

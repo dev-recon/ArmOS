@@ -36,11 +36,12 @@ int armos_drm_backend_register(const armos_drm_backend_ops_t *ops,
 bool armos_drm_device_available(void);
 armos_drm_node_t armos_drm_node_from_path(const char *path);
 void fill_armos_drm_device_stat(struct stat *st, armos_drm_node_t node);
-file_t *create_armos_drm_device_file(const char *name, int flags,
-                                     armos_drm_node_t node);
+int create_armos_drm_device_file(const char *name, int flags,
+                                 armos_drm_node_t node, file_t **out_file);
 int armos_drm_device_ioctl(file_t *file, uint32_t request, uintptr_t arg);
 void *armos_drm_map_fd(int fd, void *hint, size_t length,
                        uint32_t vma_flags, uint64_t offset);
 void armos_drm_fence_complete(uint64_t fence_id, int status);
+bool armos_drm_fence_file_read_ready(file_t *file);
 
 #endif /* _KERNEL_DRM_H */

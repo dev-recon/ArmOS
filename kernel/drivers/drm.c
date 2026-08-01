@@ -27,10 +27,21 @@
 #include <kernel/string.h>
 #include <kernel/syscalls.h>
 #include <kernel/timer.h>
+#include <kernel/vfs.h>
 #include <uapi/armos/drm.h>
 
 typedef char armos_drm_bo_create_abi_size_must_remain_64[
     sizeof(armos_drm_bo_create_t) == 64u ? 1 : -1];
+typedef char armos_drm_bo_export_abi_size_must_remain_32[
+    sizeof(armos_drm_bo_export_t) == 32u ? 1 : -1];
+typedef char armos_drm_bo_import_abi_size_must_remain_72[
+    sizeof(armos_drm_bo_import_t) == 72u ? 1 : -1];
+typedef char armos_drm_bo_set_metadata_abi_size_must_remain_40[
+    sizeof(armos_drm_bo_set_metadata_t) == 40u ? 1 : -1];
+typedef char armos_drm_fence_export_abi_size_must_remain_32[
+    sizeof(armos_drm_fence_export_t) == 32u ? 1 : -1];
+typedef char armos_drm_fence_result_abi_size_must_remain_8[
+    sizeof(armos_drm_fence_result_t) == 8u ? 1 : -1];
 
 #define DEV_DRI_CARD0_RDEV      0xE200u
 #define DEV_DRI_RENDER128_RDEV  0xE280u
@@ -49,7 +60,10 @@ typedef struct armos_drm_buffer {
     paddr_t *pages;
     uint32_t page_count;
     uint32_t mapping_count;
-    bool owner_released;
+    uint32_t owner_count;
+    uint32_t export_count;
+    bool retired;
+    bool cleanup_complete;
     bool backend_created;
     uint32_t command_descriptor_size;
     uint8_t command_descriptor[ARMOS_DRM_MAX_RESOURCE_DESCRIPTOR_SIZE];
@@ -65,6 +79,9 @@ typedef struct armos_drm_fence {
     uint64_t id;
     int status;
     bool completed;
+    uint32_t owner_count;
+    uint32_t export_count;
+    bool retired;
 } armos_drm_fence_t;
 
 typedef struct armos_drm_file_state {
@@ -91,14 +108,40 @@ static uint32_t drm_next_buffer_handle = 1u;
 static uint64_t drm_next_fence_id = 1u;
 static armos_drm_buffer_t *drm_buffers[ARMOS_DRM_MAX_GLOBAL_BUFFERS];
 static armos_drm_fence_t *drm_fences[ARMOS_DRM_MAX_FENCES];
+static armos_drm_file_state_t *drm_card_owner;
 
 static int armos_drm_file_close(file_t *file);
+static int armos_drm_bo_file_close(file_t *file);
+static int armos_drm_fence_file_close(file_t *file);
+static ssize_t armos_drm_fence_file_read(file_t *file, void *buffer,
+                                         size_t count);
+static void drm_unregister_buffer(armos_drm_buffer_t *buffer);
 
 static file_operations_t drm_file_ops = {
     .read = NULL,
     .write = NULL,
     .open = NULL,
     .close = armos_drm_file_close,
+    .lseek = NULL,
+    .readdir = NULL,
+    .truncate = NULL,
+};
+
+static file_operations_t drm_bo_file_ops = {
+    .read = NULL,
+    .write = NULL,
+    .open = NULL,
+    .close = armos_drm_bo_file_close,
+    .lseek = NULL,
+    .readdir = NULL,
+    .truncate = NULL,
+};
+
+static file_operations_t drm_fence_file_ops = {
+    .read = armos_drm_fence_file_read,
+    .write = NULL,
+    .open = NULL,
+    .close = armos_drm_fence_file_close,
     .lseek = NULL,
     .readdir = NULL,
     .truncate = NULL,
@@ -215,22 +258,101 @@ static void drm_buffer_put_mapping(uintptr_t cookie)
     spin_lock(&buffer->lock);
     if (buffer->mapping_count != 0)
         buffer->mapping_count--;
-    release = buffer->owner_released && buffer->mapping_count == 0;
+    release = buffer->retired && buffer->cleanup_complete &&
+              buffer->mapping_count == 0;
     spin_unlock(&buffer->lock);
     if (release)
         drm_buffer_free(buffer);
 }
 
-static void drm_buffer_release_owner(armos_drm_buffer_t *buffer)
+static void drm_buffer_retire(armos_drm_buffer_t *buffer)
 {
+    const armos_drm_backend_ops_t *ops;
+    void *context;
     bool release;
 
+    if (!buffer)
+        return;
+    drm_backend_snapshot(&ops, &context);
+    if (buffer->backend_created && ops && ops->buffer_destroy) {
+        (void)ops->buffer_destroy(context, buffer->handle);
+        buffer->backend_created = false;
+    }
+    drm_unregister_buffer(buffer);
     spin_lock(&buffer->lock);
-    buffer->owner_released = true;
+    buffer->cleanup_complete = true;
     release = buffer->mapping_count == 0;
     spin_unlock(&buffer->lock);
     if (release)
         drm_buffer_free(buffer);
+}
+
+static int drm_buffer_add_owner(armos_drm_buffer_t *buffer)
+{
+    int result = 0;
+
+    if (!buffer)
+        return -EINVAL;
+    spin_lock(&buffer->lock);
+    if (buffer->retired || buffer->owner_count == 0xffffffffu)
+        result = buffer->retired ? -ENOENT : -EOVERFLOW;
+    else
+        buffer->owner_count++;
+    spin_unlock(&buffer->lock);
+    return result;
+}
+
+static void drm_buffer_drop_owner(armos_drm_buffer_t *buffer)
+{
+    bool retire = false;
+
+    if (!buffer)
+        return;
+    spin_lock(&buffer->lock);
+    if (buffer->owner_count != 0)
+        buffer->owner_count--;
+    if (!buffer->retired && buffer->owner_count == 0 &&
+        buffer->export_count == 0) {
+        buffer->retired = true;
+        retire = true;
+    }
+    spin_unlock(&buffer->lock);
+    if (retire)
+        drm_buffer_retire(buffer);
+}
+
+static int drm_buffer_add_export(armos_drm_buffer_t *buffer)
+{
+    int result = 0;
+
+    if (!buffer)
+        return -EINVAL;
+    spin_lock(&buffer->lock);
+    if (buffer->retired || buffer->export_count == 0xffffffffu)
+        result = buffer->retired ? -ENOENT : -EOVERFLOW;
+    else
+        buffer->export_count++;
+    spin_unlock(&buffer->lock);
+    return result;
+}
+
+static void drm_buffer_drop_export(armos_drm_buffer_t *buffer)
+{
+    bool retire = false;
+
+    if (!buffer)
+        return;
+    spin_lock(&buffer->lock);
+    if (buffer->export_count != 0)
+        buffer->export_count--;
+    if (!buffer->retired && buffer->owner_count == 0 &&
+        buffer->export_count == 0) {
+        buffer->retired = true;
+        retire = true;
+    }
+    spin_unlock(&buffer->lock);
+    if (retire)
+        drm_buffer_retire(buffer);
 }
 
 static int drm_register_buffer(armos_drm_buffer_t *buffer)
@@ -290,19 +412,64 @@ static void drm_unregister_buffer(armos_drm_buffer_t *buffer)
     spin_unlock(&drm_lock);
 }
 
-static void drm_unregister_fence(armos_drm_fence_t *fence)
+static bool drm_fence_retire_locked(armos_drm_fence_t *fence)
 {
+    if (fence && !fence->retired && fence->owner_count == 0 &&
+        fence->export_count == 0) {
+        for (uint32_t index = 0; index < ARMOS_DRM_MAX_FENCES; index++) {
+            if (drm_fences[index] == fence) {
+                drm_fences[index] = NULL;
+                fence->retired = true;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static void drm_fence_drop_owner(armos_drm_fence_t *fence)
+{
+    bool release;
+
     if (!fence)
         return;
     spin_lock(&drm_lock);
-    for (uint32_t index = 0; index < ARMOS_DRM_MAX_FENCES; index++) {
-        if (drm_fences[index] == fence) {
-            drm_fences[index] = NULL;
-            break;
-        }
-    }
+    if (fence->owner_count != 0)
+        fence->owner_count--;
+    release = drm_fence_retire_locked(fence);
     spin_unlock(&drm_lock);
-    kfree(fence);
+    if (release)
+        kfree(fence);
+}
+
+static int drm_fence_add_export(armos_drm_fence_t *fence)
+{
+    int result = 0;
+
+    if (!fence)
+        return -EINVAL;
+    spin_lock(&drm_lock);
+    if (fence->retired || fence->export_count == 0xffffffffu)
+        result = fence->retired ? -ENOENT : -EOVERFLOW;
+    else
+        fence->export_count++;
+    spin_unlock(&drm_lock);
+    return result;
+}
+
+static void drm_fence_drop_export(armos_drm_fence_t *fence)
+{
+    bool release;
+
+    if (!fence)
+        return;
+    spin_lock(&drm_lock);
+    if (fence->export_count != 0)
+        fence->export_count--;
+    release = drm_fence_retire_locked(fence);
+    spin_unlock(&drm_lock);
+    if (release)
+        kfree(fence);
 }
 
 static uint64_t drm_divide_u64_u32(uint64_t dividend, uint32_t divisor)
@@ -406,29 +573,32 @@ void fill_armos_drm_device_stat(struct stat *st, armos_drm_node_t node)
     st->st_ctime = now;
 }
 
-file_t *create_armos_drm_device_file(const char *name, int flags,
-                                     armos_drm_node_t node)
+int create_armos_drm_device_file(const char *name, int flags,
+                                 armos_drm_node_t node, file_t **out_file)
 {
     file_t *file;
     inode_t *inode;
     armos_drm_file_state_t *state;
     struct stat st;
 
+    if (!out_file)
+        return -EINVAL;
+    *out_file = NULL;
     if (!armos_drm_device_available() || node == ARMOS_DRM_NODE_INVALID)
-        return NULL;
+        return -ENODEV;
     file = create_file();
     if (!file)
-        return NULL;
+        return -ENOMEM;
     inode = create_inode();
     if (!inode) {
         kfree(file);
-        return NULL;
+        return -ENOMEM;
     }
     state = kmalloc(sizeof(*state));
     if (!state) {
         put_inode(inode);
         kfree(file);
-        return NULL;
+        return -ENOMEM;
     }
     memset(state, 0, sizeof(*state));
     state->node = node;
@@ -449,7 +619,123 @@ file_t *create_armos_drm_device_file(const char *name, int flags,
         strncpy(file->name, name, sizeof(file->name) - 1u);
         file->name[sizeof(file->name) - 1u] = '\0';
     }
+    if (node == ARMOS_DRM_NODE_CARD) {
+        spin_lock(&drm_lock);
+        if (drm_card_owner) {
+            spin_unlock(&drm_lock);
+            file->private_data = NULL;
+            put_inode(inode);
+            kfree(state);
+            kfree(file);
+            return -EBUSY;
+        }
+        drm_card_owner = state;
+        spin_unlock(&drm_lock);
+    }
+    *out_file = file;
+    return 0;
+}
+
+static file_t *drm_buffer_create_export_file(armos_drm_buffer_t *buffer)
+{
+    file_t *file;
+    int result;
+
+    result = drm_buffer_add_export(buffer);
+    if (result < 0)
+        return NULL;
+    file = create_file();
+    if (!file) {
+        drm_buffer_drop_export(buffer);
+        return NULL;
+    }
+    file->f_op = &drm_bo_file_ops;
+    file->flags = O_RDWR;
+    file->type = FILE_TYPE_DRM_BO;
+    file->private_data = buffer;
+    strncpy(file->name, "drm-bo", sizeof(file->name) - 1u);
     return file;
+}
+
+static int armos_drm_bo_file_close(file_t *file)
+{
+    armos_drm_buffer_t *buffer = file ? file->private_data : NULL;
+
+    if (!buffer)
+        return 0;
+    file->private_data = NULL;
+    drm_buffer_drop_export(buffer);
+    return 0;
+}
+
+static file_t *drm_fence_create_export_file(armos_drm_fence_t *fence)
+{
+    file_t *file;
+    int result;
+
+    result = drm_fence_add_export(fence);
+    if (result < 0)
+        return NULL;
+    file = create_file();
+    if (!file) {
+        drm_fence_drop_export(fence);
+        return NULL;
+    }
+    file->f_op = &drm_fence_file_ops;
+    file->flags = O_RDONLY;
+    file->type = FILE_TYPE_DRM_FENCE;
+    file->private_data = fence;
+    strncpy(file->name, "drm-fence", sizeof(file->name) - 1u);
+    return file;
+}
+
+static int armos_drm_fence_file_close(file_t *file)
+{
+    armos_drm_fence_t *fence = file ? file->private_data : NULL;
+
+    if (!fence)
+        return 0;
+    file->private_data = NULL;
+    drm_fence_drop_export(fence);
+    return 0;
+}
+
+bool armos_drm_fence_file_read_ready(file_t *file)
+{
+    armos_drm_fence_t *fence = file ? file->private_data : NULL;
+    bool ready;
+
+    if (!fence || file->type != FILE_TYPE_DRM_FENCE)
+        return false;
+    spin_lock(&drm_lock);
+    ready = fence->completed;
+    spin_unlock(&drm_lock);
+    return ready;
+}
+
+static ssize_t armos_drm_fence_file_read(file_t *file, void *buffer,
+                                         size_t count)
+{
+    armos_drm_fence_t *fence = file ? file->private_data : NULL;
+    armos_drm_fence_result_t result;
+
+    if (!fence || !buffer || count != sizeof(result))
+        return -EINVAL;
+    while (1) {
+        spin_lock(&drm_lock);
+        if (fence->completed) {
+            result.status = fence->status;
+            result.flags = 0;
+            spin_unlock(&drm_lock);
+            memcpy(buffer, &result, sizeof(result));
+            return (ssize_t)sizeof(result);
+        }
+        spin_unlock(&drm_lock);
+        if ((file->flags & O_NONBLOCK) != 0)
+            return -EAGAIN;
+        if (task_poll_wait_once() != 0)
+            return -EINTR;
+    }
 }
 
 static int armos_drm_file_close(file_t *file)
@@ -490,18 +776,21 @@ static int armos_drm_file_close(file_t *file)
         armos_drm_buffer_t *buffer =
             state->buffers[state->buffer_count - 1u];
 
-        if (buffer->backend_created && ops && ops->buffer_destroy)
-            (void)ops->buffer_destroy(context, buffer->handle);
-        drm_unregister_buffer(buffer);
         state->buffer_count--;
-        drm_buffer_release_owner(buffer);
+        drm_buffer_drop_owner(buffer);
     }
     while (state->fence_count != 0) {
         armos_drm_fence_t *fence =
             state->fences[state->fence_count - 1u];
 
         state->fence_count--;
-        drm_unregister_fence(fence);
+        drm_fence_drop_owner(fence);
+    }
+    if (state->node == ARMOS_DRM_NODE_CARD) {
+        spin_lock(&drm_lock);
+        if (drm_card_owner == state)
+            drm_card_owner = NULL;
+        spin_unlock(&drm_lock);
     }
     file->private_data = NULL;
     kfree(state);
@@ -532,6 +821,10 @@ static int armos_drm_get_info(uintptr_t arg)
     info.struct_size = sizeof(info);
     info.backend_class = backend_info.backend_class;
     info.capabilities = backend_info.capabilities;
+    if (info.capabilities & ARMOS_DRM_CAP_BUFFER_OBJECTS)
+        info.capabilities |= ARMOS_DRM_CAP_SHARED_BUFFERS;
+    if (info.capabilities & ARMOS_DRM_CAP_FENCES)
+        info.capabilities |= ARMOS_DRM_CAP_SYNC_FDS;
     info.scanout_count = backend_info.scanout_count;
     info.scanout_width = backend_info.scanout_width;
     info.scanout_height = backend_info.scanout_height;
@@ -768,11 +1061,13 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     result = drm_state_acquire(state);
     if (result < 0)
         return result;
-    if ((request.flags & ARMOS_DRM_BO_SCANOUT) != 0 &&
-        state->node != ARMOS_DRM_NODE_CARD) {
-        result = -EACCES;
-        goto out;
-    }
+    /*
+     * Render clients may allocate exportable buffers whose layout is
+     * compatible with scanout.  ARMOS_DRM_BO_SCANOUT describes that buffer
+     * capability; it does not grant display ownership.  Actual presentation
+     * remains restricted to the privileged card node in
+     * armos_drm_bo_present().
+     */
     if (state->buffer_count >= ARMOS_DRM_MAX_FILE_BUFFERS) {
         result = -EMFILE;
         goto out;
@@ -809,6 +1104,7 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
         goto failed;
     }
     init_spinlock_named(&buffer->lock, "armos_drm_bo");
+    buffer->owner_count = 1u;
     result = drm_register_buffer(buffer);
     if (result < 0)
         goto failed;
@@ -858,11 +1154,11 @@ static int armos_drm_bo_create(file_t *file, uintptr_t arg)
     request.reserved0 = 0;
     if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
         state->buffer_count--;
-        (void)ops->buffer_destroy(context, buffer->handle);
-        buffer->backend_created = false;
-        drm_unregister_buffer(buffer);
         result = -EFAULT;
-        goto failed;
+        drm_buffer_drop_owner(buffer);
+        kfree(segments);
+        drm_state_release(state);
+        return result;
     }
     kfree(segments);
     drm_state_release(state);
@@ -884,10 +1180,8 @@ out:
 static int armos_drm_bo_destroy(file_t *file, uintptr_t arg)
 {
     armos_drm_file_state_t *state = file->private_data;
-    const armos_drm_backend_ops_t *ops;
     armos_drm_bo_destroy_t request;
     armos_drm_buffer_t *buffer;
-    void *context;
     uint32_t index;
     int result;
 
@@ -909,17 +1203,9 @@ static int armos_drm_bo_destroy(file_t *file, uintptr_t arg)
             goto out;
         }
     }
-    drm_backend_snapshot(&ops, &context);
-    if (buffer->backend_created && ops && ops->buffer_destroy) {
-        result = ops->buffer_destroy(context, buffer->handle);
-        if (result < 0)
-            goto out;
-        buffer->backend_created = false;
-    }
-    drm_unregister_buffer(buffer);
     state->buffers[index] = state->buffers[state->buffer_count - 1u];
     state->buffer_count--;
-    drm_buffer_release_owner(buffer);
+    drm_buffer_drop_owner(buffer);
     result = 0;
 out:
     drm_state_release(state);
@@ -952,6 +1238,192 @@ static int armos_drm_bo_map_info(file_t *file, uintptr_t arg)
         -EFAULT : 0;
 out:
     drm_state_release(state);
+    return result;
+}
+
+static int armos_drm_bo_set_metadata(file_t *file, uintptr_t arg)
+{
+    armos_drm_file_state_t *state = file->private_data;
+    armos_drm_bo_set_metadata_t request;
+    armos_drm_buffer_t *buffer;
+    uint64_t minimum_stride;
+    uint64_t minimum_size;
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if (request.abi_version != ARMOS_DRM_ABI_VERSION ||
+        request.flags != 0 || request.width == 0 || request.height == 0 ||
+        (request.format != ARMOS_DRM_FORMAT_BGRA8888 &&
+         request.format != ARMOS_DRM_FORMAT_RGBA8888))
+        return -EINVAL;
+    for (uint32_t index = 0; index < 3u; index++) {
+        if (request.reserved[index] != 0)
+            return -EINVAL;
+    }
+    minimum_stride = (uint64_t)request.width * 4u;
+    minimum_size = (uint64_t)request.stride * request.height;
+    if (request.stride < minimum_stride || minimum_size < minimum_stride)
+        return -EINVAL;
+
+    result = drm_state_acquire(state);
+    if (result < 0)
+        return result;
+    buffer = drm_state_find_buffer(state, request.handle, NULL);
+    if (!buffer) {
+        result = -ENOENT;
+        goto out;
+    }
+    spin_lock(&buffer->lock);
+    if (buffer->desc.width != 0 || buffer->desc.height != 0 ||
+        buffer->desc.stride != 0 ||
+        buffer->desc.format != ARMOS_DRM_FORMAT_NONE) {
+        result = buffer->desc.width == request.width &&
+                 buffer->desc.height == request.height &&
+                 buffer->desc.stride == request.stride &&
+                 buffer->desc.format == request.format ? 0 : -EBUSY;
+    } else if (buffer->export_count != 0) {
+        result = -EBUSY;
+    } else if (minimum_size > buffer->desc.size) {
+        result = -E2BIG;
+    } else {
+        buffer->desc.width = request.width;
+        buffer->desc.height = request.height;
+        buffer->desc.stride = request.stride;
+        buffer->desc.format = request.format;
+        result = 0;
+    }
+    spin_unlock(&buffer->lock);
+out:
+    drm_state_release(state);
+    return result;
+}
+
+static int armos_drm_bo_export(file_t *file, uintptr_t arg)
+{
+    armos_drm_file_state_t *state = file->private_data;
+    armos_drm_bo_export_t request;
+    armos_drm_buffer_t *buffer;
+    file_t *export_file = NULL;
+    task_t *task = task_current_local();
+    int descriptor = -1;
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if ((request.flags & ~ARMOS_DRM_SHARE_VALID_FLAGS) != 0)
+        return -EINVAL;
+    for (uint32_t index = 0; index < 5u; index++) {
+        if (request.reserved[index] != 0)
+            return -EINVAL;
+    }
+    if (!task || !task->process)
+        return -ESRCH;
+
+    result = drm_state_acquire(state);
+    if (result < 0)
+        return result;
+    buffer = drm_state_find_buffer(state, request.handle, NULL);
+    if (!buffer) {
+        result = -ENOENT;
+        goto out;
+    }
+    export_file = drm_buffer_create_export_file(buffer);
+    if (!export_file) {
+        result = -ENOMEM;
+        goto out;
+    }
+    descriptor = vfs_install_file(
+        task, export_file,
+        (request.flags & ARMOS_DRM_SHARE_CLOEXEC) ? O_CLOEXEC : 0u);
+    if (descriptor < 0) {
+        close_file(export_file);
+        export_file = NULL;
+        result = descriptor;
+        goto out;
+    }
+    request.fd = descriptor;
+    memset(request.reserved, 0, sizeof(request.reserved));
+    if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
+        export_file = vfs_take_file(task, descriptor);
+        close_file(export_file);
+        result = -EFAULT;
+        goto out;
+    }
+    result = 0;
+out:
+    drm_state_release(state);
+    return result;
+}
+
+static int armos_drm_bo_import(file_t *file, uintptr_t arg)
+{
+    armos_drm_file_state_t *state = file->private_data;
+    armos_drm_bo_import_t request;
+    armos_drm_buffer_t *buffer;
+    file_t *export_file;
+    task_t *task = task_current_local();
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if (request.abi_version != ARMOS_DRM_ABI_VERSION ||
+        request.flags != 0 || request.bo_flags != 0)
+        return -EINVAL;
+    for (uint32_t index = 0; index < 4u; index++) {
+        if (request.reserved[index] != 0)
+            return -EINVAL;
+    }
+    if (!task || !task->process)
+        return -ESRCH;
+    export_file = vfs_get_file_from_fd(task, request.fd);
+    if (!export_file)
+        return -EBADF;
+    if (export_file->type != FILE_TYPE_DRM_BO ||
+        !export_file->private_data) {
+        close_file(export_file);
+        return -EINVAL;
+    }
+    buffer = export_file->private_data;
+
+    result = drm_state_acquire(state);
+    if (result < 0) {
+        close_file(export_file);
+        return result;
+    }
+    if (state->buffer_count >= ARMOS_DRM_MAX_FILE_BUFFERS) {
+        result = -EMFILE;
+        goto out;
+    }
+    if (drm_state_find_buffer(state, buffer->handle, NULL)) {
+        result = -EEXIST;
+        goto out;
+    }
+    result = drm_buffer_add_owner(buffer);
+    if (result < 0)
+        goto out;
+    state->buffers[state->buffer_count++] = buffer;
+
+    request.handle = buffer->handle;
+    request.command_handle = buffer->command_handle;
+    request.width = buffer->desc.width;
+    request.height = buffer->desc.height;
+    request.stride = buffer->desc.stride;
+    request.format = buffer->desc.format;
+    request.bo_flags = buffer->desc.flags;
+    request.size = buffer->desc.size;
+    request.map_offset = (uint64_t)buffer->handle * PAGE_SIZE;
+    memset(request.reserved, 0, sizeof(request.reserved));
+    if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
+        state->buffer_count--;
+        drm_buffer_drop_owner(buffer);
+        result = -EFAULT;
+        goto out;
+    }
+    result = 0;
+out:
+    drm_state_release(state);
+    close_file(export_file);
     return result;
 }
 
@@ -1288,6 +1760,7 @@ static int armos_drm_submit(file_t *file, uintptr_t arg)
         result = -ENOMEM;
         goto out;
     }
+    fence->owner_count = 1u;
     spin_lock(&drm_lock);
     fence_id = drm_next_fence_id++;
     if (drm_next_fence_id == 0)
@@ -1314,14 +1787,14 @@ static int armos_drm_submit(file_t *file, uintptr_t arg)
                          request.command_size, fence_id);
     if (result < 0) {
         state->fence_count--;
-        drm_unregister_fence(fence);
+        drm_fence_drop_owner(fence);
         fence = NULL;
         goto out;
     }
     request.fence_id = fence_id;
     if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
         state->fence_count--;
-        drm_unregister_fence(fence);
+        drm_fence_drop_owner(fence);
         fence = NULL;
         result = -EFAULT;
     }
@@ -1413,8 +1886,69 @@ static int armos_drm_fence_destroy(file_t *file, uintptr_t arg)
     drm_state_release(state);
     if (!fence)
         return -ENOENT;
-    drm_unregister_fence(fence);
+    drm_fence_drop_owner(fence);
     return 0;
+}
+
+static int armos_drm_fence_export(file_t *file, uintptr_t arg)
+{
+    armos_drm_file_state_t *state = file->private_data;
+    armos_drm_fence_export_t request;
+    armos_drm_fence_t *fence = NULL;
+    file_t *export_file = NULL;
+    task_t *task = task_current_local();
+    int descriptor = -1;
+    int result;
+
+    if (!arg || copy_from_user(&request, (void *)arg, sizeof(request)) < 0)
+        return -EFAULT;
+    if ((request.flags & ~ARMOS_DRM_SHARE_VALID_FLAGS) != 0)
+        return -EINVAL;
+    for (uint32_t index = 0; index < 4u; index++) {
+        if (request.reserved[index] != 0)
+            return -EINVAL;
+    }
+    if (!task || !task->process)
+        return -ESRCH;
+
+    result = drm_state_acquire(state);
+    if (result < 0)
+        return result;
+    for (uint32_t index = 0; index < state->fence_count; index++) {
+        if (state->fences[index]->id == request.fence_id) {
+            fence = state->fences[index];
+            break;
+        }
+    }
+    if (!fence) {
+        result = -ENOENT;
+        goto out;
+    }
+    export_file = drm_fence_create_export_file(fence);
+    if (!export_file) {
+        result = -ENOMEM;
+        goto out;
+    }
+    descriptor = vfs_install_file(
+        task, export_file,
+        (request.flags & ARMOS_DRM_SHARE_CLOEXEC) ? O_CLOEXEC : 0u);
+    if (descriptor < 0) {
+        close_file(export_file);
+        result = descriptor;
+        goto out;
+    }
+    request.fd = descriptor;
+    memset(request.reserved, 0, sizeof(request.reserved));
+    if (copy_to_user((void *)arg, &request, sizeof(request)) < 0) {
+        export_file = vfs_take_file(task, descriptor);
+        close_file(export_file);
+        result = -EFAULT;
+        goto out;
+    }
+    result = 0;
+out:
+    drm_state_release(state);
+    return result;
 }
 
 void *armos_drm_map_fd(int fd, void *hint, size_t length,
@@ -1529,6 +2063,14 @@ int armos_drm_device_ioctl(file_t *file, uint32_t request, uintptr_t arg)
         return armos_drm_get_command_caps(arg);
     case ARMOS_DRM_IOCTL_BO_TRANSFER:
         return armos_drm_bo_transfer(file, arg);
+    case ARMOS_DRM_IOCTL_BO_EXPORT:
+        return armos_drm_bo_export(file, arg);
+    case ARMOS_DRM_IOCTL_BO_IMPORT:
+        return armos_drm_bo_import(file, arg);
+    case ARMOS_DRM_IOCTL_FENCE_EXPORT:
+        return armos_drm_fence_export(file, arg);
+    case ARMOS_DRM_IOCTL_BO_SET_METADATA:
+        return armos_drm_bo_set_metadata(file, arg);
     default:
         return -ENOTTY;
     }

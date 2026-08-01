@@ -71,6 +71,7 @@
 #define WL_GLOBAL_XDG_OUTPUT  8u
 #define WL_GLOBAL_XDG_DECORATION 9u
 #define WL_GLOBAL_ARMOS_SHELL    10u
+#define WL_GLOBAL_ARMOS_GPU_BUFFER 11u
 
 #define WL_SHM_FORMAT_ARGB8888 0u
 #define WL_SHM_FORMAT_XRGB8888 1u
@@ -104,6 +105,7 @@ enum wl_server_object_type {
     WL_SERVER_OBJECT_XDG_SURFACE,
     WL_SERVER_OBJECT_XDG_TOPLEVEL,
     WL_SERVER_OBJECT_XDG_POPUP,
+    WL_SERVER_OBJECT_ARMOS_GPU_BUFFER_MANAGER,
     WL_SERVER_OBJECT_ARMOS_SHELL,
     WL_SERVER_OBJECT_ARMOS_SHELL_PANEL,
     WL_SERVER_OBJECT_XDG_DECORATION_MANAGER,
@@ -196,6 +198,12 @@ struct wl_server_buffer {
     uint32_t height;
     uint32_t stride;
     uint32_t format;
+    bool gpu_backed;
+    uint32_t manager_object_id;
+    uint32_t drm_handle;
+    uint32_t drm_command_handle;
+    uint8_t *drm_mapping;
+    size_t drm_size;
 };
 
 struct wl_server_callback {
@@ -236,6 +244,11 @@ struct wl_server_surface {
     struct wl_server_buffer *pending_buffer;
     struct wl_server_buffer *current_buffer;
     bool pending_attach;
+    int pending_acquire_fence_fd;
+    struct wl_event_source *acquire_fence_source;
+    struct wl_server_client *acquire_client;
+    bool acquire_commit_pending;
+    bool gpu_content_ready;
     bool mapped;
     bool opaque;
     bool buffer_held;
@@ -309,6 +322,8 @@ struct wl_server_client {
     struct wl_event_source *event_source;
     struct wl_event_source *dispatch_idle;
     struct wl_server *server;
+    bool dispatch_blocked;
+    struct wl_server_surface *blocked_commit_root;
     uint8_t receive[WL_SERVER_MAX_RECEIVE];
     size_t receive_length;
     int pending_fds[WL_SERVER_MAX_PENDING_FDS];
@@ -342,6 +357,8 @@ struct wl_server_renderer {
     int framebuffer_fd;
     int drm_fd;
     uint32_t drm_handle;
+    uint32_t drm_context_id;
+    bool gpu_buffer_import;
     struct armos_fb_info framebuffer;
     uint32_t *canvas;
     size_t canvas_size;
@@ -436,6 +453,8 @@ int wl_client_send_fd_words(struct wl_server_client *client,
                             uint32_t object_id, uint16_t opcode,
                             const uint32_t *words, size_t word_count, int fd);
 int wl_client_flush_output(struct wl_server_client *client);
+int wl_client_set_dispatch_blocked(struct wl_server_client *client,
+                                   bool blocked);
 int wl_client_send_string(struct wl_server_client *client,
                           uint32_t object_id, uint16_t opcode,
                           const char *text);
@@ -474,6 +493,7 @@ int wl_server_receive_client(struct wl_server *server,
                              struct wl_server_client *client);
 int wl_server_dispatch_client_pending(struct wl_server *server,
                                       struct wl_server_client *client);
+int wl_server_defer_client_dispatch(struct wl_server_client *client);
 void wl_server_disconnect_client(struct wl_server *server,
                                  struct wl_server_client *client);
 
@@ -508,9 +528,13 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage);
 int wl_surface_commit(struct wl_server *server,
                       struct wl_server_client *client,
                       struct wl_server_surface *surface);
+int wl_surface_apply_commit_tree(
+    struct wl_server *server, struct wl_server_client *client,
+    struct wl_server_surface *surface, bool commit_surface);
 int wl_surface_release_buffer(struct wl_server_client *client,
                               struct wl_server_surface *surface);
-void wl_client_reclaim_shm(struct wl_server_client *client);
+void wl_client_reclaim_buffers(struct wl_server_client *client);
+void wl_client_destroy_buffers(struct wl_server_client *client);
 int wl_server_handle_input(struct wl_server *server);
 int wl_server_send_keymap(struct wl_server *server,
                           struct wl_server_client *client,

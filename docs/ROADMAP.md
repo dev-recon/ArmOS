@@ -102,11 +102,16 @@ opaque command handles, bounded command-capability blobs and explicit
 CPU/device transfers. The qemu-virt backend translates these operations to the
 selected VirGL capset without leaking VirtIO details into common code.
 `libarmos-virgl-winsys` validates the complete lifecycle with a real off-screen
-triangle, fence wait, readback and pixel verification. The next milestone is
-the reproducible minimal Mesa/Gallium VirGL port; explicit EGL/Wayland buffer
-exchange, accelerated composition and the common Raylib GLES2 port follow.
-VC4/V3D remains a platform implementation behind the same object and
-synchronization model.
+triangle, fence wait, readback and pixel verification. The reproducible
+Mesa/Gallium VirGL port and explicit EGL/Wayland buffer exchange are now
+implemented. The accelerated-compositor provider contract and its ArmGL
+primitives are in place. Its explicit begin/draw/fence/present/end lifecycle
+now rotates three provider-owned outputs without rendering into the active
+scanout. The next milestone is switching the complete scene (SHM and GPU
+clients, decorations, pointer and output) atomically to that provider before
+starting the common Raylib GLES2 port. VC4/V3D remains a platform
+implementation behind the
+same object and synchronization model.
 
 ### ArmUI And Desktop Applications
 

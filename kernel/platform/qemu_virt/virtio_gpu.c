@@ -93,7 +93,8 @@
 #define PIPE_BIND_INDEX_BUFFER                 (1u << 5)
 #define PIPE_BIND_CONSTANT_BUFFER              (1u << 6)
 #define PIPE_BIND_DISPLAY_TARGET               (1u << 7)
-#define PIPE_BIND_SHADER_BUFFER                (1u << 19)
+#define VIRGL_BIND_SHADER_BUFFER               (1u << 14)
+#define VIRGL_BIND_SCANOUT                     (1u << 18)
 #define VIRTIO_GPU_CONTEXT_NAME_LENGTH         64u
 
 #define VIRTIO_GPU_CFG_NUM_SCANOUTS            (VIRTIO_MMIO_CONFIG + 0x08)
@@ -406,9 +407,8 @@ static int virtio_gpu_backend_buffer_create(
     if (desc->width != 0 &&
         desc->format != ARMOS_DRM_FORMAT_BGRA8888)
         return -ENOTSUP;
-    if ((desc->flags & ARMOS_DRM_BO_SCANOUT) != 0) {
-        if (command_descriptor_size != 0)
-            return -EINVAL;
+    if ((desc->flags & ARMOS_DRM_BO_SCANOUT) != 0 &&
+        command_descriptor_size == 0) {
         if (desc->width == 0 || desc->height == 0 ||
             desc->stride != desc->width * sizeof(uint32_t))
             return -EINVAL;
@@ -426,6 +426,9 @@ static int virtio_gpu_backend_buffer_create(
         gpu_fill_hdr(&create.hdr, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D);
         create.resource_id = resource_id;
         if (command_descriptor_size != 0) {
+            if ((desc->flags & ARMOS_DRM_BO_SCANOUT) != 0 &&
+                (resource_desc.bind & VIRGL_BIND_SCANOUT) == 0)
+                return -EINVAL;
             create.target = resource_desc.target;
             create.format = resource_desc.format;
             create.bind = resource_desc.bind;
@@ -461,7 +464,7 @@ static int virtio_gpu_backend_buffer_create(
             if (desc->flags & ARMOS_DRM_BO_CONSTANT)
                 create.bind |= PIPE_BIND_CONSTANT_BUFFER;
             if (desc->flags & ARMOS_DRM_BO_SHADER_STORAGE)
-                create.bind |= PIPE_BIND_SHADER_BUFFER;
+                create.bind |= VIRGL_BIND_SHADER_BUFFER;
             /*
              * A command/staging BO is not consumed as a Gallium resource,
              * but VirtIO-GPU still requires a legal bind when the common BO
@@ -1069,6 +1072,7 @@ void virtio_gpu_irq_handler(void)
 {
     virtio_gpu_ctrl_hdr_t *response;
     uint64_t fence_id = 0;
+    uint32_t response_type = 0;
     uint16_t new_used_idx = 0;
     uint32_t irq_status;
     int status = -EIO;
@@ -1102,6 +1106,7 @@ void virtio_gpu_irq_handler(void)
     arch_invalidate_dcache_by_mva(gpu_async_resp_dma,
                                   gpu_async.response_size);
     response = (virtio_gpu_ctrl_hdr_t *)gpu_async_resp_dma;
+    response_type = response->type;
     if (response->type == VIRTIO_GPU_RESP_OK_NODATA)
         status = 0;
     fence_id = gpu_async.fence_id;
@@ -1110,6 +1115,9 @@ void virtio_gpu_irq_handler(void)
     gpu_owner = NULL;
     spin_unlock_irqrestore(&gpu_lock, flags);
 
+    if (status != 0)
+        KERROR("virtio_gpu: async fence=%llu response=0x%08X\n",
+               (unsigned long long)fence_id, response_type);
     armos_drm_fence_complete(fence_id, status);
 }
 
@@ -1501,17 +1509,25 @@ static int virtio_gpu_backend_buffer_present(
         scanout_id >= (gpu.num_scanouts ? gpu.num_scanouts : 1u))
         return -EINVAL;
     memset(&transfer, 0, sizeof(transfer));
-    gpu_fill_hdr(&transfer.hdr, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D);
     transfer.r.x = x;
     transfer.r.y = y;
     transfer.r.width = width;
     transfer.r.height = height;
-    transfer.offset = (uint64_t)y * desc->stride +
-                      (uint64_t)x * sizeof(uint32_t);
     transfer.resource_id = resource_id;
-    if (gpu_submit_simple(&transfer, sizeof(transfer),
-                          "drm_transfer_to_host_2d") < 0)
-        return -EIO;
+    /*
+     * CPU-backed scanouts are RESOURCE_CREATE_2D objects and require an
+     * explicit upload. A render-target scanout is a VirGL 3D resource: its
+     * preceding command stream already produced the host contents, so a 2D
+     * transfer would be both invalid and redundant.
+     */
+    if ((desc->flags & ARMOS_DRM_BO_RENDER_TARGET) == 0) {
+        gpu_fill_hdr(&transfer.hdr, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D);
+        transfer.offset = (uint64_t)y * desc->stride +
+                          (uint64_t)x * sizeof(uint32_t);
+        if (gpu_submit_simple(&transfer, sizeof(transfer),
+                              "drm_transfer_to_host_2d") < 0)
+            return -EIO;
+    }
     if (gpu.scanout_resource_id != resource_id &&
         gpu_set_scanout_resource(scanout_id, resource_id,
                                  desc->width, desc->height) < 0)

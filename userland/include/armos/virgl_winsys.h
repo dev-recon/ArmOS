@@ -69,6 +69,16 @@ int armos_virgl_buffer_map(armos_virgl_device_t *device,
 int armos_virgl_buffer_unmap(armos_virgl_buffer_t *buffer);
 int armos_virgl_buffer_destroy(armos_virgl_device_t *device,
                                armos_virgl_buffer_t *buffer);
+int armos_virgl_buffer_set_metadata(armos_virgl_device_t *device,
+                                    armos_virgl_buffer_t *buffer,
+                                    uint32_t width, uint32_t height,
+                                    uint32_t stride, uint32_t format);
+int armos_virgl_buffer_export(armos_virgl_device_t *device,
+                              const armos_virgl_buffer_t *buffer,
+                              int cloexec);
+int armos_virgl_buffer_import(armos_virgl_device_t *device,
+                              armos_virgl_buffer_t *buffer,
+                              int shared_fd);
 int armos_virgl_buffer_attach(armos_virgl_device_t *device,
                               uint32_t context_id,
                               const armos_virgl_buffer_t *buffer);
@@ -89,6 +99,8 @@ int armos_virgl_submit(armos_virgl_device_t *device, uint32_t context_id,
                        uint64_t *fence_id);
 int armos_virgl_fence_wait(armos_virgl_device_t *device, uint64_t fence_id,
                            int64_t timeout_ns);
+int armos_virgl_fence_export(armos_virgl_device_t *device,
+                             uint64_t fence_id, int cloexec);
 int armos_virgl_fence_destroy(armos_virgl_device_t *device,
                               uint64_t fence_id);
 

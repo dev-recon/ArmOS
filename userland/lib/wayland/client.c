@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <armos-shell-client-protocol.h>
 #include <wayland-client.h>
+#include <wayland-armos-gpu-client-protocol.h>
 #include <xdg-shell-client-protocol.h>
 
 #define WL_CLIENT_MAX_OBJECTS     512u
@@ -121,6 +122,7 @@ struct xdg_toplevel { struct wl_proxy proxy; };
 struct xdg_popup { struct wl_proxy proxy; };
 struct armos_shell_v1 { struct wl_proxy proxy; };
 struct armos_shell_panel_v1 { struct wl_proxy proxy; };
+struct armos_gpu_buffer_manager_v1 { struct wl_proxy proxy; };
 
 static const struct wl_message wl_compositor_methods[] = {
     {"create_surface", "n", NULL},
@@ -256,6 +258,15 @@ static const struct wl_message armos_shell_methods[] = {
 static const struct wl_message armos_shell_panel_methods[] = {
     {"destroy", "", NULL},
 };
+static const struct wl_message armos_gpu_buffer_manager_methods[] = {
+    {"create_buffer", "nh", NULL},
+    {"set_acquire_fence", "oh", NULL},
+    {"destroy", "", NULL},
+};
+static const struct wl_message armos_gpu_buffer_manager_events[] = {
+    {"fenced_release", "oh", NULL},
+    {"immediate_release", "o", NULL},
+};
 
 const struct wl_interface wl_display_interface = {
     "wl_display", 1, 2, NULL, 2, NULL
@@ -299,6 +310,12 @@ const struct wl_interface wl_shm_pool_interface = {
 
 const struct wl_interface wl_buffer_interface = {
     "wl_buffer", 1, 1, wl_buffer_methods, 1, NULL
+};
+
+const struct wl_interface armos_gpu_buffer_manager_v1_interface = {
+    "armos_gpu_buffer_manager_v1", 1, 3,
+    armos_gpu_buffer_manager_methods, 2,
+    armos_gpu_buffer_manager_events
 };
 
 const struct wl_interface wl_seat_interface = {
@@ -1232,6 +1249,11 @@ const char *wl_proxy_get_class(struct wl_proxy *proxy)
     return proxy && proxy->interface ? proxy->interface->name : "wl_display";
 }
 
+struct wl_display *wl_proxy_get_display(struct wl_proxy *proxy)
+{
+    return proxy ? proxy->display : NULL;
+}
+
 struct wl_registry *wl_display_get_registry(struct wl_display *display)
 {
     struct wl_registry *registry;
@@ -1584,6 +1606,64 @@ void wl_buffer_destroy(struct wl_buffer *buffer)
     (void)wl_send_words(buffer->proxy.display, buffer->proxy.id, 0u,
                         NULL, 0u);
     wl_proxy_destroy(&buffer->proxy);
+}
+
+int armos_gpu_buffer_manager_v1_add_listener(
+    struct armos_gpu_buffer_manager_v1 *manager,
+    const struct armos_gpu_buffer_manager_v1_listener *listener,
+    void *data)
+{
+    return manager ?
+        wl_proxy_add_listener(&manager->proxy,
+                              (void (**)(void))listener, data) : -1;
+}
+
+struct wl_buffer *armos_gpu_buffer_manager_v1_create_buffer(
+    struct armos_gpu_buffer_manager_v1 *manager, int buffer_fd)
+{
+    struct wl_buffer *buffer;
+    uint32_t words[1];
+
+    if (!manager || buffer_fd < 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    buffer = (struct wl_buffer *)wl_proxy_allocate(
+        &manager->proxy, sizeof(*buffer), &wl_buffer_interface, 1u);
+    if (!buffer)
+        return NULL;
+    words[0] = buffer->proxy.id;
+    if (wl_send_fd_words(manager->proxy.display, manager->proxy.id,
+                         0u, words, 1u, buffer_fd) < 0) {
+        wl_proxy_destroy(&buffer->proxy);
+        return NULL;
+    }
+    return buffer;
+}
+
+int armos_gpu_buffer_manager_v1_set_acquire_fence(
+    struct armos_gpu_buffer_manager_v1 *manager,
+    struct wl_surface *surface, int fence_fd)
+{
+    uint32_t words[1];
+
+    if (!manager || !surface || fence_fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    words[0] = surface->proxy.id;
+    return wl_send_fd_words(manager->proxy.display, manager->proxy.id,
+                            1u, words, 1u, fence_fd);
+}
+
+void armos_gpu_buffer_manager_v1_destroy(
+    struct armos_gpu_buffer_manager_v1 *manager)
+{
+    if (!manager)
+        return;
+    (void)wl_send_words(manager->proxy.display, manager->proxy.id,
+                        2u, NULL, 0u);
+    wl_proxy_destroy(&manager->proxy);
 }
 
 int wl_surface_add_listener(struct wl_surface *surface,
@@ -2468,6 +2548,52 @@ static struct wl_surface *wl_event_surface(struct wl_display *display,
         (struct wl_surface *)proxy : NULL;
 }
 
+static struct wl_buffer *wl_event_buffer(struct wl_display *display,
+                                         uint32_t id)
+{
+    struct wl_proxy *proxy = wl_proxy_find(display, id);
+
+    return wl_proxy_is(proxy, &wl_buffer_interface) ?
+        (struct wl_buffer *)proxy : NULL;
+}
+
+static int wl_dispatch_armos_gpu_buffer_manager_event(
+    struct wl_proxy *proxy, uint16_t opcode,
+    const uint8_t *payload, size_t size)
+{
+    const struct armos_gpu_buffer_manager_v1_listener *listener =
+        (const struct armos_gpu_buffer_manager_v1_listener *)proxy->listener;
+    struct wl_buffer *buffer;
+
+    if (size != sizeof(uint32_t) ||
+        !(buffer = wl_event_buffer(proxy->display,
+                                   wl_load_u32(payload))))
+        return -1;
+    if (opcode == 0u) {
+        int fd = wl_display_take_fd(proxy->display);
+
+        if (fd < 0)
+            return -1;
+        if (listener && listener->fenced_release)
+            listener->fenced_release(
+                proxy->listener_data,
+                (struct armos_gpu_buffer_manager_v1 *)proxy,
+                buffer, fd);
+        else
+            close(fd);
+        return 0;
+    }
+    if (opcode == 1u) {
+        if (listener && listener->immediate_release)
+            listener->immediate_release(
+                proxy->listener_data,
+                (struct armos_gpu_buffer_manager_v1 *)proxy,
+                buffer);
+        return 0;
+    }
+    return -1;
+}
+
 static int wl_dispatch_seat_event(struct wl_proxy *proxy, uint16_t opcode,
                                   const uint8_t *payload, size_t size)
 {
@@ -3284,6 +3410,10 @@ static int wl_display_dispatch_event(struct wl_display *display,
             listener->release(proxy->listener_data,
                               (struct wl_buffer *)proxy);
         result = 0;
+    } else if (wl_proxy_is(
+                   proxy, &armos_gpu_buffer_manager_v1_interface)) {
+        result = wl_dispatch_armos_gpu_buffer_manager_event(
+            proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_seat_interface)) {
         result = wl_dispatch_seat_event(proxy, opcode, payload, size);
     } else if (wl_proxy_is(proxy, &wl_pointer_interface)) {

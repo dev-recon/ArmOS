@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "pipe/p_state.h"
+#include "frontend/winsys_handle.h"
 #include "util/os_time.h"
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
@@ -146,9 +147,19 @@ static uint32_t armos_bo_flags(uint32_t bind)
       flags |= ARMOS_DRM_BO_CONSTANT;
    if (bind & VIRGL_BIND_SHADER_BUFFER)
       flags |= ARMOS_DRM_BO_SHADER_STORAGE;
+   if (bind & VIRGL_BIND_SCANOUT)
+      flags |= ARMOS_DRM_BO_SCANOUT;
    if ((flags & ~(ARMOS_DRM_BO_CPU_READ | ARMOS_DRM_BO_CPU_WRITE)) == 0)
       flags |= ARMOS_DRM_BO_COMMAND;
    return flags;
+}
+
+static uint32_t armos_drm_format(enum pipe_format format)
+{
+   if (format == PIPE_FORMAT_BGRA8888_UNORM ||
+       format == PIPE_FORMAT_BGRX8888_UNORM)
+      return ARMOS_DRM_FORMAT_BGRA8888;
+   return 0;
 }
 
 static int armos_transfer(struct virgl_winsys *base,
@@ -264,6 +275,101 @@ static struct virgl_hw_res *armos_resource_create(
    resource->size = size;
    winsys->live_resources++;
    return resource;
+}
+
+static struct virgl_hw_res *armos_resource_create_from_handle(
+   struct virgl_winsys *base, struct winsys_handle *handle,
+   struct pipe_resource *templ, uint32_t *plane, uint32_t *stride,
+   uint32_t *plane_offset, uint64_t *modifier, uint32_t *blob_mem)
+{
+   struct virgl_armos_winsys *winsys = armos_winsys(base);
+   struct virgl_hw_res *resource;
+   uint32_t expected_format;
+   uint32_t required_flags;
+   uint64_t required_size;
+
+   if (!handle || !templ || handle->type != WINSYS_HANDLE_TYPE_FD ||
+       (int)handle->handle < 0)
+      return NULL;
+   resource = calloc(1, sizeof(*resource));
+   if (!resource)
+      return NULL;
+   if (armos_virgl_buffer_import(&winsys->device, &resource->buffer,
+                                 (int)handle->handle) < 0)
+      goto fail;
+
+   expected_format = armos_drm_format(templ->format);
+   required_flags = armos_bo_flags(templ->bind) &
+      ~(ARMOS_DRM_BO_CPU_READ | ARMOS_DRM_BO_CPU_WRITE |
+        ARMOS_DRM_BO_COMMAND);
+   required_size = (uint64_t)resource->buffer.stride * templ->height0;
+   if (!expected_format || !templ->width0 || !templ->height0 ||
+       templ->width0 > UINT32_MAX / 4u ||
+       resource->buffer.width != templ->width0 ||
+       resource->buffer.height != templ->height0 ||
+       resource->buffer.stride < templ->width0 * 4u ||
+       (handle->stride && resource->buffer.stride != handle->stride) ||
+       resource->buffer.format != expected_format ||
+       (resource->buffer.flags & required_flags) != required_flags ||
+       required_size > resource->buffer.size ||
+       armos_virgl_buffer_attach(&winsys->device, winsys->context_id,
+                                 &resource->buffer) < 0)
+      goto fail;
+   pipe_reference_init(&resource->reference, 1);
+   resource->format = templ->format;
+   resource->bind = templ->bind;
+   resource->size = resource->buffer.size > UINT32_MAX ?
+                    UINT32_MAX : (uint32_t)resource->buffer.size;
+   winsys->live_resources++;
+   if (plane)
+      *plane = 0;
+   if (stride)
+      *stride = resource->buffer.stride;
+   if (plane_offset)
+      *plane_offset = 0;
+   if (modifier)
+      *modifier = 0;
+   if (blob_mem)
+      *blob_mem = 0;
+   return resource;
+
+fail:
+   if (resource->buffer.handle != 0)
+      (void)armos_virgl_buffer_destroy(&winsys->device,
+                                       &resource->buffer);
+   free(resource);
+   return NULL;
+}
+
+static bool armos_resource_get_handle(struct virgl_winsys *base,
+                                      struct virgl_hw_res *resource,
+                                      uint32_t stride,
+                                      struct winsys_handle *handle)
+{
+   struct virgl_armos_winsys *winsys = armos_winsys(base);
+   uint32_t drm_format;
+   int fd;
+
+   if (!resource || !handle || handle->type != WINSYS_HANDLE_TYPE_FD)
+      return false;
+   drm_format = armos_drm_format(resource->format);
+   if (!drm_format)
+      return false;
+   if (!stride ||
+       armos_virgl_buffer_set_metadata(
+          &winsys->device, &resource->buffer,
+          resource->buffer.width, resource->buffer.height,
+          stride, drm_format) < 0)
+      return false;
+   fd = armos_virgl_buffer_export(&winsys->device, &resource->buffer, 1);
+   if (fd < 0)
+      return false;
+   handle->handle = (unsigned)fd;
+   handle->stride = stride ? stride : resource->buffer.stride;
+   handle->offset = 0;
+   handle->modifier = 0;
+   handle->size = resource->buffer.size;
+   return true;
 }
 
 static void *armos_resource_map(struct virgl_winsys *base,
@@ -472,6 +578,25 @@ static int armos_get_caps(struct virgl_winsys *base,
    if (size > sizeof(caps->caps))
       size = sizeof(caps->caps);
    memcpy(&caps->caps, winsys->device.command_caps, size);
+
+   /*
+    * Capsets describe the host renderer, while Gallium consumes the
+    * intersection of host and guest-winsys capabilities.  ArmOS currently
+    * implements the classic transfer_put/transfer_get callbacks, not VirGL's
+    * command-buffer encoded transfer protocol.  Advertising the latter would
+    * make Mesa select its copy-transfer staging path without initializing the
+    * staging manager (supports_encoded_transfers remains false).
+    *
+    * Keep this filtering at the winsys boundary: neither the common DRM ABI
+    * nor the VirtIO-GPU backend should pretend that a userspace Mesa adapter
+    * implements commands which it does not yet encode.
+    */
+   if (!base->supports_encoded_transfers) {
+      caps->caps.v2.capability_bits &=
+         ~(VIRGL_CAP_TRANSFER | VIRGL_CAP_COPY_TRANSFER);
+      caps->caps.v2.capability_bits_v2 &=
+         ~VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;
+   }
    return 0;
 }
 
@@ -504,10 +629,14 @@ static void armos_fence_server_sync(struct virgl_winsys *base,
 static int armos_fence_get_fd(struct virgl_winsys *base,
                               struct pipe_fence_handle *fence)
 {
+   struct virgl_armos_fence *armos = armos_fence(fence);
+
    (void)base;
-   (void)fence;
-   errno = ENOTSUP;
-   return -1;
+   if (!armos) {
+      errno = EINVAL;
+      return -1;
+   }
+   return armos_virgl_fence_export(armos->device, armos->id, 1);
 }
 
 static int armos_get_fd(struct virgl_winsys *base)
@@ -565,6 +694,9 @@ struct virgl_winsys *virgl_armos_winsys_create(const char *render_node)
    winsys->base.transfer_put = armos_transfer_put;
    winsys->base.transfer_get = armos_transfer_get;
    winsys->base.resource_create = armos_resource_create;
+   winsys->base.resource_create_from_handle =
+      armos_resource_create_from_handle;
+   winsys->base.resource_get_handle = armos_resource_get_handle;
    winsys->base.resource_reference = armos_resource_reference;
    winsys->base.resource_map = armos_resource_map;
    winsys->base.resource_wait = armos_resource_wait;
@@ -581,7 +713,12 @@ struct virgl_winsys *virgl_armos_winsys_create(const char *render_node)
    winsys->base.fence_server_sync = armos_fence_server_sync;
    winsys->base.fence_get_fd = armos_fence_get_fd;
    winsys->base.flush_frontbuffer = armos_flush_frontbuffer;
-   /* ArmOS fences are native objects, not Linux sync-file descriptors. */
+   /*
+    * fence_get_fd() supports the outgoing half of the contract.  Gallium's
+    * supports_fences flag covers both import and export, while ArmOS does not
+    * expose FENCE_IMPORT yet.  Keep the aggregate capability disabled until
+    * cs_create_fence() can consume an imported descriptor as well.
+    */
    winsys->base.supports_fences = 0;
    winsys->base.supports_encoded_transfers = 0;
    winsys->base.supports_coherent = 0;

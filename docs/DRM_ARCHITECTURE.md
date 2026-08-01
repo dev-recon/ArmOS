@@ -41,15 +41,63 @@ Raylib state belongs in the kernel.
 ## Device nodes
 
 - `/dev/dri/card0` is the privileged modeset/scanout node. It is root-only so
-  ordinary clients cannot take over the display.
+  ordinary clients cannot take over the display. Its open file description is
+  exclusive: one compositor owns display policy until its last reference is
+  closed.
 - `/dev/dri/renderD128` is the unprivileged render node. It never grants
   modeset authority.
+
+`ARMOS_DRM_BO_SCANOUT` describes a buffer layout capability, not an authority
+to display it.  A render-node client may create such a buffer and export it to
+the compositor.  Only a card-node file can issue `BO_PRESENT`, so the
+privileged compositor remains the sole owner of scanout policy.
+
+GPU resources that cross a process or display boundary are marked shared when
+they are created.  This freezes their backing and layout before the first
+render, prevents Mesa/VirGL from substituting a private staging allocation,
+and makes later FD export deterministic.  Scanout resources are necessarily
+exportable; EGL swapchain images declare the same property explicitly.
+Compositor outputs use the canonical BGRA8888 scanout format.  ArmGL validates
+the complete render-target, shared and scanout bind set against Gallium before
+allocating the resource, rather than deferring an unsupported combination to
+the first drawing command.
+ArmGL accepts both Gallium surface models: drivers may return an owned view
+through `create_surface`, while current VirGL consumes the embedded
+`pipe_surface` view directly.  Rendering primitives do not require an optional
+driver callback merely to describe a synchronous render target.
+
+Direct-presentation diagnostics must therefore run with the compositor
+stopped. Opening `card0` while a compositor owns it fails with `EBUSY`; this
+prevents a test or another root process from stealing scanout or restoring a
+stale framebuffer when it exits.
 
 Both nodes use the same object ABI. Context handles belong to the open file
 description, survive descriptor duplication, and are destroyed by the common
 DRM core when the last reference closes. Command submissions are size-bounded
 and copied into kernel ownership before reaching a backend. Fence identifiers
 are monotonic and scoped to that open file.
+
+Buffer and fence identifiers deliberately remain local to one DRM file. Their
+only cross-process representation is a capability descriptor created by
+`BO_EXPORT` or `FENCE_EXPORT` and transferred with the normal descriptor
+passing contract. `BO_IMPORT` creates a new owner in the receiving DRM file;
+it never exposes or guesses another client's local handle. Descriptor creation
+flags such as `CLOEXEC` therefore apply to `BO_EXPORT`; `BO_IMPORT` creates no
+descriptor and requires its reserved flags to remain zero. Export descriptors,
+local owners and active mappings hold independent references. Backend resource
+destruction therefore occurs only after the last owner and export descriptor
+have gone away, while physical pages additionally remain alive until the last
+mapping is released.
+
+An exported fence descriptor is pollable. It becomes readable only after the
+backend completes the corresponding submission, and one fixed-size read
+returns the completion status. Completion uses the common poll notification
+path, so EGL, Wayland and the compositor can block without periodic timer
+wakeups. These descriptors provide the outgoing half of the role served by a
+Linux sync-file while keeping an independent ArmOS ABI. Gallium's aggregate
+native-fence capability remains disabled until the common DRM contract also
+supports importing such a descriptor; exporting a completed submission does
+not falsely imply support for incoming fences.
 
 ## Current milestone
 
@@ -74,6 +122,18 @@ operations without exposing VirtIO transport details. This is deliberately a
 small dependency-free layer suitable for a later Mesa winsys; it is not a
 partial Gallium state tracker.
 
+`drm-info` also verifies the inter-process primitives through two independent
+DRM file descriptions. It publishes image metadata, exports the BO, verifies
+that this layout is immutable but can be republished idempotently, then imports
+and maps it through the second render node and checks both metadata and shared
+contents. It separately exports a submitted fence and validates event-driven
+`poll()` plus its completion result. The expected lines are:
+
+```text
+fence-smoke: sync fd poll/read signaled
+buffer-share-smoke: immutable metadata and mmap verified
+```
+
 Mesa's next architecture-neutral layer is the ArmGL Gallium frontend. It owns
 the `pipe_frontend_screen`, GLES state-tracker contexts and off-screen color,
 depth and stencil attachments. Surface allocation is lazy, resize invalidates
@@ -83,10 +143,34 @@ created and therefore works unchanged with VirGL and the future VC4/V3D
 backend. EGL, Wayland buffers, window policy and presentation remain above it.
 
 The frontend compiles as Mesa's `libarmgl.a` with both ArmOS ARM32 and ARM64
-ABIs. This milestone validates the common state-tracker lifecycle; it does not
-yet install `libEGL.a` or `libGLESv2.a`. The following lot adds a surfaceless
-EGL driver and pbuffer triangle/readback test before any native Wayland window
-surface is introduced.
+ABIs. The ArmOS EGL driver adds an architecture-neutral platform layer above
+it: OpenGL ES 2 contexts, surfaceless operation, pbuffer surfaces and native
+Wayland window surfaces. EGL display, context and surface references keep
+their Gallium screen alive across `eglTerminate`, including resources that
+remain current. The ArmOS pipe loader selects the concrete Gallium provider
+from the render node's negotiated capabilities and command set, so EGL
+contains no VirGL, VirtIO, VC4 or architecture-specific selection logic.
+Mesa generates static `libEGL.a` and `libGLESv2.a` targets for this platform.
+
+`libwayland-egl.a` implements the conventional opaque `wl_egl_window`
+contract. Configure dimensions are published with a generation-protected
+snapshot so a render thread never observes a mixed width/height pair. The EGL
+window backend owns a three-image swapchain. Each image is exported as a BO
+capability descriptor, imported by the compositor and committed with an
+acquire-fence descriptor. An image is not reused until the compositor reports
+an immediate release or its release fence signals. Resize allocates images for
+the new dimensions only after old images become reusable; it never mutates a
+busy image in place.
+
+Image layout metadata is published once, after Gallium has finalized the
+stride and before the BO is exported. Width, height, stride and format are
+then immutable, so every importer validates and observes the same layout.
+
+The current compositor maps an imported GPU buffer and performs an explicit
+device-to-CPU transfer before its existing damage-based software composition.
+This validates GPU rendering, cross-process ownership and synchronization but
+does not yet accelerate composition. The later renderer may emit fenced
+releases while retaining the same client protocol and swapchain lifecycle.
 
 Command sets may require resource metadata that does not belong in the common
 BO model. `BO_CREATE` therefore accepts a size-bounded opaque resource
@@ -163,6 +247,42 @@ render its UI with VirGL. The raw protocol smoke test validates the kernel and
 winsys lifecycle; Mesa/Gallium remains responsible for the production command
 encoder and graphics API.
 
+The production GPU-composition boundary is now explicit. The compositor core
+knows only `gpu_backend.h`: output creation, image import/allocation, damaged
+SHM upload, solid fill, clipped blit and explicit flush fences. The Mesa-side
+provider implements this contract over ArmGL and is emitted as
+`libarmos-wlcomp-gpu.a`; concrete Gallium provider selection remains behind
+the render-node command-set negotiation. A build without that provider keeps
+the same compositor sources and selects the software renderer. This separation
+also gives the future VC4/V3D provider the same lifecycle without introducing
+Raspberry Pi conditionals in common compositor code.
+
+The provider is linked in a second, explicit build stage after Mesa. Its
+factory is retained deliberately from the static archive rather than relying
+on a weak reference to pull it from the linker. Software-only profiles still
+link the base compositor without Mesa. `gpu_present.c` owns the other side of
+the boundary: it exports the provider output, imports it into the common card
+node, waits on the render fence and presents the resulting BO. It has no
+knowledge of the selected command set or platform.
+
+Provider frames follow one strict lifecycle: begin, draw, flush/export,
+fence wait, import/present and end. Three provider-owned scanout resources are
+rotated through that lifecycle. The presenter imports each slot lazily and
+retains exactly one card-node handle per slot, so rendering never overwrites
+the resource currently scanned out. A failed frame still closes every shared
+descriptor and ends the transaction; no half-open frame can poison the next
+submission.
+
+ArmGL output resources may now request scanout at creation. VirGL translates
+that generic bind into a scanout-capable 3D resource, while CPU-created legacy
+scanouts remain 2D resources. Presentation of a GPU render target flushes and
+selects the resource directly; it must not issue the CPU upload command used by
+the legacy path. `armgl-import-smoke` covers external import, rectangle blit,
+alpha blending, CPU damage upload, solid fill, render-target rebinding and an
+exportable scanout resource. Activation in `armos-wlcomp` follows only after
+all scene layers use this contract, so z-order, pointer and decorations never
+fall into a partial hybrid renderer.
+
 Raspberry Pi continues to use the firmware framebuffer and therefore does not
 expose DRM nodes until its native backend is present.
 
@@ -192,8 +312,16 @@ the Cocoa backend does not expose OpenGL to QEMU. The repository-local QEMU can
 be built reproducibly with:
 
 ```sh
-./tools/build_qemu_10_0_2.sh
+./tools/build_qemu_10_0_2.sh --install-deps
 ```
+
+The optional installation step provisions the supported Homebrew or apt
+packages. Without it, the build remains read-only with respect to the host and
+reports every missing tool or pkg-config module. Both macOS and Linux builds
+use SDL2, OpenGL, libepoxy and virglrenderer; the build deliberately disables
+Nettle so an unrelated or incompatible host Nettle release cannot change the
+configuration. See [QEMU 10.0.2 VirGL host](QEMU_VIRGL_HOST.md) for the exact
+contract.
 
 The build helper validates SDL, OpenGL, VirGL and the QEMU firmware data
 directory before installing the runtime under `build/qemu-10.0.2/install`.
@@ -226,14 +354,28 @@ negotiated. After boot, validate both layers:
 ```sh
 drm-info
 virgl-smoke
+egl-smoke
+armgl-import-smoke
+armgl-compositor-smoke
+egl-wayland-smoke
 ```
 
 This milestone makes genuine VirGL contexts, typed resources, explicit
 transfers and asynchronous fences available to userland, and validates them
-with an off-screen draw/readback test. The desktop remains software-composited
-until Mesa/Gallium is connected to
-`libarmos-virgl-winsys`; running through `virtio-gpu-gl-device` alone must not
-be described as GPU-accelerated window composition.
+with off-screen draw/readback, cross-context image import and visible Wayland
+swapchain tests. A successful external-image test prints:
+
+```text
+armgl-import-smoke: import, upload, fill, alpha and render target verified
+armgl-compositor-smoke: three GPU buffers exported, fenced and presented
+```
+
+The compositor pipeline smoke validates a complete provider frame through
+cross-node BO sharing and copy-free presentation. The desktop remains
+software-composited until the compositor renders its
+damage rectangles through the imported Gallium images; running through
+`virtio-gpu-gl-device` alone must not be described as GPU-accelerated window
+composition.
 
 The qemu-virt scanout geometry is not compiled into the common framebuffer.
 The launcher passes `GPU_XRES` and `GPU_YRES` to VirtIO-GPU, then the platform
@@ -257,22 +399,57 @@ deterministic console fallback.
 
 ## Next milestones
 
-1. Cross-build a minimal Mesa containing Gallium VirGL, EGL and OpenGL ES 2
-   only. The first slice is now present: Mesa's `struct virgl_winsys` is
+1. The minimal Mesa and EGL/Wayland milestone is complete for ARM64
+   qemu-virt: Gallium VirGL, surfaceless and Wayland EGL, and OpenGL ES 2 are
+   built as static target libraries.
+   Mesa's `struct virgl_winsys` is
    implemented by `userland/opt/mesa/armos/virgl_armos_winsys.c` on top of
    `libarmos-virgl-winsys`, with typed resources, mapping, transfers, command
    relocation references and native ArmOS fence lifetimes. The common ArmGL
-   frontend now supplies GLES state-tracker contexts and pbuffer attachments
-   without depending on the selected GPU. Both layers are compiled against
-   Mesa 25.3.6 headers with the ARM32 and ARM64 target compilers by
-   `tools/check_mesa_virgl_adapter.sh`. The remaining part of this milestone
-   is the reproducible Mesa static build and the ArmOS EGL platform glue.
-2. Extend the Wayland contract with explicit GPU buffer exchange and
-   acquire/release fences, then use it for EGL window surfaces.
-3. Import client GPU buffers into the compositor and compose textured damage
-   rectangles before copy-free DRM presentation.
-4. Port Raylib on the common EGL/OpenGL ES 2 path.
-5. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
+   frontend supplies GLES state-tracker contexts and pbuffer attachments
+   without depending on the selected GPU. The EGL adapter owns Mesa object
+   lifetime and exposes GLES2 without introducing a hardware dependency.
+   These layers are compiled against Mesa 25.3.6 headers with the
+   ARM32 and ARM64 target compilers by `tools/check_mesa_virgl_adapter.sh`.
+   `tools/build_mesa.sh` produces the reproducible `/opt/mesa` bundle, the
+   architecture-neutral `egl-smoke` off-screen triangle/readback executable
+   and the visible, frame-paced `egl-wayland-smoke` swapchain executable.
+Mesa's VirGL winsys now maps Gallium FD handles to the common BO
+export/import descriptors and maps Gallium fence export to the pollable
+common fence descriptor. This provides the backend-neutral transport needed
+by an EGL swapchain without making raw DRM handles process-global.
+Host VirGL capsets are filtered at this winsys boundary before Gallium sees
+them.  The effective capset is the intersection of renderer and ArmOS winsys
+features: until ArmOS implements command-buffer encoded transfers, the
+encoded and copy-transfer bits are cleared and Mesa uses the supported
+`transfer_put`/`transfer_get` path.  Hardware capsets remain unmodified in the
+common DRM core and in the VirtIO backend.
+   Mesa's generator dependencies are isolated by
+   `tools/bootstrap_mesa_host_tools.sh`, which pins M4, Bison, Meson, Ninja and
+   the Python modules instead of inheriting incompatible host installations.
+   Run `egl-smoke` under VirGL to validate EGL initialization, shader
+   compilation, drawing, fence completion and readback. Run
+   `egl-wayland-smoke` to validate `wl_egl_window`, BO capability transfer,
+   configure-driven resize, acquire/release synchronization, frame callbacks
+   and visible presentation. Run `armgl-import-smoke` to validate that an
+   exported scanout-capable image can be imported by an independent Gallium
+   screen, sampled with a rectangle blit, alpha-composited, rebound as a
+   render target and modified without a CPU copy. The diagnostic uses an
+   asymmetric image so an
+   inverted vertical coordinate contract cannot pass unnoticed. The imported
+   layout is checked against immutable common BO metadata before the backend
+   attaches the resource. ARM32 source and ABI compilation is validated;
+   the complete Mesa bundle and runtime remain required before enabling the
+   option in the tracked ARM32 profile.
+2. Use the validated external-image primitive in the compositor and compose
+   textured damage rectangles before copy-free DRM presentation. Client BO
+   import and explicit acquire fences are already wired. ArmGL scanout
+   surfaces allocate renderable command-backend resources; qemu-virt keeps
+   these separate from CPU-backed 2D scanouts and presents them without a
+   redundant host transfer. The remaining change replaces the device-to-CPU
+   transfer and software blend in the compositor.
+3. Port Raylib on the common EGL/OpenGL ES 2 path.
+4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.
 
 Every milestone must retain the same UAPI on ARM32 and ARM64. Unsupported

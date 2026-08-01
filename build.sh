@@ -62,6 +62,12 @@ enable_complete_userland_build()
     BUILD_FCFT=1
     BUILD_FOOT=1
     BUILD_NUKLEAR=1
+    if [ "$TARGET_ARCH" = "arm64" ] &&
+       [ "$TARGET_PLATFORM" = "qemu-virt" ]; then
+        BUILD_MESA=1
+    else
+        BUILD_MESA=0
+    fi
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
     BUILD_LIBPNG=1
@@ -101,7 +107,8 @@ BUILD_HARFBUZZ="${BUILD_HARFBUZZ:-0}"
 BUILD_FCFT="${BUILD_FCFT:-0}"
 BUILD_FOOT="${BUILD_FOOT:-0}"
 BUILD_NUKLEAR="${BUILD_NUKLEAR:-0}"
-export BUILD_NUKLEAR
+BUILD_MESA="${BUILD_MESA:-0}"
+export BUILD_NUKLEAR BUILD_MESA
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -411,6 +418,35 @@ if [ "$BUILD_FOOT" = "1" ]; then
         build_cached_bundle foot ./tools/build_foot.sh \
             epoll-shim fcft harfbuzz utf8proc fontconfig freetype expat pixman
     rsync -a "$TARGET_BUNDLES/foot/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_MESA" = "1" ]; then
+    echo "=== Building Mesa EGL/OpenGL ES 2 VirGL bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/mesa" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/tools/patches/mesa-25.3.6 $ROOT_DIR/userland/programs/egl-smoke $ROOT_DIR/userland/programs/egl-wayland-smoke $ROOT_DIR/userland/programs/armgl-import-smoke $ROOT_DIR/userland/programs/armgl-compositor-smoke $ROOT_DIR/userland/programs/armos-wlcomp/gpu_backend.c $ROOT_DIR/userland/programs/armos-wlcomp/gpu_backend.h $ROOT_DIR/userland/programs/armos-wlcomp/gpu_backend_provider.h $ROOT_DIR/userland/programs/armos-wlcomp/gpu_present.c $ROOT_DIR/userland/programs/armos-wlcomp/gpu_present.h $ROOT_DIR/userland/lib/virgl $ROOT_DIR/userland/lib/wayland $ROOT_DIR/userland/include/armos/virgl_winsys.h $ROOT_DIR/userland/include/wayland-egl-core.h $ROOT_DIR/userland/include/wayland-egl-backend.h $ROOT_DIR/userland/include/wayland-armos-gpu-client-protocol.h $ROOT_DIR/include/uapi/armos/drm.h" \
+    build_cached_bundle mesa ./tools/build_mesa.sh
+    rsync -a "$TARGET_BUNDLES/mesa/bundle/" "$TARGET_USERFS/"
+    echo "=== Linking armos-wlcomp with the ArmGL GPU provider ==="
+    make -C userland armos-wlcomp-gpu \
+        TARGET_ARCH="$TARGET_ARCH" \
+        TARGET_PLATFORM="$TARGET_PLATFORM" \
+        KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-us}" \
+        TARGET_BUILD_ROOT="$TARGET_BUILD_ROOT" \
+        NEWLIB_RUNTIME_DIR="$NEWLIB_RUNTIME_DIR" \
+        ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        NEWLIB_LIBC="$NEWLIB_SYSROOT/lib/libc.a" \
+        ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY="$TARGET_BUNDLES/mesa/bundle/opt/mesa/lib/libarmos-wlcomp-gpu.a" \
+        ARMOS_MESA_EGL_LIBRARY="$TARGET_BUNDLES/mesa/bundle/opt/mesa/lib/libEGL.a" \
+        ARMOS_MESA_GLES2_LIBRARY="$TARGET_BUNDLES/mesa/bundle/opt/mesa/lib/libGLESv2.a"
+    cp "$TARGET_BUILD_ROOT/userland/out/sbin/armos-wlcomp" \
+        "$TARGET_USERFS/sbin/armos-wlcomp"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/sbin/armos-wlcomp"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/egl-smoke"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/egl-wayland-smoke"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/armgl-import-smoke"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/armgl-compositor-smoke"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

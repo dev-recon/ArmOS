@@ -37,6 +37,8 @@
 #define ARMOS_DRM_CAP_CPU_MAPPABLE       (1ULL << 6)
 #define ARMOS_DRM_CAP_RENDER_3D          (1ULL << 7)
 #define ARMOS_DRM_CAP_RESOURCE_TRANSFER  (1ULL << 8)
+#define ARMOS_DRM_CAP_SHARED_BUFFERS     (1ULL << 9)
+#define ARMOS_DRM_CAP_SYNC_FDS           (1ULL << 10)
 
 #define ARMOS_DRM_DRIVER_NAME_LENGTH     32u
 #define ARMOS_DRM_COMMAND_SET_LENGTH     16u
@@ -58,6 +60,13 @@
 #define ARMOS_DRM_IOCTL_BO_PRESENT       0x440bu
 #define ARMOS_DRM_IOCTL_GET_COMMAND_CAPS 0x440cu
 #define ARMOS_DRM_IOCTL_BO_TRANSFER      0x440du
+#define ARMOS_DRM_IOCTL_BO_EXPORT        0x440eu
+#define ARMOS_DRM_IOCTL_BO_IMPORT        0x440fu
+#define ARMOS_DRM_IOCTL_FENCE_EXPORT     0x4410u
+#define ARMOS_DRM_IOCTL_BO_SET_METADATA  0x4411u
+
+#define ARMOS_DRM_SHARE_CLOEXEC          (1u << 0)
+#define ARMOS_DRM_SHARE_VALID_FLAGS      ARMOS_DRM_SHARE_CLOEXEC
 
 #define ARMOS_DRM_BO_CPU_READ            (1u << 0)
 #define ARMOS_DRM_BO_CPU_WRITE           (1u << 1)
@@ -207,5 +216,56 @@ typedef struct armos_drm_bo_transfer {
     unsigned int flags;
     unsigned int reserved[4];
 } armos_drm_bo_transfer_t;
+
+typedef struct armos_drm_bo_export {
+    unsigned int handle;
+    unsigned int flags;
+    int fd;
+    unsigned int reserved[5];
+} armos_drm_bo_export_t;
+
+typedef struct armos_drm_bo_import {
+    unsigned int abi_version;
+    unsigned int flags;
+    int fd;
+    unsigned int handle;
+    unsigned int command_handle;
+    unsigned int width;
+    unsigned int height;
+    unsigned int stride;
+    unsigned int format;
+    unsigned int bo_flags;
+    unsigned long long size;
+    unsigned long long map_offset;
+    unsigned int reserved[4];
+} armos_drm_bo_import_t;
+
+/*
+ * Publish image layout after a command backend has finalized its resource
+ * allocation. Metadata is write-once and must precede the first BO export,
+ * so every importer observes one immutable layout.
+ */
+typedef struct armos_drm_bo_set_metadata {
+    unsigned int abi_version;
+    unsigned int flags;
+    unsigned int handle;
+    unsigned int width;
+    unsigned int height;
+    unsigned int stride;
+    unsigned int format;
+    unsigned int reserved[3];
+} armos_drm_bo_set_metadata_t;
+
+typedef struct armos_drm_fence_export {
+    unsigned long long fence_id;
+    unsigned int flags;
+    int fd;
+    unsigned int reserved[4];
+} armos_drm_fence_export_t;
+
+typedef struct armos_drm_fence_result {
+    int status;
+    unsigned int flags;
+} armos_drm_fence_result_t;
 
 #endif /* _UAPI_ARMOS_DRM_H */

@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <malloc.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pwd.h>
@@ -1433,6 +1434,43 @@ gid_t getgid(void)
 gid_t getegid(void)
 {
     return (gid_t)sys_getegid();
+}
+
+/*
+ * Newlib exposes secure_getenv() when GNU interfaces are visible, but its
+ * generic library does not provide an implementation.  Keep the policy in
+ * the common libc adaptation layer: environment variables are visible only
+ * when the real and effective credentials still match.
+ */
+char *secure_getenv(const char *name)
+{
+    if (getuid() != geteuid() || getgid() != getegid())
+        return NULL;
+
+    return getenv(name);
+}
+
+/*
+ * Some newlib configurations declare posix_memalign() without shipping the
+ * wrapper, while memalign() is available.  Keep POSIX validation in the
+ * common libc adaptation layer so every userland consumer observes one
+ * architecture-independent contract.
+ */
+int posix_memalign(void **result, size_t alignment, size_t size)
+{
+    void *pointer;
+
+    if (!result || alignment < sizeof(void *) ||
+        alignment % sizeof(void *) != 0 ||
+        (alignment & (alignment - 1u)) != 0)
+        return EINVAL;
+
+    pointer = memalign(alignment, size == 0 ? 1u : size);
+    if (!pointer)
+        return ENOMEM;
+
+    *result = pointer;
+    return 0;
 }
 
 int setgid(gid_t gid)
