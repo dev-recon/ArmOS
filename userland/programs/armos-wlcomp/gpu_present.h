@@ -22,6 +22,14 @@
 
 #include "gpu_backend.h"
 
+struct wl_gpu_present_pending {
+    int fence_fd;
+    bool active;
+    uint64_t sequence;
+    struct wl_gpu_output output;
+    struct wl_gpu_rect damage;
+};
+
 struct wl_gpu_presenter {
     int card_fd;
     bool owns_card_fd;
@@ -30,6 +38,9 @@ struct wl_gpu_presenter {
     uint32_t width;
     uint32_t height;
     uint32_t stride;
+    uint32_t pending_count;
+    uint64_t next_sequence;
+    struct wl_gpu_present_pending pending[WL_GPU_MAX_OUTPUT_BUFFERS];
     enum wl_gpu_present_error {
         WL_GPU_PRESENT_ERROR_NONE = 0,
         WL_GPU_PRESENT_ERROR_ARGUMENT,
@@ -51,6 +62,18 @@ void wl_gpu_presenter_destroy(struct wl_gpu_presenter *presenter);
 bool wl_gpu_presenter_present(struct wl_gpu_presenter *presenter,
                               struct wl_gpu_backend *backend,
                               const struct wl_gpu_rect *damage);
+bool wl_gpu_presenter_submit(struct wl_gpu_presenter *presenter,
+                             struct wl_gpu_backend *backend,
+                             const struct wl_gpu_rect *damage,
+                             int *fence_fd, uint32_t *output_index);
+bool wl_gpu_presenter_complete(struct wl_gpu_presenter *presenter,
+                               int fence_fd, uint32_t *output_index);
+bool wl_gpu_presenter_next_fence(const struct wl_gpu_presenter *presenter,
+                                 int *fence_fd,
+                                 uint32_t *output_index);
+void wl_gpu_presenter_cancel(struct wl_gpu_presenter *presenter);
+bool wl_gpu_presenter_pending(const struct wl_gpu_presenter *presenter);
+bool wl_gpu_presenter_can_submit(const struct wl_gpu_presenter *presenter);
 const char *wl_gpu_presenter_error_string(
     const struct wl_gpu_presenter *presenter);
 

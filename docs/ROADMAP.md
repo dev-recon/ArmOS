@@ -107,11 +107,25 @@ Mesa/Gallium VirGL port and explicit EGL/Wayland buffer exchange are now
 implemented. The accelerated-compositor provider composes cached SHM layers,
 decorations, pointer and resize feedback into three provider-owned outputs.
 Per-output tile damage, clipping and conservative opaque occlusion preserve
-triple-buffer contents without full-screen redraws. The next milestone is
-direct import of client GPU buffers and release fences, followed by the common
-Raylib GLES2 port. VC4/V3D remains a platform
+triple-buffer contents without full-screen redraws. Composition fences are
+dispatched by the Wayland event loop; up to two exported output transactions
+remain pending while command generation continues, and intervening damage is
+retained when all submission slots are occupied. Fence notification is armed
+strictly in submission order so multiple readable fences cannot reorder
+scanout.
+Direct import of client GPU buffers and acquire fences are implemented. The
+next synchronization milestone is scanout release-fence propagation, followed
+by the common Raylib GLES2 port. VC4/V3D remains a platform
 implementation behind the
 same object and synchronization model.
+
+Startup profiling separates renderer readiness, first presentation and client
+launch. On the current static Mesa image the renderer and first frame complete
+in about half a second; cloning the Mesa-populated compositor address space for
+the initial desktop clients accounts for several additional seconds. A common
+direct-spawn process contract, usable by every userland service and independent
+of the graphics stack, is the planned correction. It will replace this costly
+`fork()`/`execve()` path rather than adding a Foot-specific launcher.
 
 ### ArmUI And Desktop Applications
 

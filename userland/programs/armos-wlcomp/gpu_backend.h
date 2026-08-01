@@ -16,6 +16,7 @@
  * Notes:
  * - Providers are optional; the software renderer remains the fallback.
  * - Coordinates use the compositor's top-left origin.
+ * - Output indices rotate without reusing a resource still in flight.
  */
 
 #ifndef ARMOS_WLCOMP_GPU_BACKEND_H
@@ -68,9 +69,10 @@ struct wl_gpu_backend *wl_gpu_backend_create(
 void wl_gpu_backend_destroy(struct wl_gpu_backend *backend);
 
 /*
- * A frame is an explicit transaction. Rendering operations are valid only
- * between begin_frame() and the matching presenter call. The presenter ends
- * the transaction on both success and failure.
+ * A frame is an explicit command-generation transaction. Rendering operations
+ * are valid only between begin_frame() and end_frame(). After flush/export,
+ * the returned descriptors retain the output resource and completion fence
+ * independently, so command generation may end before asynchronous scanout.
  */
 bool wl_gpu_backend_begin_frame(struct wl_gpu_backend *backend,
                                 struct wl_gpu_frame *frame);

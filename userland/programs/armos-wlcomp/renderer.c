@@ -24,6 +24,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -1566,6 +1567,84 @@ static bool wl_gpu_prepare_pointer(
     return true;
 }
 
+static int wl_renderer_gpu_present_event(
+    int fd, uint32_t mask, void *data)
+{
+    struct wl_server *server = data;
+    struct wl_server_renderer *renderer;
+    bool render_again;
+    uint32_t output_index = 0u;
+
+    if (!server)
+        return -1;
+    renderer = &server->renderer;
+    if ((mask & WL_EVENT_READABLE) == 0u ||
+        (mask & WL_EVENT_ERROR) != 0u ||
+        !wl_gpu_presenter_complete(renderer->gpu_presenter, fd,
+                                   &output_index)) {
+        server->fatal_error = true;
+        return -1;
+    }
+    if (output_index >= WL_GPU_MAX_OUTPUT_BUFFERS ||
+        !server->gpu_present_source ||
+        server->gpu_present_fence_fd != fd) {
+        server->fatal_error = true;
+        return -1;
+    }
+    (void)wl_event_source_remove(server->gpu_present_source);
+    server->gpu_present_source = NULL;
+    server->gpu_present_fence_fd = -1;
+    if (renderer->profile_enabled &&
+        server->gpu_present_started_us[output_index] != 0u) {
+        uint64_t finished_us = wl_renderer_monotonic_us();
+
+        if (finished_us >=
+            server->gpu_present_started_us[output_index])
+            renderer->profile_present_us +=
+                finished_us -
+                server->gpu_present_started_us[output_index];
+        renderer->profile_present_pixels +=
+            server->gpu_present_pixels[output_index];
+    }
+    server->gpu_present_started_us[output_index] = 0u;
+    server->gpu_present_pixels[output_index] = 0u;
+
+    if (wl_gpu_presenter_pending(renderer->gpu_presenter)) {
+        int next_fence_fd;
+        uint32_t next_output_index;
+
+        if (!wl_gpu_presenter_next_fence(
+                renderer->gpu_presenter, &next_fence_fd,
+                &next_output_index) ||
+            next_output_index >= WL_GPU_MAX_OUTPUT_BUFFERS) {
+            server->fatal_error = true;
+            return -1;
+        }
+        server->gpu_present_source = wl_event_loop_add_fd(
+            server->event_loop, next_fence_fd,
+            WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
+            wl_renderer_gpu_present_event, server);
+        if (!server->gpu_present_source) {
+            server->fatal_error = true;
+            return -1;
+        }
+        server->gpu_present_fence_fd = next_fence_fd;
+    }
+
+    render_again = server->render_pending ||
+        server->scene_damage_pending || server->damage_pending ||
+        !server->pointer_presented ||
+        server->presented_pointer_x != server->pointer_x ||
+        server->presented_pointer_y != server->pointer_y ||
+        server->presented_pointer_cursor != server->pointer_cursor;
+    server->render_pending = false;
+    if (render_again && wl_server_schedule_render(server, false) < 0) {
+        server->fatal_error = true;
+        return -1;
+    }
+    return 0;
+}
+
 static int wl_renderer_compose_gpu(struct wl_server *server)
 {
     struct wl_server_renderer *renderer = &server->renderer;
@@ -1576,12 +1655,20 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
     bool have_damage = false;
 
     if (!renderer->gpu_backend || !renderer->gpu_presenter ||
-        !wl_gpu_backend_begin_frame(renderer->gpu_backend, &frame))
+        !wl_gpu_backend_begin_frame(renderer->gpu_backend, &frame)) {
+        fprintf(stderr, "armos-wlcomp: GPU begin frame failed\n");
         return -1;
+    }
     if (frame.output_count != renderer->present_buffer_count ||
         frame.output_index >= frame.output_count ||
         frame.output_index >= WL_GPU_MAX_OUTPUT_BUFFERS ||
         !renderer->dirty_tile_storage) {
+        fprintf(stderr, "armos-wlcomp: invalid GPU frame "
+                "index=%u count=%u expected=%u tiles=%s\n",
+                (unsigned)frame.output_index,
+                (unsigned)frame.output_count,
+                (unsigned)renderer->present_buffer_count,
+                renderer->dirty_tile_storage ? "yes" : "no");
         errno = EPROTO;
         goto fail;
     }
@@ -1655,7 +1742,6 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
                 struct wl_gpu_surface_cache *cache = NULL;
                 int32_t destination_x;
                 int32_t destination_y;
-                bool alpha;
 
                 if (wl_surface_is_child_role(surface)) {
                     if (wl_surface_content_origin(
@@ -1733,16 +1819,67 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
         uint64_t started_us = renderer->profile_enabled ?
             wl_renderer_monotonic_us() : 0u;
 
-        if (!wl_gpu_presenter_present(
-                renderer->gpu_presenter, renderer->gpu_backend, &damage))
-            return -1;
-        if (started_us != 0u) {
-            uint64_t finished_us = wl_renderer_monotonic_us();
+        if (!server->event_loop) {
+            if (!wl_gpu_presenter_present(
+                    renderer->gpu_presenter, renderer->gpu_backend,
+                    &damage)) {
+                fprintf(stderr, "armos-wlcomp: GPU presentation failed "
+                        "at %s\n", wl_gpu_presenter_error_string(
+                            renderer->gpu_presenter));
+                return -1;
+            }
+            if (started_us != 0u) {
+                uint64_t finished_us = wl_renderer_monotonic_us();
 
-            if (finished_us >= started_us)
-                renderer->profile_present_us +=
-                    finished_us - started_us;
-            renderer->profile_present_pixels +=
+                if (finished_us >= started_us)
+                    renderer->profile_present_us +=
+                        finished_us - started_us;
+                renderer->profile_present_pixels +=
+                    (uint64_t)damage.width * damage.height;
+            }
+        } else {
+            int fence_fd;
+            uint32_t output_index;
+
+            if (!wl_gpu_presenter_submit(
+                    renderer->gpu_presenter, renderer->gpu_backend,
+                    &damage, &fence_fd, &output_index)) {
+                fprintf(stderr, "armos-wlcomp: GPU submission failed "
+                        "at %s\n", wl_gpu_presenter_error_string(
+                            renderer->gpu_presenter));
+                return -1;
+            }
+            if (output_index >= WL_GPU_MAX_OUTPUT_BUFFERS) {
+                wl_gpu_presenter_cancel(renderer->gpu_presenter);
+                errno = EBUSY;
+                return -1;
+            }
+            if (!server->gpu_present_source) {
+                int oldest_fence_fd;
+                uint32_t oldest_output_index;
+
+                if (!wl_gpu_presenter_next_fence(
+                        renderer->gpu_presenter, &oldest_fence_fd,
+                        &oldest_output_index) ||
+                    oldest_fence_fd != fence_fd ||
+                    oldest_output_index != output_index) {
+                    wl_gpu_presenter_cancel(renderer->gpu_presenter);
+                    errno = EPROTO;
+                    return -1;
+                }
+                server->gpu_present_source = wl_event_loop_add_fd(
+                    server->event_loop, fence_fd,
+                    WL_EVENT_READABLE | WL_EVENT_HANGUP |
+                        WL_EVENT_ERROR,
+                    wl_renderer_gpu_present_event, server);
+                if (!server->gpu_present_source) {
+                    wl_gpu_presenter_cancel(renderer->gpu_presenter);
+                    return -1;
+                }
+                server->gpu_present_fence_fd = fence_fd;
+            }
+            server->gpu_present_started_us[output_index] = started_us;
+            server->gpu_present_pixels[output_index] =
                 (uint64_t)damage.width * damage.height;
         }
     }
@@ -1761,6 +1898,8 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
     return 0;
 
 fail:
+    fprintf(stderr, "armos-wlcomp: GPU composition failed: %s\n",
+            strerror(errno));
     renderer->clip_enabled = false;
     wl_gpu_backend_end_frame(renderer->gpu_backend);
     return -1;

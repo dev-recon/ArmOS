@@ -30,6 +30,8 @@
 #include <uapi/armos/drm.h>
 #include <wayland-server-core.h>
 
+#include "gpu_backend.h"
+
 #define ARMOS_WLCOMP_SOCKET_PATH "/tmp/wayland-0"
 
 #define WL_SERVER_MAX_CLIENTS       8u
@@ -354,7 +356,6 @@ enum wl_renderer_output_backend {
     WL_RENDERER_OUTPUT_GPU
 };
 
-struct wl_gpu_backend;
 struct wl_gpu_image;
 struct wl_gpu_presenter;
 struct wl_gpu_surface_cache;
@@ -408,10 +409,14 @@ struct wl_server {
     struct wl_event_source *listen_source;
     struct wl_event_source *input_source;
     struct wl_event_source *render_timer;
+    struct wl_event_source *gpu_present_source;
+    int gpu_present_fence_fd;
     bool render_pending;
     bool scene_damage_pending;
     uint64_t next_frame_us;
     uint64_t startup_started_us;
+    uint64_t gpu_present_started_us[WL_GPU_MAX_OUTPUT_BUFFERS];
+    uint64_t gpu_present_pixels[WL_GPU_MAX_OUTPUT_BUFFERS];
     bool fatal_error;
     bool exit_requested;
     bool pointer_presented;

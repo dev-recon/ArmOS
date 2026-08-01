@@ -258,17 +258,25 @@ The provider is linked in a second, explicit build stage after Mesa. Its
 factory is retained deliberately from the static archive rather than relying
 on a weak reference to pull it from the linker. Software-only profiles still
 link the base compositor without Mesa. `gpu_present.c` owns the other side of
-the boundary: it exports the provider output, imports it into the common card
-node, waits on the render fence and presents the resulting BO. It has no
+the boundary: it exports the provider output, ends command generation, exposes
+the independently owned render fence to the Wayland event loop and imports and
+presents the resulting BO only when that fence becomes readable. It has no
 knowledge of the selected command set or platform.
 
-Provider frames follow one strict lifecycle: begin, draw, flush/export,
-fence wait, import/present and end. Three provider-owned scanout resources are
-rotated through that lifecycle. The presenter imports each slot lazily and
+Provider frames follow one strict lifecycle: begin, draw, flush/export, end,
+asynchronous fence notification and import/present. With three provider-owned
+outputs the compositor permits at most two submitted frames, preserving one
+resource which is neither being rendered nor awaiting presentation. Damage is
+retained while all submission slots are occupied instead of polling or
+blocking client/input dispatch. Several provider outputs may therefore be in
+flight, but the event loop arms only the oldest fence and the presenter rejects
+out-of-order completion. Scanout order is deterministic even when several
+fences become readable during one dispatch turn. The presenter imports each
+output lazily and
 retains exactly one card-node handle per slot, so rendering never overwrites
 the resource currently scanned out. A failed frame still closes every shared
-descriptor and ends the transaction; no half-open frame can poison the next
-submission.
+descriptor and ends command generation exactly once; no half-open frame can
+poison the next submission.
 
 `begin_frame` reports the selected output slot before rendering. The common
 tile-damage bitmap is retained independently for every slot: damage is added
@@ -300,9 +308,12 @@ Import failure has one explicit compatibility path: a BO advertised as
 CPU-readable may be mapped and composed by the software renderer. A GPU-only
 BO which is not importable is rejected instead of silently presenting stale
 content. Acquire fences are consumed before the imported image is sampled.
-The current presenter waits for the composition fence before scanout, which
-makes the existing immediate Wayland buffer release safe; asynchronous
-presentation and release fences are the next lifecycle milestone.
+The compositor now waits for its composition fence through the event loop
+rather than inside the render call. Exported-BO and fence ownership remain live
+until the import and presentation transaction completes.
+Scanout-completion release fences still need to be propagated through the
+Wayland buffer release transaction; this is the remaining synchronization
+milestone.
 
 `armos-wlcomp --profile` reports `gpu_imports_total` and
 `gpu_direct_blits`. The first is cumulative because imports occur at buffer
@@ -467,10 +478,16 @@ common DRM core and in the VirtIO backend.
    attaches the resource. ARM32 source and ABI compilation is validated;
    the complete Mesa bundle and runtime remain required before enabling the
    option in the tracked ARM32 profile.
-2. Complete asynchronous presentation and release-fence propagation. Direct
-   client BO import and acquire-fence consumption are complete; the remaining
-   work removes the synchronous compositor fence wait, retains frame resources
-   until scanout completion and emits the release fence from that transaction.
+2. Complete release-fence propagation. Direct client BO import,
+   acquire-fence consumption and event-driven compositor render-fence waits
+   are complete. The remaining work retains resources until scanout completion
+   and emits the release fence from that transaction.
+   Startup profiling currently attributes the remaining initial desktop delay
+   to `fork()` after Mesa has populated the compositor address space, not to
+   renderer initialization or Foot. The follow-up process milestone is a
+   common direct-spawn contract which loads a child image without cloning the
+   compositor VM; it must remain independent of Wayland and of the selected
+   GPU backend.
 3. Port Raylib on the common EGL/OpenGL ES 2 path.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.

@@ -21,6 +21,7 @@
  */
 
 #include "armos_wlcomp.h"
+#include "gpu_present.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -63,6 +64,20 @@ static uint64_t wl_monotonic_us(void)
            (uint64_t)now.tv_nsec / 1000u;
 }
 
+static void wl_server_profile_startup(const struct wl_server *server,
+                                      bool enabled, const char *phase)
+{
+    uint64_t now_us;
+
+    if (!server || !enabled || !phase || server->startup_started_us == 0u)
+        return;
+    now_us = wl_monotonic_us();
+    if (now_us >= server->startup_started_us)
+        fprintf(stderr, "armos-wlcomp: startup %s=%llums\n", phase,
+                (unsigned long long)(
+                    (now_us - server->startup_started_us) / 1000u));
+}
+
 static void wl_server_profile_frame(struct wl_server *server,
                                     uint64_t started_us)
 {
@@ -84,7 +99,9 @@ static void wl_server_profile_frame(struct wl_server *server,
         return;
     wl_render_profile_take(&primitives);
     compose_us = server->profile_render_us;
-    if (compose_us >= renderer->profile_present_us)
+    /* GPU presentation completes in a separate event-loop transaction. */
+    if (renderer->output_backend != WL_RENDERER_OUTPUT_GPU &&
+        compose_us >= renderer->profile_present_us)
         compose_us -= renderer->profile_present_us;
     fprintf(stderr,
             "WLPROFILE frames=%llu compose_avg_us=%llu "
@@ -212,15 +229,17 @@ static int wl_server_listen_event(int fd, uint32_t mask, void *data)
 static int wl_server_render_event(void *data)
 {
     struct wl_server *server = data;
-    uint64_t started_us = server->renderer.profile_enabled ?
-        wl_monotonic_us() : 0u;
+    uint64_t frame_started_us = wl_monotonic_us();
+    uint64_t profile_started_us = server->renderer.profile_enabled ?
+        frame_started_us : 0u;
     int result;
 
     server->render_pending = false;
     /*
-     * Rendering and framebuffer presentation are synchronous. Drain pending
-     * key releases first so a client repeat timer cannot overtake them while
-     * a large software frame is being composed.
+     * Drain pending key releases before composing. Software presentation is
+     * synchronous; GPU presentation completes later through its fence source,
+     * but command generation can still be a substantial non-preemptible user
+     * workload for this event-loop turn.
      */
     if (server->input_fd >= 0) {
         result = wl_server_handle_input(server);
@@ -257,21 +276,18 @@ static int wl_server_render_event(void *data)
         server->fatal_error = true;
         return -1;
     }
-    wl_server_profile_frame(server, started_us);
+    wl_server_profile_frame(server, profile_started_us);
     {
-        uint64_t now_us = wl_monotonic_us();
-
-        if (now_us != 0u) {
-            if (server->next_frame_us == 0u)
-                server->next_frame_us =
-                    now_us + WL_RENDER_FRAME_INTERVAL_US;
-            else {
-                do {
-                    server->next_frame_us +=
-                        WL_RENDER_FRAME_INTERVAL_US;
-                } while (server->next_frame_us <= now_us);
-            }
-        }
+        /*
+         * Frame pacing is anchored to the start of composition.  Anchoring
+         * it to completion would add a second frame interval after every
+         * expensive frame (16 ms rendering + 16 ms sleep ~= 30 Hz).  A frame
+         * that overruns its deadline is therefore eligible for the short
+         * overdue coalescing window in wl_server_schedule_render().
+         */
+        if (frame_started_us != 0u)
+            server->next_frame_us =
+                frame_started_us + WL_RENDER_FRAME_INTERVAL_US;
     }
     return 0;
 }
@@ -289,6 +305,14 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
     if (server->render_pending)
         return 0;
     server->render_pending = true;
+    /*
+     * One GPU frame may be awaiting its explicit completion fence. Preserve
+     * the accumulated damage without arming a polling timer; the fence event
+     * schedules the next frame once the output buffer is reusable.
+     */
+    if (wl_gpu_presenter_pending(server->renderer.gpu_presenter) &&
+        !wl_gpu_presenter_can_submit(server->renderer.gpu_presenter))
+        return 0;
     now_us = wl_monotonic_us();
     if (now_us == 0u || server->next_frame_us == 0u ||
         now_us >= server->next_frame_us) {
@@ -465,28 +489,9 @@ static pid_t wl_server_launch_shell(uint32_t token)
     _exit(127);
 }
 
-static bool wl_server_shell_panel_ready(const struct wl_server *server)
-{
-    const struct wl_server_client *client;
-
-    if (!server || !(client = server->shell_client) || !client->used)
-        return false;
-    for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
-        const struct wl_server_surface *surface = &client->surfaces[index];
-
-        if (surface->used && surface->mapped &&
-            surface->role == WL_SERVER_SURFACE_ROLE_PANEL)
-            return true;
-    }
-    return false;
-}
-
 static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
                          pid_t *shell_pid)
 {
-    bool initial_terminal_pending =
-        terminal_pid && *terminal_pid < 0;
-
     server->event_display = wl_display_create();
     if (!server->event_display)
         return -1;
@@ -524,35 +529,6 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
                 waitpid(*terminal_pid, &status, WNOHANG) ==
                     *terminal_pid) {
                 *terminal_pid = -1;
-            }
-        }
-        /*
-         * The desktop shell and the initial terminal are both substantial
-         * clients.  Starting them concurrently makes their filesystem, font
-         * and GPU setup contend during the first visible frame.  The panel's
-         * first mapped buffer is the compositor-level readiness boundary:
-         * launch Foot after that boundary, or immediately if the shell died.
-         */
-        if (initial_terminal_pending &&
-            ((!shell_pid || *shell_pid < 0) ||
-             wl_server_shell_panel_ready(server))) {
-            *terminal_pid = wl_server_launch_terminal();
-            initial_terminal_pending = false;
-            if (*terminal_pid < 0) {
-                perror("armos-wlcomp: terminal");
-                server->fatal_error = true;
-                continue;
-            }
-            if (server->renderer.profile_enabled &&
-                server->startup_started_us != 0u) {
-                uint64_t now_us = wl_monotonic_us();
-
-                if (now_us >= server->startup_started_us)
-                    fprintf(stderr,
-                            "armos-wlcomp: startup terminal-fork=%llums\n",
-                            (unsigned long long)(
-                                (now_us - server->startup_started_us) /
-                                1000u));
             }
         }
         if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
@@ -604,12 +580,14 @@ int main(int argc, char **argv)
         server.shell_token = 1u;
     server.listen_fd = -1;
     server.input_fd = -1;
+    server.gpu_present_fence_fd = -1;
     for (size_t index = 0; index < WL_SERVER_MAX_CLIENTS; index++)
         server.clients[index].fd = -1;
     if (wl_renderer_init(&server.renderer, headless) < 0) {
         perror("armos-wlcomp: renderer");
         return 1;
     }
+    wl_server_profile_startup(&server, profile, "renderer-ready");
     server.pointer_x = (int32_t)server.renderer.framebuffer.width / 2;
     server.pointer_y = (int32_t)server.renderer.framebuffer.height / 2;
     if (!headless) {
@@ -645,6 +623,7 @@ int main(int argc, char **argv)
         wl_renderer_destroy(&server.renderer);
         return 1;
     }
+    wl_server_profile_startup(&server, profile, "initial-frame");
     server.renderer.profile_enabled =
         profile || getenv("ARMOS_WL_PROFILE") != NULL;
     wl_render_profile_set_enabled(server.renderer.profile_enabled);
@@ -674,6 +653,14 @@ int main(int argc, char **argv)
                 perror("armos-wlcomp: shell");
                 shell_pid = -1;
             }
+            terminal_pid = wl_server_launch_terminal();
+            if (terminal_pid < 0) {
+                perror("armos-wlcomp: terminal");
+                server.fatal_error = true;
+            }
+            wl_server_profile_startup(
+                &server, server.renderer.profile_enabled,
+                "clients-fork");
         }
     }
     if (!server.fatal_error &&
