@@ -1,0 +1,225 @@
+From: ArmOS Project
+Subject: [PATCH] ui: support SDL core OpenGL shaders on macOS
+
+Apple's OpenGL implementation does not expose the desktop extension which
+accepts GLSL ES 3.0 shaders.  Request a 3.2 core context for SDL on macOS and
+select equivalent GLSL 1.50 shaders when QEMU is running on desktop OpenGL.
+VirGL scanout bypasses QEMU DisplaySurface uploads.  On Apple's desktop GL the
+direct BGRA texture reaches SDL with red and blue reversed, so use a dedicated
+scanout shader at that host-only boundary.
+
+diff --git a/include/ui/shader.h b/include/ui/shader.h
+--- a/include/ui/shader.h
++++ b/include/ui/shader.h
+@@ -4,6 +4,7 @@
+ typedef struct QemuGLShader QemuGLShader;
+ 
+ void qemu_gl_run_texture_blit(QemuGLShader *gls, bool flip);
++void qemu_gl_run_texture_blit_bgra(QemuGLShader *gls, bool flip);
+ 
+ QemuGLShader *qemu_gl_init_shader(void);
+ void qemu_gl_fini_shader(QemuGLShader *gls);
+
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -94,6 +94,19 @@ void sdl2_window_create(struct sdl2_console *scon)
+     if (scon->hidden) {
+         flags |= SDL_WINDOW_HIDDEN;
+     }
++#if defined(CONFIG_OPENGL) && defined(CONFIG_DARWIN)
++    /*
++     * The default SDL context on macOS is legacy OpenGL 2.1.  QEMU's GL
++     * display path requires VAOs and modern shaders, so request the oldest
++     * core profile provided by every supported macOS OpenGL implementation.
++     */
++    if (scon->opengl && scon->opts->gl != DISPLAY_GL_MODE_ES) {
++        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
++                            SDL_GL_CONTEXT_PROFILE_CORE);
++        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
++        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
++    }
++#endif
+ #ifdef CONFIG_OPENGL
+     if (scon->opengl) {
+         flags |= SDL_WINDOW_OPENGL;
+diff --git a/ui/shader.c b/ui/shader.c
+--- a/ui/shader.c
++++ b/ui/shader.c
+@@ -30,9 +30,15 @@
+ #include "ui/shader/texture-blit-vert.h"
+ #include "ui/shader/texture-blit-flip-vert.h"
+ #include "ui/shader/texture-blit-frag.h"
++#include "ui/shader/texture-blit-desktop-vert.h"
++#include "ui/shader/texture-blit-flip-desktop-vert.h"
++#include "ui/shader/texture-blit-desktop-frag.h"
++#include "ui/shader/texture-blit-bgra-desktop-frag.h"
+ 
+ struct QemuGLShader {
+     GLint texture_blit_prog;
+     GLint texture_blit_flip_prog;
++    GLint texture_blit_bgra_prog;
++    GLint texture_blit_bgra_flip_prog;
+     GLint texture_blit_vao;
+ };
+@@ -67,6 +71,15 @@ void qemu_gl_run_texture_blit(QemuGLShader *gls, bool flip)
+     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+ }
+ 
++void qemu_gl_run_texture_blit_bgra(QemuGLShader *gls, bool flip)
++{
++    glUseProgram(flip
++                 ? gls->texture_blit_bgra_flip_prog
++                 : gls->texture_blit_bgra_prog);
++    glBindVertexArray(gls->texture_blit_vao);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++}
++
+ /* ---------------------------------------------------------------------- */
+ 
+ static GLuint qemu_gl_create_compile_shader(GLenum type, const GLchar *src)
+@@ -151,12 +164,34 @@ end:
+ 
+ QemuGLShader *qemu_gl_init_shader(void)
+ {
++    const GLchar *vert_src = texture_blit_vert_src;
++    const GLchar *flip_vert_src = texture_blit_flip_vert_src;
++    const GLchar *frag_src = texture_blit_frag_src;
++    const GLchar *bgra_frag_src = texture_blit_frag_src;
+     QemuGLShader *gls = g_new0(QemuGLShader, 1);
+ 
++    /*
++     * Most desktop drivers accept the ES shaders through compatibility
++     * extensions.  Apple OpenGL does not, so use the native desktop form
++     * whenever the active context is desktop GL.
++     */
++    if (epoxy_is_desktop_gl()) {
++        vert_src = texture_blit_desktop_vert_src;
++        flip_vert_src = texture_blit_flip_desktop_vert_src;
++        frag_src = texture_blit_desktop_frag_src;
++        bgra_frag_src = texture_blit_bgra_desktop_frag_src;
++    }
++
+     gls->texture_blit_prog = qemu_gl_create_compile_link_program
+-        (texture_blit_vert_src, texture_blit_frag_src);
++        (vert_src, frag_src);
+     gls->texture_blit_flip_prog = qemu_gl_create_compile_link_program
+-        (texture_blit_flip_vert_src, texture_blit_frag_src);
++        (flip_vert_src, frag_src);
++    gls->texture_blit_bgra_prog = qemu_gl_create_compile_link_program
++        (vert_src, bgra_frag_src);
++    gls->texture_blit_bgra_flip_prog = qemu_gl_create_compile_link_program
++        (flip_vert_src, bgra_frag_src);
+-    if (!gls->texture_blit_prog || !gls->texture_blit_flip_prog) {
++    if (!gls->texture_blit_prog || !gls->texture_blit_flip_prog ||
++        !gls->texture_blit_bgra_prog ||
++        !gls->texture_blit_bgra_flip_prog) {
+         exit(1);
+     }
+@@ -179,6 +209,8 @@ void qemu_gl_fini_shader(QemuGLShader *gls)
+     }
+     glDeleteProgram(gls->texture_blit_prog);
+     glDeleteProgram(gls->texture_blit_flip_prog);
++    glDeleteProgram(gls->texture_blit_bgra_prog);
++    glDeleteProgram(gls->texture_blit_bgra_flip_prog);
+     glDeleteProgram(gls->texture_blit_vao);
+     g_free(gls);
+ }
+diff --git a/ui/shader/meson.build b/ui/shader/meson.build
+--- a/ui/shader/meson.build
++++ b/ui/shader/meson.build
+@@ -2,6 +2,10 @@ shaders = [
+   ['texture-blit', 'frag'],
+   ['texture-blit', 'vert'],
+   ['texture-blit-flip', 'vert'],
++  ['texture-blit-desktop', 'frag'],
++  ['texture-blit-desktop', 'vert'],
++  ['texture-blit-flip-desktop', 'vert'],
++  ['texture-blit-bgra-desktop', 'frag'],
+ ]
+ 
+ foreach e : shaders
+diff --git a/ui/shader/texture-blit-desktop.frag b/ui/shader/texture-blit-desktop.frag
+new file mode 100644
+--- /dev/null
++++ b/ui/shader/texture-blit-desktop.frag
+@@ -0,0 +1,9 @@
++#version 150 core
++
++uniform sampler2D image;
++in vec2 ex_tex_coord;
++out vec4 out_frag_color;
++
++void main(void) {
++     out_frag_color = texture(image, ex_tex_coord);
++}
+diff --git a/ui/shader/texture-blit-desktop.vert b/ui/shader/texture-blit-desktop.vert
+new file mode 100644
+--- /dev/null
++++ b/ui/shader/texture-blit-desktop.vert
+@@ -0,0 +1,9 @@
++#version 150 core
++
++in vec2 in_position;
++out vec2 ex_tex_coord;
++
++void main(void) {
++    gl_Position = vec4(in_position, 0.0, 1.0);
++    ex_tex_coord = vec2(1.0 + in_position.x, 1.0 - in_position.y) * 0.5;
++}
+diff --git a/ui/shader/texture-blit-flip-desktop.vert b/ui/shader/texture-blit-flip-desktop.vert
+new file mode 100644
+--- /dev/null
++++ b/ui/shader/texture-blit-flip-desktop.vert
+@@ -0,0 +1,9 @@
++#version 150 core
++
++in vec2 in_position;
++out vec2 ex_tex_coord;
++
++void main(void) {
++    gl_Position = vec4(in_position, 0.0, 1.0);
++    ex_tex_coord = vec2(1.0 + in_position.x, 1.0 + in_position.y) * 0.5;
++}
+diff --git a/ui/shader/texture-blit-bgra-desktop.frag b/ui/shader/texture-blit-bgra-desktop.frag
+new file mode 100644
+--- /dev/null
++++ b/ui/shader/texture-blit-bgra-desktop.frag
+@@ -0,0 +1,9 @@
++#version 150 core
++
++uniform sampler2D image;
++in vec2 ex_tex_coord;
++out vec4 out_frag_color;
++
++void main(void) {
++     out_frag_color = texture(image, ex_tex_coord).bgra;
++}
+diff --git a/ui/sdl2-gl.c b/ui/sdl2-gl.c
+--- a/ui/sdl2-gl.c
++++ b/ui/sdl2-gl.c
+@@ -241,6 +241,23 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
+     SDL_GetWindowSize(scon->real_window, &ww, &wh);
+     egl_fb_setup_default(&scon->win_fb, ww, wh);
+-    egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
++#ifdef CONFIG_DARWIN
++    /*
++     * VirGL scanout bypasses DisplaySurface uploads and exposes its host
++     * texture directly.  Apple's desktop GL reports the BGRA resource with
++     * red and blue reversed at this boundary, so convert while sampling the
++     * scanout texture.  Keep the guest resource and the generic VirtIO format
++     * contract unchanged.  The texture shader's flip selector has the
++     * opposite polarity from egl_fb_blit() because it samples an OpenGL
++     * texture instead of blitting between framebuffers.
++     */
++    glBindFramebuffer(GL_FRAMEBUFFER_EXT, scon->win_fb.framebuffer);
++    glViewport(0, 0, scon->win_fb.width, scon->win_fb.height);
++    glEnable(GL_TEXTURE_2D);
++    glBindTexture(GL_TEXTURE_2D, scon->guest_fb.texture);
++    qemu_gl_run_texture_blit_bgra(scon->gls, scon->y0_top);
++#else
++    egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
++#endif
+ 
+     SDL_GL_SwapWindow(scon->real_window);
+ }

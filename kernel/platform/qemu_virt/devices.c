@@ -28,7 +28,7 @@
 #include <kernel/tty.h>
 #include <kernel/uart.h>
 #include <kernel/virtio_block.h>
-#include <kernel/virtio_gpu.h>
+#include "virtio_gpu.h"
 #include <kernel/virtio_input.h>
 #include <kernel/virtio_net.h>
 
@@ -67,9 +67,10 @@ platform_devices_state_t platform_devices_init(void)
 
     init_keyboard();
 
-    if (init_display(FB_WIDTH, FB_HEIGHT, FB_BPP) && virtio_gpu_init()) {
+    if (virtio_gpu_init()) {
         display_set_backend(&qemu_display_backend);
-        KBOOT_OKF("GPU: virtio-gpu %ux%ux%u", FB_WIDTH, FB_HEIGHT, FB_BPP);
+        KBOOT_OKF("GPU: virtio-gpu %ux%ux%u",
+                  virtio_gpu_width(), virtio_gpu_height(), FB_BPP);
         if (framebuffer_attach_tty_backend(TTY_GRAPHICS_ID) == 0) {
             state.display_ready = true;
             state.compositor_allowed = true;
@@ -100,6 +101,14 @@ platform_devices_state_t platform_devices_init(void)
     }
 
     return state;
+}
+
+bool platform_device_irq_dispatch(uint32_t irq)
+{
+    if (!virtio_gpu_is_initialized() || irq != virtio_gpu_get_irq())
+        return false;
+    virtio_gpu_irq_handler();
+    return true;
 }
 
 bool platform_block_init(void)

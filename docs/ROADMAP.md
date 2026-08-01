@@ -70,6 +70,13 @@ teapot demo now run as real Wayland clients on the shared ARM32/ARM64 stack.
 
 Immediate goals:
 
+- enforce the common application and lifecycle contract documented in
+  `GRAPHICAL_APPLICATION_CONTRACT.md`;
+- replace global `poll` wakeups with wait registrations on individual
+  sockets, PTYs, timers and input objects;
+- move Wayland connection, SHM generations, configure handling, frame pacing,
+  input and clipboard into one reusable ArmUI backend;
+- complete transactional xdg-shell and subsurface state in the compositor;
 - preserve bounded damage from client commits through framebuffer
   presentation;
 - profile and optimize software copy/fill paths on Raspberry Pi 3;
@@ -84,33 +91,104 @@ Later milestone:
 - add a VC4/V3D renderer backend without moving compositor policy into
   Raspberry-specific kernel or platform code.
 
+The GPU and Raylib workstream is specified in
+[`DRM_ARCHITECTURE.md`](DRM_ARCHITECTURE.md). Its first milestone provides
+versioned `/dev/dri/card0` and `/dev/dri/renderD128` discovery nodes plus a
+qemu-virt VirtIO-GPU backend.
+Buffer objects, CPU mappings, typed resource usage, explicit
+context/resource attachments and interrupt-completed asynchronous fences now
+share the same common contract on ARM32 and ARM64. The common UAPI also exposes
+opaque command handles, bounded command-capability blobs and explicit
+CPU/device transfers. The qemu-virt backend translates these operations to the
+selected VirGL capset without leaking VirtIO details into common code.
+`libarmos-virgl-winsys` validates the complete lifecycle with a real off-screen
+triangle, fence wait, readback and pixel verification. The reproducible
+Mesa/Gallium VirGL port and explicit EGL/Wayland buffer exchange are now
+implemented. The accelerated-compositor provider composes cached SHM layers,
+decorations, pointer and resize feedback into three provider-owned outputs.
+Per-output tile damage, clipping and conservative opaque occlusion preserve
+triple-buffer contents without full-screen redraws. Composition fences are
+dispatched by the Wayland event loop; up to two exported output transactions
+remain pending while command generation continues, and intervening damage is
+retained when all submission slots are occupied. Fence notification is armed
+strictly in submission order so multiple readable fences cannot reorder
+scanout.
+Direct import of client GPU buffers, acquire fences and per-buffer compositor
+release fences are implemented. The common Raylib 6.0 Wayland/EGL/GLES2 port
+now builds and presents through VirGL. `raypot-demo` validates a complete
+accelerated frame with VBOs, depth testing and GLES2 shaders using the same
+Utah model as the software demo. VC4/V3D remains a platform implementation
+behind the same object and synchronization model.
+
+Startup profiling separates renderer readiness, first presentation and client
+launch. On the current static Mesa image the renderer and first frame complete
+in about half a second. The common `armos_spawnve` process contract now starts
+the desktop shell, Foot and shell-launched applications in fresh address spaces
+without cloning the Mesa-populated compositor. The contract is independent of
+the graphics stack and shared by ARM32 and ARM64.
+
 ### ArmUI And Desktop Applications
 
 The graphical application toolkit will use Nuklear as an internal immediate
 mode engine while keeping the public ArmOS API independent from that
 implementation.
 
-Planned sequence:
+Roadmap:
 
-1. Port Nuklear and validate a native `armui-demo` Wayland client using SHM,
+1. **Implemented** — port Nuklear and provide a native `armui-demo` Wayland
+   client using SHM,
    mouse, keyboard, UTF-8, resizing and double buffering.
-2. Build `libarmui` above the validated backend. Its small C API must not expose
-   Nuklear structures, so themes, widgets and the rendering engine remain
-   replaceable.
-3. Implement `armos-control-center` with initial resolution, network, process
-   and appearance panels. Privileged operations must cross explicit ArmOS
-   service interfaces rather than spreading direct kernel access through the
-   application.
-4. Add `xdg_popup` when embedded menus are no longer sufficient for combo
-   boxes, contextual menus and transient child surfaces.
-5. Implement `armos-shell` as a privileged Wayland client for the system bar
-   and launcher, with a narrow ArmOS protocol for reserved screen areas and
-   shell policy where standard Wayland protocols are insufficient.
+2. **Implemented** — build `libarmui` above the backend. Its small C API does
+   not expose Nuklear structures, so themes, widgets and the rendering engine
+   remain replaceable.
+3. **Implemented and validated** — `armos-control-center` provides display,
+   network, process and appearance panels. It consumes bounded snapshots
+   through `libarmos-services`; applications do not parse procfs or access
+   display devices directly. Future mutations must cross the same explicit
+   service boundary.
+4. **Implemented and validated** — `xdg_positioner` and `xdg_popup` provide
+   parent-relative transient surfaces, configure/ack transactions, clipping,
+   stacking and input hit testing. The protocol test covers popup creation and
+   geometry.
+5. **Implemented and validated** — `/sbin/armos-shell` is an ArmUI system-bar
+   client. A narrow authenticated `armos_shell_v1` protocol assigns its panel
+   role and reserves the desktop work area. Programs launched from the bar
+   drop to the ordinary user identity.
 
 Nuklear applications must remain event driven: static windows sleep until
 input, state changes or an explicit animation deadline requires another frame.
 Client damage, compositor dirty tiles and framebuffer presentation must remain
 bounded throughout this stack.
+
+Current status:
+
+- Nuklear 4.13.3 is pinned as an unmodified third-party header and built as
+  `/opt/nuklear/lib/libnuklear.a`;
+- `libarmui.a` owns the Nuklear context, font atlas, portable software
+  renderer, Wayland/xdg lifecycle, input routing, frame pacing and
+  generation-safe SHM buffer recreation behind the engine-independent
+  `<armui/armui.h>` API;
+- pointer input is consumed as a Wayland transaction ending at
+  `wl_pointer.frame`; a bounded stabilization frame makes immediate-mode
+  state and theme changes visible on button release without application
+  polling;
+- `armui-demo` now contains application state and widgets only. It exercises
+  the common backend rather than carrying a private Wayland implementation;
+- `teapot-demo` uses the same application lifecycle for its continuously
+  rendered canvas, resize, keyboard input, SHM generations and frame pacing;
+- `armos-control-center` uses only `libarmos-services`, keeping kernel and
+  device details outside the desktop application;
+- `/sbin/armos-shell` uses the dedicated ArmUI system-bar role. The
+  compositor creates a per-session capability token and never grants panel
+  ownership based on a process name or window title;
+- the common compositor implements border resizing, maximize/restore,
+  fullscreen, reversible compact minimization, transient popup surfaces and a
+  panel-aware work area.
+
+The five milestones are complete and the architecture has been validated
+interactively. ARM32 and ARM64 private cross-build validation remains
+mandatory after each contract change, followed by interactive validation on
+each enabled target before release.
 
 ## 0.7 ARM64 Baseline
 

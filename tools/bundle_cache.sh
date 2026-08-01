@@ -79,6 +79,12 @@ build_cached_bundle()
                 "$script" \
                 "$ROOT_DIR/userland/opt/$source_name" \
                 "$ROOT_DIR/third_party/$source_name"
+            if [ -n "${ARMOS_BUNDLE_EXTRA_INPUTS:-}" ]; then
+                # Paths are repository-owned build inputs and therefore never
+                # contain shell whitespace. This keeps optional bundle inputs
+                # explicit without teaching the cache about individual ports.
+                hash_build_inputs $ARMOS_BUNDLE_EXTRA_INPUTS
+            fi
             for dependency in "$@"; do
                 dependency_stamp="$TARGET_BUNDLES/$dependency/.armos-bundle.contract"
                 hash_build_inputs \

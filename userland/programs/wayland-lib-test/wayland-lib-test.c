@@ -59,6 +59,8 @@ struct registry_state {
     uint32_t seat_capabilities;
     unsigned int xdg_configures;
     unsigned int toplevel_configures;
+    unsigned int popup_configures;
+    unsigned int popup_done;
     unsigned int keymaps;
     unsigned int xkb_maps;
     unsigned int repeat_info;
@@ -617,6 +619,25 @@ static void toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
     (void)xdg_toplevel;
 }
 
+static void popup_configure(void *data, struct xdg_popup *xdg_popup,
+                            int32_t x, int32_t y,
+                            int32_t width, int32_t height)
+{
+    struct registry_state *state = data;
+
+    (void)xdg_popup;
+    if (x == 4 && y == 20 && width == 32 && height == 24)
+        state->popup_configures++;
+}
+
+static void popup_done(void *data, struct xdg_popup *xdg_popup)
+{
+    struct registry_state *state = data;
+
+    (void)xdg_popup;
+    state->popup_done++;
+}
+
 static void data_source_target(void *data, struct wl_data_source *source,
                                const char *mime_type)
 {
@@ -772,6 +793,10 @@ static int test_registry(void)
         toplevel_configure,
         toplevel_close
     };
+    static const struct xdg_popup_listener popup_listener = {
+        popup_configure,
+        popup_done
+    };
     struct registry_state state = { 0 };
     struct wl_display *display;
     struct wl_event_queue *event_queue = NULL;
@@ -779,6 +804,7 @@ static int test_registry(void)
     struct wl_compositor *compositor = NULL;
     struct wl_surface *surface = NULL;
     struct wl_surface *child_surface = NULL;
+    struct wl_surface *popup_surface = NULL;
     struct wl_subcompositor *subcompositor = NULL;
     struct wl_subsurface *subsurface = NULL;
     struct wl_shm *shm = NULL;
@@ -797,6 +823,9 @@ static int test_registry(void)
     struct xdg_wm_base *wm_base = NULL;
     struct xdg_surface *xdg_surface = NULL;
     struct xdg_toplevel *xdg_toplevel = NULL;
+    struct xdg_positioner *positioner = NULL;
+    struct xdg_surface *popup_xdg_surface = NULL;
+    struct xdg_popup *xdg_popup = NULL;
     uint32_t *pixels = MAP_FAILED;
     char shm_name[48];
     int shm_fd = -1;
@@ -847,7 +876,7 @@ static int test_registry(void)
         wl_display_dispatch_queue_pending(display, event_queue) <= 0 ||
         wl_display_roundtrip_queue(display, event_queue) < 0)
         goto protocol_failed;
-    valid = state.globals == 7u && state.compositor == 1u &&
+    valid = state.globals == 10u && state.compositor == 1u &&
         state.shm == 1u && state.seat == 1u && state.shell == 1u &&
         state.data_device_manager == 1u &&
         state.subcompositor == 1u &&
@@ -932,6 +961,40 @@ static int test_registry(void)
     xdg_toplevel_set_title(xdg_toplevel, "ArmOS Wayland library test");
     xdg_toplevel_set_app_id(xdg_toplevel, "org.armos.wayland-lib-test");
     xdg_surface_set_window_geometry(xdg_surface, 0, 0, 16, 16);
+    wl_surface_commit(surface);
+    if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
+        state.xdg_configures != 1u ||
+        state.toplevel_configures != 1u)
+        goto protocol_failed;
+    popup_surface = wl_compositor_create_surface(compositor);
+    popup_xdg_surface = popup_surface ?
+        xdg_wm_base_get_xdg_surface(wm_base, popup_surface) : NULL;
+    positioner = xdg_wm_base_create_positioner(wm_base);
+    if (!popup_xdg_surface || !positioner ||
+        xdg_surface_add_listener(
+            popup_xdg_surface, &xdg_surface_listener, &state) < 0)
+        goto protocol_failed;
+    xdg_positioner_set_size(positioner, 32, 24);
+    xdg_positioner_set_anchor_rect(positioner, 4, 4, 32, 16);
+    xdg_positioner_set_anchor(
+        positioner, XDG_POSITIONER_ANCHOR_BOTTOM |
+                    XDG_POSITIONER_ANCHOR_LEFT);
+    xdg_positioner_set_gravity(
+        positioner, XDG_POSITIONER_GRAVITY_BOTTOM |
+                    XDG_POSITIONER_GRAVITY_RIGHT);
+    xdg_positioner_set_constraint_adjustment(
+        positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+                    XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y);
+    xdg_popup = xdg_surface_get_popup(
+        popup_xdg_surface, xdg_surface, positioner);
+    if (!xdg_popup ||
+        xdg_popup_add_listener(xdg_popup, &popup_listener, &state) < 0)
+        goto protocol_failed;
+    wl_surface_commit(popup_surface);
+    if (wl_display_roundtrip_queue(display, event_queue) < 0 ||
+        state.xdg_configures != 2u ||
+        state.popup_configures != 1u)
+        goto protocol_failed;
     snprintf(shm_name, sizeof(shm_name), "/wayland-lib-%d", getpid());
     shm_fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (shm_fd < 0 || shm_unlink(shm_name) < 0 ||
@@ -966,7 +1029,7 @@ static int test_registry(void)
         state.output_geometry != 1u || state.output_modes != 1u ||
         state.output_done != 1u || state.output_scale != 1u ||
         state.surface_enters != 1u ||
-        state.xdg_configures != 1u || state.toplevel_configures != 1u ||
+        state.xdg_configures != 2u || state.toplevel_configures != 1u ||
         state.clipboard_offers != 1u ||
         state.clipboard_selections == 0u || !state.selection_offer)
         goto protocol_failed;
@@ -1005,6 +1068,10 @@ static int test_registry(void)
     wl_pointer_release(pointer);
     wl_touch_release(touch);
     wl_seat_release(seat);
+    xdg_popup_destroy(xdg_popup);
+    xdg_surface_destroy(popup_xdg_surface);
+    wl_surface_destroy(popup_surface);
+    xdg_positioner_destroy(positioner);
     xdg_toplevel_destroy(xdg_toplevel);
     xdg_surface_destroy(xdg_surface);
     xdg_wm_base_destroy(wm_base);
@@ -1054,6 +1121,14 @@ protocol_failed:
         wl_pointer_destroy(pointer);
     if (seat)
         wl_seat_destroy(seat);
+    if (xdg_popup)
+        xdg_popup_destroy(xdg_popup);
+    if (popup_xdg_surface)
+        xdg_surface_destroy(popup_xdg_surface);
+    if (popup_surface)
+        wl_surface_destroy(popup_surface);
+    if (positioner)
+        xdg_positioner_destroy(positioner);
     if (xdg_toplevel)
         xdg_toplevel_destroy(xdg_toplevel);
     if (xdg_surface)

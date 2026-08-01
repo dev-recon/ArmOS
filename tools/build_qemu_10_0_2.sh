@@ -14,6 +14,31 @@ SOURCE_DIR="$WORK_DIR/src"
 BUILD_DIR="$WORK_DIR/build"
 PREFIX="${PREFIX:-$WORK_DIR/install}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+PATCH_DIR="$ROOT_DIR/tools/patches/qemu-$QEMU_VERSION"
+INSTALL_DEPS=0
+
+usage() {
+    cat <<'EOF'
+Usage: ./tools/build_qemu_10_0_2.sh [--install-deps]
+
+  --install-deps  Install missing SDL/OpenGL/VirGL host prerequisites first.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --install-deps) INSTALL_DEPS=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ "$INSTALL_DEPS" -eq 1 ]; then
+    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --install
+else
+    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --check
+fi
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -26,7 +51,7 @@ sha256_file() {
     fi
 }
 
-for tool in curl tar make pkg-config python3 ninja git grep; do
+for tool in curl tar make pkg-config python3 ninja git grep patch; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "error: required host tool '$tool' not found" >&2
         exit 1
@@ -38,16 +63,19 @@ QEMU_CONFIGURE_ARGS=(
     --target-list=arm-softmmu,aarch64-softmmu
     --disable-docs
     --disable-werror
+    --enable-sdl
+    --enable-opengl
+    --enable-virglrenderer
+    --disable-nettle
+    --disable-spice
+    --disable-spice-protocol
 )
-QEMU_REQUIRED_DISPLAY_BACKEND=""
+QEMU_REQUIRED_DISPLAY_BACKENDS=(sdl)
 if [ "$(uname -s)" = "Linux" ]; then
-    if ! pkg-config --exists gtk+-3.0; then
-        echo "error: GTK 3 development files are required for graphical QEMU on Linux" >&2
-        echo "hint: sudo apt install libgtk-3-dev" >&2
-        exit 1
-    fi
-    QEMU_CONFIGURE_ARGS+=(--enable-gtk)
-    QEMU_REQUIRED_DISPLAY_BACKEND=gtk
+    QEMU_CONFIGURE_ARGS+=(--disable-gtk)
+elif [ "$(uname -s)" = "Darwin" ]; then
+    QEMU_CONFIGURE_ARGS+=(--enable-cocoa)
+    QEMU_REQUIRED_DISPLAY_BACKENDS+=(cocoa)
 fi
 
 mkdir -p "$DOWNLOAD_DIR" "$WORK_DIR"
@@ -73,6 +101,19 @@ if [ ! -x "$SOURCE_DIR/configure" ]; then
     tar -xJf "$ARCHIVE" -C "$SOURCE_DIR" --strip-components=1
 fi
 
+for patch_file in "$PATCH_DIR"/*.patch; do
+    [ -e "$patch_file" ] || continue
+    if patch --dry-run -d "$SOURCE_DIR" -p1 < "$patch_file" >/dev/null; then
+        echo "=== Applying $(basename "$patch_file") ==="
+        patch -d "$SOURCE_DIR" -p1 < "$patch_file"
+    elif patch --dry-run -R -d "$SOURCE_DIR" -p1 < "$patch_file" >/dev/null; then
+        echo "Patch already applied: $(basename "$patch_file")"
+    else
+        echo "error: patch does not apply cleanly: $patch_file" >&2
+        exit 1
+    fi
+done
+
 mkdir -p "$BUILD_DIR" "$PREFIX"
 cd "$BUILD_DIR"
 
@@ -91,17 +132,26 @@ for qemu_name in qemu-system-arm qemu-system-aarch64; do
         echo "error: unexpected installed QEMU version: $version_line" >&2
         exit 1
     fi
-    if [ -n "$QEMU_REQUIRED_DISPLAY_BACKEND" ] &&
-       ! "$QEMU_BINARY" -display help 2>/dev/null |
-           grep -qx "$QEMU_REQUIRED_DISPLAY_BACKEND"; then
-        echo "error: $QEMU_BINARY lacks the required '$QEMU_REQUIRED_DISPLAY_BACKEND' display backend" >&2
+    QEMU_DISPLAY_HELP="$("$QEMU_BINARY" -display help 2>/dev/null)"
+    for display_backend in "${QEMU_REQUIRED_DISPLAY_BACKENDS[@]}"; do
+        if ! printf '%s\n' "$QEMU_DISPLAY_HELP" | grep -qx "$display_backend"; then
+            echo "error: $QEMU_BINARY lacks the required '$display_backend' display backend" >&2
+            exit 1
+        fi
+    done
+    if ! "$QEMU_BINARY" -device help 2>/dev/null |
+           grep -q 'name "virtio-gpu-gl-device"'; then
+        echo "error: $QEMU_BINARY lacks VirGL support" >&2
         exit 1
     fi
     echo "Installed: $QEMU_BINARY"
-    if [ -n "$QEMU_REQUIRED_DISPLAY_BACKEND" ]; then
-        echo "Display:   $QEMU_REQUIRED_DISPLAY_BACKEND"
-    fi
+    echo "Displays:  ${QEMU_REQUIRED_DISPLAY_BACKENDS[*]}"
 done
+
+if [ ! -f "$PREFIX/share/qemu/efi-virtio.rom" ]; then
+    echo "error: QEMU firmware resources were not installed in $PREFIX/share/qemu" >&2
+    exit 1
+fi
 
 echo
 echo "$version_line"

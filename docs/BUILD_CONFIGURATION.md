@@ -74,6 +74,18 @@ ARMOS_CONFIG=configs/raspi3-arm64-wifi.conf tools/build_pi3_sd.sh --mode none
 
 `ARMOS_CONFIG` paths are resolved from the repository root.
 
+The tracked qemu-virt profiles also select the VirGL GPU transport:
+
+```ini
+ENABLE_GPU=yes
+QEMU_GPU_ACCEL=virgl
+QEMU_GPU_HOSTMEM=512M
+```
+
+Override `QEMU_GPU_ACCEL=2d` when testing the compatibility scanout path or
+when the host QEMU was built without VirGL. These launch options affect only
+qemu-virt; they do not enter the common kernel or Raspberry Pi builds.
+
 ## Precedence
 
 Values are resolved in this order, from highest to lowest priority:
@@ -206,6 +218,9 @@ BUILD_FONTCONFIG=no
 BUILD_HARFBUZZ=no
 BUILD_FCFT=no
 BUILD_FOOT=no
+BUILD_NUKLEAR=no
+BUILD_MESA=no
+BUILD_RAYLIB=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -227,9 +242,47 @@ installed in ArmOS; TCC can consume the library but does not build it.
 `BUILD_FCFT=yes` installs fcft 2.5.1 with HarfBuzz and utf8proc shaping for
 Foot. `BUILD_FOOT=yes` cross-builds Foot 1.9.2 with the maintained ArmOS
 portability patch and generates its Wayland protocol bindings below the
-target-specific build tree. `BUILD_ALL_USERLAND=yes` enables the
+target-specific build tree. `BUILD_NUKLEAR=yes` builds the pinned Nuklear
+library under `/opt/nuklear`, installs its public header for TCC, and includes
+the native `armui-demo` Wayland client. It also installs the first-party,
+engine-independent `/usr/lib/libarmui.a` and `<armui/armui.h>` interface;
+Nuklear types remain private to its implementation. `BUILD_ALL_USERLAND=yes` enables the
 complete third-party toolchain and graphics dependency set already handled by
 `build.sh`.
+
+`BUILD_MESA=yes` cross-builds the pinned minimal Mesa bundle with Gallium
+VirGL, surfaceless and Wayland EGL, and OpenGL ES 2. It installs `/opt/mesa`,
+the off-screen `egl-smoke` diagnostic, the cross-context
+`armgl-import-smoke` external-image diagnostic, the visible
+`egl-wayland-smoke` swapchain diagnostic and `armgl-compositor-smoke`. The
+latter exercises the complete compositor path: Gallium rendering, exported
+triple-buffered object, explicit fence, DRM import and scanout presentation. The Mesa
+stage also relinks `armos-wlcomp` with its optional ArmGL provider; the desktop
+continues to use the software scene until every layer can switch atomically to
+the GPU pipeline. Its M4, Bison, Meson, Ninja and Python modules come from the
+reproducible host-tools prefix; no arbitrary host installation is used. The
+build rejects stale userland archives before starting Mesa. The complete
+runtime bundle is currently restricted to arm64/qemu-virt; ARM32 is covered by
+the private source and ABI contract check until its full Mesa runtime milestone
+is enabled.
+
+Mesa is the sole C++ exception in this graphics stack. Its upstream GLSL
+compiler contains C++ translation units, so the host cross-compiler builds the
+private Mesa implementation with exceptions and RTTI disabled. ArmOS adds only
+`cxx_runtime_armos.cpp` for the required allocation operators and
+`lower_precision_armos.cpp` as a no-STL precision-lowering fallback. Neither
+source, the C++ standard library nor C++ headers are installed in `userfs`.
+Applications, TCC, EGL and GLES continue to consume C interfaces exclusively;
+this exception does not add C++ to the native ArmOS toolchain contract.
+
+`BUILD_RAYLIB=yes` requires `BUILD_MESA=yes`. It builds the pinned Raylib 6.0
+release as a static C library under `/opt/raylib` and installs the
+`raylib-smoke` validation client plus the `raypot-demo` accelerated Utah
+teapot. The latter validates real vertex and normal buffers, depth testing,
+custom GLES2 shaders, resize/input handling and Wayland presentation. Its
+ArmOS platform backend uses only Wayland, EGL and OpenGL ES 2. VirGL under QEMU
+and the future VC4/V3D Mesa backend on Raspberry Pi therefore share the same
+application-facing Raylib contract.
 
 The repository intentionally shares one `userfs` source tree between ARM32
 and ARM64 builds. Before rebuilding, `build.sh` checks every installed ELF.

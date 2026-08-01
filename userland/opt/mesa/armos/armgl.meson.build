@@ -1,0 +1,17 @@
+# ArmOS Gallium frontend integration for Mesa 25.3.x.
+#
+# The bundle builder copies this file and armgl_frontend.[ch] into
+# src/gallium/frontends/armgl.  It is separate from the VirGL winsys so the
+# state-tracker lifecycle remains independent of the selected GPU backend.
+
+libarmgl = static_library(
+  'armgl',
+  'armgl_frontend.c',
+  include_directories : [
+    inc_include, inc_src, inc_mesa,
+    inc_gallium, inc_gallium_aux,
+  ],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+)

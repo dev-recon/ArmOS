@@ -55,21 +55,123 @@ void wl_wire_store_u32(uint8_t *data, uint32_t value)
     memcpy(data, &value, sizeof(value));
 }
 
-static int wl_write_full(int fd, const void *buffer, size_t size)
+static int wl_client_update_output_watch(struct wl_server_client *client)
 {
-    const uint8_t *cursor = (const uint8_t *)buffer;
-    size_t done = 0;
+    uint32_t mask = WL_EVENT_HANGUP | WL_EVENT_ERROR;
 
-    while (done < size) {
-        ssize_t count = write(fd, cursor + done, size - done);
+    if (!client || !client->event_source)
+        return 0;
+    if (!client->dispatch_blocked)
+        mask |= WL_EVENT_READABLE;
+    if (client->output_head)
+        mask |= WL_EVENT_WRITABLE;
+    return wl_event_source_fd_update(client->event_source, mask);
+}
 
-        if (count < 0 && errno == EINTR)
-            continue;
-        if (count <= 0)
-            return -1;
-        done += (size_t)count;
+int wl_client_set_dispatch_blocked(struct wl_server_client *client,
+                                   bool blocked)
+{
+    if (!client)
+        return -1;
+    client->dispatch_blocked = blocked;
+    return wl_client_update_output_watch(client);
+}
+
+static int wl_client_queue_output(struct wl_server_client *client,
+                                  const void *buffer, size_t size, int fd)
+{
+    struct wl_server_outgoing *outgoing;
+    int owned_fd = -1;
+
+    if (!client || client->fd < 0 || !buffer || size == 0u ||
+        size > WL_WIRE_MAX_EVENT ||
+        client->output_messages >= WL_SERVER_MAX_OUTPUT_MESSAGES ||
+        client->output_bytes > WL_SERVER_MAX_OUTPUT_BYTES - size) {
+        errno = ENOBUFS;
+        return -1;
     }
-    return 0;
+    if (fd >= 0) {
+        owned_fd = dup(fd);
+        if (owned_fd < 0)
+            return -1;
+    }
+    outgoing = malloc(sizeof(*outgoing) + size);
+    if (!outgoing) {
+        if (owned_fd >= 0)
+            close(owned_fd);
+        return -1;
+    }
+    outgoing->next = NULL;
+    outgoing->size = size;
+    outgoing->offset = 0u;
+    outgoing->fd = owned_fd;
+    memcpy(outgoing->data, buffer, size);
+    if (client->output_tail)
+        client->output_tail->next = outgoing;
+    else
+        client->output_head = outgoing;
+    client->output_tail = outgoing;
+    client->output_bytes += size;
+    client->output_messages++;
+    if (wl_client_update_output_watch(client) < 0)
+        return -1;
+    return wl_client_flush_output(client);
+}
+
+int wl_client_flush_output(struct wl_server_client *client)
+{
+    while (client && client->output_head) {
+        struct wl_server_outgoing *outgoing = client->output_head;
+        ssize_t sent;
+
+        if (outgoing->fd >= 0) {
+            union wl_server_control_buffer control;
+            struct cmsghdr *header;
+            struct iovec iov;
+            struct msghdr packet;
+
+            memset(&control, 0, sizeof(control));
+            memset(&packet, 0, sizeof(packet));
+            iov.iov_base = outgoing->data + outgoing->offset;
+            iov.iov_len = outgoing->size - outgoing->offset;
+            packet.msg_iov = &iov;
+            packet.msg_iovlen = 1u;
+            packet.msg_control = control.bytes;
+            packet.msg_controllen = CMSG_SPACE(sizeof(int));
+            header = CMSG_FIRSTHDR(&packet);
+            header->cmsg_len = CMSG_LEN(sizeof(int));
+            header->cmsg_level = SOL_SOCKET;
+            header->cmsg_type = SCM_RIGHTS;
+            memcpy(CMSG_DATA(header), &outgoing->fd, sizeof(outgoing->fd));
+            do {
+                sent = sendmsg(client->fd, &packet, 0);
+            } while (sent < 0 && errno == EINTR);
+            if (sent > 0) {
+                close(outgoing->fd);
+                outgoing->fd = -1;
+            }
+        } else {
+            do {
+                sent = write(client->fd,
+                             outgoing->data + outgoing->offset,
+                             outgoing->size - outgoing->offset);
+            } while (sent < 0 && errno == EINTR);
+        }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return wl_client_update_output_watch(client);
+        if (sent <= 0)
+            return -1;
+        outgoing->offset += (size_t)sent;
+        if (outgoing->offset < outgoing->size)
+            continue;
+        client->output_head = outgoing->next;
+        if (!client->output_head)
+            client->output_tail = NULL;
+        client->output_bytes -= outgoing->size;
+        client->output_messages--;
+        free(outgoing);
+    }
+    return client ? wl_client_update_output_watch(client) : -1;
 }
 
 int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
@@ -89,7 +191,7 @@ int wl_client_send_words(struct wl_server_client *client, uint32_t object_id,
     if (word_count > 0)
         memcpy(message + WL_WIRE_HEADER_SIZE, words,
                word_count * sizeof(uint32_t));
-    return wl_write_full(client->fd, message, size);
+    return wl_client_queue_output(client, message, size, -1);
 }
 
 int wl_client_send_fd_words(struct wl_server_client *client,
@@ -97,12 +199,7 @@ int wl_client_send_fd_words(struct wl_server_client *client,
                             const uint32_t *words, size_t word_count, int fd)
 {
     uint8_t message[WL_WIRE_MAX_EVENT];
-    union wl_server_control_buffer control;
-    struct cmsghdr *header;
-    struct iovec iov;
-    struct msghdr packet;
     size_t size = WL_WIRE_HEADER_SIZE + word_count * sizeof(uint32_t);
-    ssize_t sent;
 
     if (!client || client->fd < 0 || fd < 0 ||
         size > sizeof(message) || size > 0xffffu)
@@ -113,29 +210,7 @@ int wl_client_send_fd_words(struct wl_server_client *client,
     if (word_count > 0u)
         memcpy(message + WL_WIRE_HEADER_SIZE, words,
                word_count * sizeof(uint32_t));
-    memset(&control, 0, sizeof(control));
-    memset(&packet, 0, sizeof(packet));
-    iov.iov_base = message;
-    iov.iov_len = size;
-    packet.msg_iov = &iov;
-    packet.msg_iovlen = 1u;
-    packet.msg_control = control.bytes;
-    packet.msg_controllen = CMSG_SPACE(sizeof(int));
-    header = CMSG_FIRSTHDR(&packet);
-    header->cmsg_len = CMSG_LEN(sizeof(int));
-    header->cmsg_level = SOL_SOCKET;
-    header->cmsg_type = SCM_RIGHTS;
-    memcpy(CMSG_DATA(header), &fd, sizeof(fd));
-    do {
-        sent = sendmsg(client->fd, &packet, 0);
-    } while (sent < 0 && errno == EINTR);
-    if (sent != (ssize_t)size) {
-        fprintf(stderr,
-                "armos-wlcomp: send fd event returned %ld/%lu (errno=%d)\n",
-                (long)sent, (unsigned long)size, errno);
-        return -1;
-    }
-    return 0;
+    return wl_client_queue_output(client, message, size, fd);
 }
 
 static int wl_client_build_string_message(uint8_t *message, size_t capacity,
@@ -175,7 +250,7 @@ int wl_client_send_string(struct wl_server_client *client,
         wl_client_build_string_message(message, sizeof(message), object_id,
                                        opcode, text, &size) < 0)
         return -1;
-    return wl_write_full(client->fd, message, size);
+    return wl_client_queue_output(client, message, size, -1);
 }
 
 int wl_client_send_fd_string(struct wl_server_client *client,
@@ -183,34 +258,13 @@ int wl_client_send_fd_string(struct wl_server_client *client,
                              const char *text, int fd)
 {
     uint8_t message[WL_WIRE_MAX_EVENT];
-    union wl_server_control_buffer control;
-    struct cmsghdr *header;
-    struct iovec iov;
-    struct msghdr packet;
     size_t size;
-    ssize_t sent;
 
     if (!client || client->fd < 0 || fd < 0 ||
         wl_client_build_string_message(message, sizeof(message), object_id,
                                        opcode, text, &size) < 0)
         return -1;
-    memset(&control, 0, sizeof(control));
-    memset(&packet, 0, sizeof(packet));
-    iov.iov_base = message;
-    iov.iov_len = size;
-    packet.msg_iov = &iov;
-    packet.msg_iovlen = 1u;
-    packet.msg_control = control.bytes;
-    packet.msg_controllen = CMSG_SPACE(sizeof(int));
-    header = CMSG_FIRSTHDR(&packet);
-    header->cmsg_len = CMSG_LEN(sizeof(int));
-    header->cmsg_level = SOL_SOCKET;
-    header->cmsg_type = SCM_RIGHTS;
-    memcpy(CMSG_DATA(header), &fd, sizeof(fd));
-    do {
-        sent = sendmsg(client->fd, &packet, 0);
-    } while (sent < 0 && errno == EINTR);
-    return sent == (ssize_t)size ? 0 : -1;
+    return wl_client_queue_output(client, message, size, fd);
 }
 
 static int wl_client_send_string_event(struct wl_server_client *client,
@@ -238,7 +292,7 @@ static int wl_client_send_string_event(struct wl_server_client *client,
     wl_wire_store_u32(message + 12, text_size);
     memcpy(message + 16, text, text_size);
     wl_wire_store_u32(message + 16 + padded, last);
-    return wl_write_full(client->fd, message, size);
+    return wl_client_queue_output(client, message, size, -1);
 }
 
 int wl_client_send_global(struct wl_server_client *client,
@@ -272,7 +326,7 @@ int wl_client_send_error(struct wl_server_client *client, uint32_t object_id,
     wl_wire_store_u32(message + 12, code);
     wl_wire_store_u32(message + 16, text_size);
     memcpy(message + 20, message_text, text_size);
-    return wl_write_full(client->fd, message, size);
+    return wl_client_queue_output(client, message, size, -1);
 }
 
 int wl_client_send_delete_id(struct wl_server_client *client,
@@ -378,7 +432,8 @@ int wl_server_dispatch_client_pending(struct wl_server *server,
 
     if (!server || !client)
         return -1;
-    while (client->receive_length >= WL_WIRE_HEADER_SIZE &&
+    while (!client->dispatch_blocked &&
+           client->receive_length >= WL_WIRE_HEADER_SIZE &&
            dispatched < WL_SERVER_CLIENT_DISPATCH_BUDGET) {
         uint32_t header = wl_wire_u32(client->receive + 4);
         uint32_t size = header >> 16;
@@ -398,7 +453,8 @@ int wl_server_dispatch_client_pending(struct wl_server *server,
         }
         dispatched++;
     }
-    if (client->receive_length >= WL_WIRE_HEADER_SIZE) {
+    if (!client->dispatch_blocked &&
+        client->receive_length >= WL_WIRE_HEADER_SIZE) {
         uint32_t header = wl_wire_u32(client->receive + 4);
         uint32_t size = header >> 16;
 
@@ -422,6 +478,8 @@ int wl_server_receive_client(struct wl_server *server,
 
     if (!server || !client)
         return -1;
+    if (client->dispatch_blocked)
+        return 0;
     pending = wl_server_dispatch_client_pending(server, client);
     if (pending != 0)
         return pending;
@@ -440,6 +498,8 @@ int wl_server_receive_client(struct wl_server *server,
     do {
         count = recvmsg(client->fd, &message, MSG_CMSG_CLOEXEC);
     } while (count < 0 && errno == EINTR);
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        return 0;
     if (count <= 0)
         return -1;
     if ((message.msg_flags & MSG_CTRUNC) != 0 ||
@@ -453,6 +513,8 @@ int wl_server_receive_client(struct wl_server *server,
 void wl_server_disconnect_client(struct wl_server *server,
                                  struct wl_server_client *client)
 {
+    struct wl_server_outgoing *outgoing;
+
     if (!client)
         return;
 
@@ -470,6 +532,10 @@ void wl_server_disconnect_client(struct wl_server *server,
             server->drag_client = NULL;
             server->drag_surface = NULL;
         }
+        if (server->shell_client == client) {
+            server->shell_client = NULL;
+            server->panel_height = 0u;
+        }
         for (size_t client_index = 0u;
              client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
             struct wl_server_client *other = &server->clients[client_index];
@@ -486,6 +552,15 @@ void wl_server_disconnect_client(struct wl_server *server,
             }
         }
     }
+    if (server) {
+        for (size_t index = 0u;
+             index < WL_SERVER_MAX_SURFACES; index++) {
+            if (client->surfaces[index].used)
+                wl_renderer_release_surface_gpu(
+                    &server->renderer, &client->surfaces[index]);
+        }
+    }
+    wl_client_destroy_buffers(client);
     for (size_t index = 0; index < WL_SERVER_MAX_POOLS; index++) {
         if (!client->pools[index].used)
             continue;
@@ -499,6 +574,15 @@ void wl_server_disconnect_client(struct wl_server *server,
     }
     for (size_t index = 0; index < client->pending_fd_count; index++)
         close(client->pending_fds[index]);
+    outgoing = client->output_head;
+    while (outgoing) {
+        struct wl_server_outgoing *next = outgoing->next;
+
+        if (outgoing->fd >= 0)
+            close(outgoing->fd);
+        free(outgoing);
+        outgoing = next;
+    }
     if (client->event_source) {
         (void)wl_event_source_remove(client->event_source);
         client->event_source = NULL;

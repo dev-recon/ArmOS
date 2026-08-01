@@ -189,6 +189,9 @@ typedef enum file_type {
     FILE_TYPE_PTY_MASTER,
     FILE_TYPE_EVENTFD,
     FILE_TYPE_TIMERFD,
+    FILE_TYPE_DRM,
+    FILE_TYPE_DRM_BO,
+    FILE_TYPE_DRM_FENCE,
 } file_type_t;
 typedef struct inode_operations inode_operations_t;
 
@@ -481,6 +484,8 @@ typedef struct task {
     vaddr_t futex_wait_address;              /* Active userspace wait key */
     uint32_t futex_wait_active;
     uint32_t poll_wait_active;               /* Waiting for descriptor state change */
+    const void *const *poll_wait_keys;        /* Descriptor resources observed by poll */
+    uint32_t poll_wait_key_count;
 
 } __attribute__((aligned(8))) task_t;
 
@@ -506,8 +511,10 @@ int task_futex_wait(task_t* task, vaddr_t address, uint32_t expected,
 uint32_t task_futex_wake(process_t* process, vaddr_t address,
                          uint32_t max_count);
 uint32_t task_poll_generation(void);
-int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline);
+int task_poll_wait(task_t* task, uint32_t generation, uint32_t deadline,
+                   const void *const *keys, uint32_t key_count);
 void task_poll_notify(void);
+void task_poll_notify_key(const void *key);
 void task_destroy(task_t* task);
 void task_free_kernel_stack(task_t* task);
 

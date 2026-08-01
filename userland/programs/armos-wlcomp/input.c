@@ -23,10 +23,14 @@
 #include <errno.h>
 #include <unistd.h>
 
-#define WL_WINDOW_TITLE_HEIGHT 28
 #define WL_WINDOW_CLOSE_X      14
+#define WL_WINDOW_MINIMIZE_X   30
+#define WL_WINDOW_MAXIMIZE_X   46
 #define WL_WINDOW_CLOSE_Y      14
-#define WL_WINDOW_BUTTON_HIT   9
+#define WL_WINDOW_BUTTON_HIT   7
+#define WL_WINDOW_MINIMIZED_WIDTH 220u
+#define WL_INPUT_READ_BATCH       32u
+#define WL_INPUT_DISPATCH_BUDGET 128u
 
 #define WL_XKB_MOD_SHIFT   (1u << 0)
 #define WL_XKB_MOD_LOCK    (1u << 1)
@@ -62,8 +66,43 @@ static struct wl_server_object *wl_find_surface_object(
     return NULL;
 }
 
-static int wl_surface_close_button_at(const struct wl_server_surface *surface,
-                                      int32_t x, int32_t y)
+static void wl_damage_surface_group(struct wl_server *server,
+                                    struct wl_server_client *client,
+                                    struct wl_server_surface *root);
+
+static void wl_damage_resize_outline(struct wl_server *server,
+                                     int32_t x, int32_t y,
+                                     uint32_t width, uint32_t height)
+{
+    const uint32_t thickness = 3u;
+    uint32_t frame_height = height + WL_WINDOW_TITLE_HEIGHT;
+
+    wl_renderer_damage_rect(
+        server, x - (int32_t)thickness, y - (int32_t)thickness,
+        width + thickness * 2u, thickness * 2u);
+    wl_renderer_damage_rect(
+        server, x - (int32_t)thickness,
+        y + (int32_t)frame_height - (int32_t)thickness,
+        width + thickness * 2u, thickness * 2u);
+    wl_renderer_damage_rect(
+        server, x - (int32_t)thickness, y,
+        thickness * 2u, frame_height);
+    wl_renderer_damage_rect(
+        server, x + (int32_t)width - (int32_t)thickness, y,
+        thickness * 2u, frame_height);
+}
+
+static uint32_t wl_surface_frame_width(
+    const struct wl_server_surface *surface)
+{
+    if (surface && surface->minimized &&
+        surface->width > WL_WINDOW_MINIMIZED_WIDTH)
+        return WL_WINDOW_MINIMIZED_WIDTH;
+    return surface ? surface->width : 0u;
+}
+
+static int wl_surface_button_at(const struct wl_server_surface *surface,
+                                int32_t x, int32_t y, int32_t center_x)
 {
     int32_t local_x;
     int32_t local_y;
@@ -72,10 +111,121 @@ static int wl_surface_close_button_at(const struct wl_server_surface *surface,
         return 0;
     local_x = x - surface->x;
     local_y = y - surface->y;
-    return local_x >= WL_WINDOW_CLOSE_X - WL_WINDOW_BUTTON_HIT &&
-           local_x <= WL_WINDOW_CLOSE_X + WL_WINDOW_BUTTON_HIT &&
+    return local_x >= center_x - WL_WINDOW_BUTTON_HIT &&
+           local_x <= center_x + WL_WINDOW_BUTTON_HIT &&
            local_y >= WL_WINDOW_CLOSE_Y - WL_WINDOW_BUTTON_HIT &&
            local_y <= WL_WINDOW_CLOSE_Y + WL_WINDOW_BUTTON_HIT;
+}
+
+static uint32_t wl_surface_resize_edges_at(
+    const struct wl_server_surface *surface, int32_t x, int32_t y)
+{
+    const int32_t border = 6;
+    int32_t local_x;
+    int32_t local_y;
+    int32_t frame_height;
+    uint32_t edges = 0u;
+
+    if (!wl_surface_has_server_decoration(surface) || surface->maximized ||
+        surface->minimized)
+        return 0u;
+    local_x = x - surface->x;
+    local_y = y - surface->y;
+    frame_height = (int32_t)surface->height + WL_WINDOW_TITLE_HEIGHT;
+    if (local_y < border)
+        edges |= 1u;
+    else if (local_y >= frame_height - border)
+        edges |= 2u;
+    if (local_x < border)
+        edges |= 4u;
+    else if (local_x >= (int32_t)wl_surface_frame_width(surface) - border)
+        edges |= 8u;
+    return edges;
+}
+
+int wl_server_set_surface_minimized(struct wl_server *server,
+                                    struct wl_server_client *client,
+                                    struct wl_server_surface *surface,
+                                    bool minimized)
+{
+    uint32_t columns;
+    uint32_t slot = 0u;
+
+    if (!server || !client || !surface ||
+        surface->minimized == minimized)
+        return 0;
+    wl_damage_surface_group(server, client, surface);
+    if (minimized) {
+        surface->minimize_restore_x = surface->x;
+        surface->minimize_restore_y = surface->y;
+        surface->minimized = true;
+        surface->shaded = true;
+        for (size_t client_index = 0u;
+             client_index < WL_SERVER_MAX_CLIENTS; client_index++) {
+            struct wl_server_client *candidate =
+                &server->clients[client_index];
+
+            if (!candidate->used)
+                continue;
+            for (size_t surface_index = 0u;
+                 surface_index < WL_SERVER_MAX_SURFACES; surface_index++) {
+                struct wl_server_surface *other =
+                    &candidate->surfaces[surface_index];
+
+                if (other != surface && other->used && other->minimized)
+                    slot++;
+            }
+        }
+        columns = server->renderer.framebuffer.width /
+            (WL_WINDOW_MINIMIZED_WIDTH + 12u);
+        if (columns == 0u)
+            columns = 1u;
+        surface->x = 12 + (int32_t)((slot % columns) *
+            (WL_WINDOW_MINIMIZED_WIDTH + 12u));
+        surface->y = (int32_t)server->renderer.framebuffer.height -
+            WL_WINDOW_TITLE_HEIGHT - 12 -
+            (int32_t)((slot / columns) *
+                      (WL_WINDOW_TITLE_HEIGHT + 8u));
+    } else {
+        surface->minimized = false;
+        surface->shaded = false;
+        surface->x = surface->minimize_restore_x;
+        surface->y = surface->minimize_restore_y;
+    }
+    wl_damage_surface_group(server, client, surface);
+    return wl_server_schedule_render(server, false);
+}
+
+static int wl_toggle_maximize(struct wl_server *server,
+                              struct wl_server_client *client,
+                              struct wl_server_surface *surface)
+{
+    if (surface->minimized &&
+        wl_server_set_surface_minimized(server, client, surface, false) < 0)
+        return -1;
+    wl_damage_surface_group(server, client, surface);
+    surface->shaded = false;
+    if (!surface->maximized) {
+        surface->restore_x = surface->x;
+        surface->restore_y = surface->y;
+        surface->restore_width = surface->width;
+        surface->restore_height = surface->height;
+        surface->maximized = true;
+        surface->x = 0;
+        surface->y = (int32_t)server->panel_height;
+        return wl_server_configure_toplevel(
+            server, client, surface,
+            server->renderer.framebuffer.width,
+            server->renderer.framebuffer.height -
+                server->panel_height - WL_WINDOW_TITLE_HEIGHT,
+            1u);
+    }
+    surface->maximized = false;
+    surface->x = surface->restore_x;
+    surface->y = surface->restore_y;
+    return wl_server_configure_toplevel(
+        server, client, surface,
+        surface->restore_width, surface->restore_height, 0u);
 }
 
 static int wl_send_toplevel_close(struct wl_server_client *client,
@@ -94,17 +244,12 @@ static struct wl_server_surface *wl_surface_root(
 {
     size_t depth = 0u;
 
-    while (surface &&
-           surface->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+    while (surface && wl_surface_is_child_role(surface) &&
            surface->parent &&
            depth++ < WL_SERVER_MAX_SURFACES)
         surface = surface->parent;
     return depth <= WL_SERVER_MAX_SURFACES ? surface : NULL;
 }
-
-static void wl_damage_surface_group(struct wl_server *server,
-                                    struct wl_server_client *client,
-                                    struct wl_server_surface *root);
 
 static void wl_raise_surface_group(struct wl_server *server,
                                    struct wl_server_client *client,
@@ -113,7 +258,9 @@ static void wl_raise_surface_group(struct wl_server *server,
     if (!server || !client || !root)
         return;
     wl_damage_surface_group(server, client, root);
-    root->z_order = ++server->next_surface_z;
+    root->z_order =
+        root->role == WL_SERVER_SURFACE_ROLE_PANEL ?
+        UINT64_MAX : ++server->next_surface_z;
     for (size_t index = 0u; index < WL_SERVER_MAX_SURFACES; index++) {
         struct wl_server_surface *surface = &client->surfaces[index];
 
@@ -131,25 +278,27 @@ static int wl_surface_origin(const struct wl_server_surface *surface,
 
     if (!surface || !x || !y)
         return -1;
-    if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+    if (!wl_surface_is_child_role(surface)) {
         *x = surface->x;
         *y = surface->y +
-            (surface->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0);
+            (wl_surface_has_server_decoration(surface) ?
+             WL_WINDOW_TITLE_HEIGHT : 0);
         return 0;
     }
     *x = surface->subsurface_x;
     *y = surface->subsurface_y;
-    while (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
+    while (wl_surface_is_child_role(ancestor) &&
            ancestor->parent &&
            depth++ < WL_SERVER_MAX_SURFACES) {
         ancestor = ancestor->parent;
-        if (ancestor->role == WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+        if (wl_surface_is_child_role(ancestor)) {
             *x += ancestor->subsurface_x;
             *y += ancestor->subsurface_y;
         } else {
             *x += ancestor->x;
             *y += ancestor->y +
-                (ancestor->server_decorated ? WL_WINDOW_TITLE_HEIGHT : 0);
+                (wl_surface_has_server_decoration(ancestor) ?
+                 WL_WINDOW_TITLE_HEIGHT : 0);
         }
     }
     return depth <= WL_SERVER_MAX_SURFACES ? 0 : -1;
@@ -168,7 +317,7 @@ static void wl_damage_surface_group(struct wl_server *server,
             wl_surface_root(surface) != root ||
             wl_surface_origin(surface, &x, &y) < 0)
             continue;
-        if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE) {
+        if (!wl_surface_is_child_role(surface)) {
             x = surface->x;
             y = surface->y;
         }
@@ -197,16 +346,19 @@ static struct wl_server_surface *wl_surface_at(
                 surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
                 wl_surface_origin(surface, &surface_x, &surface_y) < 0)
                 continue;
-            if (surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
-                surface->server_decorated)
+            if (!wl_surface_is_child_role(surface) &&
+                wl_surface_has_server_decoration(surface))
                 surface_y -= WL_WINDOW_TITLE_HEIGHT;
             if (x >= surface_x &&
-                x < surface_x + (int32_t)surface->width &&
+                x < surface_x +
+                    (int32_t)wl_surface_frame_width(surface) &&
                 y >= surface_y &&
                 y < surface_y + (int32_t)surface->height +
-                    ((surface->role != WL_SERVER_SURFACE_ROLE_SUBSURFACE &&
-                      surface->server_decorated) ?
-                     WL_WINDOW_TITLE_HEIGHT : 0)) {
+                    ((!wl_surface_is_child_role(surface) &&
+                      wl_surface_has_server_decoration(surface)) ?
+                     WL_WINDOW_TITLE_HEIGHT : 0) &&
+                (!surface->shaded ||
+                 y < surface_y + WL_WINDOW_TITLE_HEIGHT)) {
                 if (!top || surface->z_order > top->z_order) {
                     top = surface;
                     top_owner_index = ci;
@@ -216,6 +368,45 @@ static struct wl_server_surface *wl_surface_at(
     }
     *owner_index = top_owner_index;
     return top;
+}
+
+static enum wl_server_pointer_cursor wl_resize_cursor(uint32_t edges)
+{
+    if ((edges & (1u | 2u)) != 0u &&
+        (edges & (4u | 8u)) != 0u) {
+        if ((edges & (1u | 4u)) == (1u | 4u) ||
+            (edges & (2u | 8u)) == (2u | 8u))
+            return WL_SERVER_POINTER_CURSOR_RESIZE_NWSE;
+        return WL_SERVER_POINTER_CURSOR_RESIZE_NESW;
+    }
+    if ((edges & (4u | 8u)) != 0u)
+        return WL_SERVER_POINTER_CURSOR_RESIZE_EW;
+    if ((edges & (1u | 2u)) != 0u)
+        return WL_SERVER_POINTER_CURSOR_RESIZE_NS;
+    return WL_SERVER_POINTER_CURSOR_ARROW;
+}
+
+static void wl_update_pointer_cursor(struct wl_server *server)
+{
+    struct wl_server_surface *surface;
+    struct wl_server_surface *root;
+    size_t owner_index;
+    uint32_t edges = 0u;
+
+    if (server->resize_surface && server->resize_surface->used) {
+        edges = server->resize_edges;
+    } else if (server->drag_surface && server->drag_surface->used) {
+        edges = 0u;
+    } else {
+        surface = wl_surface_at(
+            server, server->pointer_x, server->pointer_y, &owner_index);
+        (void)owner_index;
+        root = wl_surface_root(surface);
+        if (root)
+            edges = wl_surface_resize_edges_at(
+                root, server->pointer_x, server->pointer_y);
+    }
+    server->pointer_cursor = wl_resize_cursor(edges);
 }
 
 static void wl_send_pointer_frame(struct wl_server_client *client,
@@ -367,8 +558,32 @@ static void wl_handle_button(struct wl_server *server,
     uint32_t words[4];
     bool pressed = event->value != 0;
 
-    if (event->code != ARMOS_INPUT_BUTTON_LEFT)
+    if (event->code != ARMOS_INPUT_BUTTON_LEFT &&
+        event->code != ARMOS_INPUT_BUTTON_RIGHT &&
+        event->code != ARMOS_INPUT_BUTTON_MIDDLE)
         return;
+    if (event->code != ARMOS_INPUT_BUTTON_LEFT) {
+        /*
+         * Window-management gestures are bound to the primary button.
+         * Other buttons are still ordinary Wayland pointer events and must
+         * reach every client through the same seat contract.
+         */
+        wl_send_pointer_motion(server, event->timestamp_ms);
+        client = server->pointer_client;
+        surface = server->pointer_surface;
+        if (!client || !surface)
+            return;
+        pointer = wl_find_input_object(client, WL_SERVER_OBJECT_POINTER);
+        if (!pointer)
+            return;
+        words[0] = ++server->serial;
+        words[1] = event->timestamp_ms;
+        words[2] = event->code;
+        words[3] = pressed ? 1u : 0u;
+        (void)wl_client_send_words(client, pointer->id, 3u, words, 4u);
+        wl_send_pointer_frame(client, pointer);
+        return;
+    }
     server->pointer_left = pressed;
     if (pressed) {
         /*
@@ -383,6 +598,9 @@ static void wl_handle_button(struct wl_server *server,
             wl_focus_surface(server, NULL, NULL);
         } else {
             bool close_button;
+            bool minimize_button;
+            bool maximize_button;
+            uint32_t resize_edges;
 
             client = &server->clients[owner_index];
             if (!client->used)
@@ -392,12 +610,59 @@ static void wl_handle_button(struct wl_server *server,
                 return;
             wl_raise_surface_group(server, client, root);
             wl_focus_surface(server, client, root);
-            close_button = wl_surface_close_button_at(
+            close_button = wl_surface_button_at(
+                root, server->pointer_x, server->pointer_y,
+                WL_WINDOW_CLOSE_X);
+            minimize_button = wl_surface_button_at(
+                root, server->pointer_x, server->pointer_y,
+                WL_WINDOW_MINIMIZE_X);
+            maximize_button = wl_surface_button_at(
+                root, server->pointer_x, server->pointer_y,
+                WL_WINDOW_MAXIMIZE_X);
+            resize_edges = wl_surface_resize_edges_at(
                 root, server->pointer_x, server->pointer_y);
-            if (surface == root && root->server_decorated &&
+            if (surface == root &&
+                wl_surface_has_server_decoration(root) &&
                 close_button) {
                 (void)wl_send_toplevel_close(client, root);
-            } else if (surface == root && root->server_decorated &&
+                return;
+            } else if (surface == root &&
+                       wl_surface_has_server_decoration(root) &&
+                       minimize_button) {
+                (void)wl_server_set_surface_minimized(
+                    server, client, root, !root->minimized);
+                return;
+            } else if (surface == root &&
+                       wl_surface_has_server_decoration(root) &&
+                       maximize_button) {
+                (void)wl_toggle_maximize(server, client, root);
+                return;
+            } else if (surface == root && resize_edges != 0u) {
+                server->resize_client = client;
+                server->resize_surface = root;
+                server->resize_edges = resize_edges;
+                server->resize_pointer_x = server->pointer_x;
+                server->resize_pointer_y = server->pointer_y;
+                server->resize_x = root->x;
+                server->resize_y = root->y;
+                server->resize_width = root->width;
+                server->resize_height = root->height;
+                server->resize_initial_width = root->width;
+                server->resize_initial_height = root->height;
+                root->resize_from_left = (resize_edges & 4u) != 0u;
+                root->resize_from_top = (resize_edges & 1u) != 0u;
+                root->resize_anchor_right =
+                    root->x + (int32_t)root->width;
+                root->resize_anchor_bottom =
+                    root->y + WL_WINDOW_TITLE_HEIGHT +
+                    (int32_t)root->height;
+                wl_damage_resize_outline(
+                    server, server->resize_x, server->resize_y,
+                    server->resize_width, server->resize_height);
+                wl_update_pointer_cursor(server);
+                return;
+            } else if (surface == root &&
+                       wl_surface_has_server_decoration(root) &&
                        server->pointer_y <
                        root->y + WL_WINDOW_TITLE_HEIGHT) {
                 server->drag_client = client;
@@ -409,6 +674,18 @@ static void wl_handle_button(struct wl_server *server,
     } else {
         server->drag_client = NULL;
         server->drag_surface = NULL;
+        if (server->resize_client && server->resize_surface) {
+            wl_damage_resize_outline(
+                server, server->resize_x, server->resize_y,
+                server->resize_width, server->resize_height);
+            (void)wl_server_configure_toplevel(
+                server, server->resize_client, server->resize_surface,
+                server->resize_width, server->resize_height, 0u);
+        }
+        server->resize_client = NULL;
+        server->resize_surface = NULL;
+        server->resize_edges = 0u;
+        wl_update_pointer_cursor(server);
         if (server->pointer_grab_serial == 0u)
             return;
         client = server->pointer_client;
@@ -500,21 +777,28 @@ static void wl_handle_key(struct wl_server *server,
         wl_send_keyboard_modifiers(server, server->focus_client, keyboard);
 }
 
-static void wl_handle_input_event(struct wl_server *server,
-                                  const struct armos_input_event *event)
+static bool wl_input_is_motion(const struct armos_input_event *event)
 {
-    if (event->type == ARMOS_INPUT_EVENT_CONFIG) {
-        if (event->code == ARMOS_INPUT_CONFIG_KEYBOARD_LAYOUT &&
-            event->value >= 0 &&
-            (uint32_t)event->value < ARMOS_KEYBOARD_LAYOUT_COUNT &&
-            server->keyboard_layout != (uint32_t)event->value) {
-            server->keyboard_layout = (uint32_t)event->value;
-            (void)wl_server_broadcast_keymap(server);
-        }
-    } else if (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
-        event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
-        int32_t previous_pointer_x = server->pointer_x;
-        int32_t previous_pointer_y = server->pointer_y;
+    return event &&
+        (event->type == ARMOS_INPUT_EVENT_RELATIVE ||
+         event->type == ARMOS_INPUT_EVENT_ABSOLUTE);
+}
+
+static void wl_handle_motion_events(
+    struct wl_server *server, const struct armos_input_event *events,
+    size_t count)
+{
+    int32_t previous_pointer_x;
+    int32_t previous_pointer_y;
+    uint32_t timestamp_ms;
+
+    if (!server || !events || count == 0u)
+        return;
+    previous_pointer_x = server->pointer_x;
+    previous_pointer_y = server->pointer_y;
+    timestamp_ms = events[count - 1u].timestamp_ms;
+    for (size_t index = 0u; index < count; index++) {
+        const struct armos_input_event *event = &events[index];
 
         if (event->code == ARMOS_INPUT_AXIS_X) {
             if (event->type == ARMOS_INPUT_EVENT_ABSOLUTE) {
@@ -535,32 +819,99 @@ static void wl_handle_input_event(struct wl_server *server,
                 server->pointer_y += event->value;
             }
         }
-        if (server->pointer_x < 0)
-            server->pointer_x = 0;
-        if (server->pointer_y < 0)
-            server->pointer_y = 0;
-        if ((uint32_t)server->pointer_x >= server->renderer.framebuffer.width)
-            server->pointer_x =
-                (int32_t)server->renderer.framebuffer.width - 1;
-        if ((uint32_t)server->pointer_y >= server->renderer.framebuffer.height)
-            server->pointer_y =
-                (int32_t)server->renderer.framebuffer.height - 1;
-        if ((server->pointer_x != previous_pointer_x ||
-             server->pointer_y != previous_pointer_y) &&
-            server->drag_surface && server->drag_client &&
-            server->drag_surface->used && server->drag_client->used) {
-            wl_renderer_damage_surface_at(
-                server, server->drag_surface,
-                server->drag_surface->x, server->drag_surface->y);
-            server->drag_surface->x =
-                server->pointer_x - server->drag_offset_x;
-            server->drag_surface->y =
-                server->pointer_y - server->drag_offset_y;
-            wl_renderer_damage_surface_at(
-                server, server->drag_surface,
-                server->drag_surface->x, server->drag_surface->y);
+    }
+    if (server->pointer_x < 0)
+        server->pointer_x = 0;
+    if (server->pointer_y < 0)
+        server->pointer_y = 0;
+    if ((uint32_t)server->pointer_x >= server->renderer.framebuffer.width)
+        server->pointer_x =
+            (int32_t)server->renderer.framebuffer.width - 1;
+    if ((uint32_t)server->pointer_y >= server->renderer.framebuffer.height)
+        server->pointer_y =
+            (int32_t)server->renderer.framebuffer.height - 1;
+    wl_update_pointer_cursor(server);
+    if ((server->pointer_x != previous_pointer_x ||
+         server->pointer_y != previous_pointer_y) &&
+        server->drag_surface && server->drag_client &&
+        server->drag_surface->used && server->drag_client->used) {
+        wl_renderer_damage_surface_at(
+            server, server->drag_surface,
+            server->drag_surface->x, server->drag_surface->y);
+        server->drag_surface->x =
+            server->pointer_x - server->drag_offset_x;
+        server->drag_surface->y =
+            server->pointer_y - server->drag_offset_y;
+        wl_renderer_damage_surface_at(
+            server, server->drag_surface,
+            server->drag_surface->x, server->drag_surface->y);
+    } else if ((server->pointer_x != previous_pointer_x ||
+                server->pointer_y != previous_pointer_y) &&
+               server->resize_surface && server->resize_client &&
+               server->resize_surface->used &&
+               server->resize_client->used) {
+        struct wl_server_surface *surface = server->resize_surface;
+        int32_t delta_x = server->pointer_x - server->resize_pointer_x;
+        int32_t delta_y = server->pointer_y - server->resize_pointer_y;
+        int64_t width = server->resize_initial_width;
+        int64_t height = server->resize_initial_height;
+        uint32_t minimum_width =
+            surface->minimum_width ? surface->minimum_width : 160u;
+        uint32_t minimum_height =
+            surface->minimum_height ? surface->minimum_height : 100u;
+        uint32_t maximum_width =
+            surface->maximum_width ? surface->maximum_width :
+            server->renderer.framebuffer.width;
+        uint32_t maximum_height =
+            surface->maximum_height ? surface->maximum_height :
+            server->renderer.framebuffer.height - WL_WINDOW_TITLE_HEIGHT;
+
+        if ((server->resize_edges & 4u) != 0u)
+            width -= delta_x;
+        else if ((server->resize_edges & 8u) != 0u)
+            width += delta_x;
+        if ((server->resize_edges & 1u) != 0u)
+            height -= delta_y;
+        else if ((server->resize_edges & 2u) != 0u)
+            height += delta_y;
+        if (width < (int64_t)minimum_width)
+            width = minimum_width;
+        if (height < (int64_t)minimum_height)
+            height = minimum_height;
+        if (width > (int64_t)maximum_width)
+            width = maximum_width;
+        if (height > (int64_t)maximum_height)
+            height = maximum_height;
+        wl_damage_resize_outline(
+            server, server->resize_x, server->resize_y,
+            server->resize_width, server->resize_height);
+        server->resize_width = (uint32_t)width;
+        server->resize_height = (uint32_t)height;
+        server->resize_x = (server->resize_edges & 4u) != 0u ?
+            surface->resize_anchor_right - (int32_t)width : surface->x;
+        server->resize_y = (server->resize_edges & 1u) != 0u ?
+            surface->resize_anchor_bottom - WL_WINDOW_TITLE_HEIGHT -
+                (int32_t)height : surface->y;
+        surface->resize_from_left = (server->resize_edges & 4u) != 0u;
+        surface->resize_from_top = (server->resize_edges & 1u) != 0u;
+        wl_damage_resize_outline(
+            server, server->resize_x, server->resize_y,
+            server->resize_width, server->resize_height);
+    }
+    wl_send_pointer_motion(server, timestamp_ms);
+}
+
+static void wl_handle_input_event(struct wl_server *server,
+                                  const struct armos_input_event *event)
+{
+    if (event->type == ARMOS_INPUT_EVENT_CONFIG) {
+        if (event->code == ARMOS_INPUT_CONFIG_KEYBOARD_LAYOUT &&
+            event->value >= 0 &&
+            (uint32_t)event->value < ARMOS_KEYBOARD_LAYOUT_COUNT &&
+            server->keyboard_layout != (uint32_t)event->value) {
+            server->keyboard_layout = (uint32_t)event->value;
+            (void)wl_server_broadcast_keymap(server);
         }
-        wl_send_pointer_motion(server, event->timestamp_ms);
     } else if (event->type == ARMOS_INPUT_EVENT_KEY) {
         if (event->code >= ARMOS_INPUT_BUTTON_LEFT)
             wl_handle_button(server, event);
@@ -571,11 +922,13 @@ static void wl_handle_input_event(struct wl_server *server,
 
 int wl_server_handle_input(struct wl_server *server)
 {
-    struct armos_input_event events[32];
+    struct armos_input_event events[WL_INPUT_READ_BATCH];
+    size_t dispatched = 0u;
     bool handled = false;
 
-    for (;;) {
+    while (dispatched < WL_INPUT_DISPATCH_BUDGET) {
         ssize_t size = read(server->input_fd, events, sizeof(events));
+        size_t count;
 
         if (size < 0) {
             if (errno == EAGAIN)
@@ -586,11 +939,25 @@ int wl_server_handle_input(struct wl_server *server)
             return handled ? 1 : 0;
         if ((size_t)size % sizeof(events[0]) != 0u)
             return -1;
-        for (size_t index = 0;
-             index < (size_t)size / sizeof(events[0]); index++)
-            wl_handle_input_event(server, &events[index]);
+        count = (size_t)size / sizeof(events[0]);
+        for (size_t index = 0u; index < count;) {
+            size_t first = index;
+
+            if (wl_input_is_motion(&events[index])) {
+                while (index < count &&
+                       wl_input_is_motion(&events[index]))
+                    index++;
+                wl_handle_motion_events(
+                    server, &events[first], index - first);
+            } else {
+                index++;
+                wl_handle_input_event(server, &events[first]);
+            }
+        }
+        dispatched += count;
         handled = true;
         if ((size_t)size < sizeof(events))
             return 1;
     }
+    return handled ? 1 : 0;
 }

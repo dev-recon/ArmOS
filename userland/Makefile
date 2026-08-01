@@ -48,6 +48,7 @@ NEWLIB_LIBC ?= $(NEWLIB_SYSROOT)/lib/libc.a
 NEWLIB_LIBM ?= $(NEWLIB_SYSROOT)/lib/libm.a
 LIBGCC := $(shell $(CC) $(ARCH_FLAGS) -print-libgcc-file-name 2>/dev/null)
 KEYBOARD_LAYOUT ?= us
+BUILD_NUKLEAR ?= 0
 
 ifeq ($(KEYBOARD_LAYOUT),us)
 KEYBOARD_LAYOUT_ID := 0
@@ -113,13 +114,27 @@ PROGRAMS := $(filter-out wayland-lib-test,$(PROGRAMS))
 # Linked explicitly against the native Wayland client and math libraries.
 PROGRAMS := $(filter-out teapot-demo,$(PROGRAMS))
 
+# Linked explicitly against Nuklear and the native Wayland client.
+PROGRAMS := $(filter-out armui-demo,$(PROGRAMS))
+PROGRAMS := $(filter-out armos-control-center,$(PROGRAMS))
+PROGRAMS := $(filter-out armos-shell,$(PROGRAMS))
+# Linked explicitly against the ArmOS VirGL winsys library.
+PROGRAMS := $(filter-out virgl-smoke,$(PROGRAMS))
+# Mesa bundle validation programs use the private static EGL/GLES and
+# compositor-provider archives and are linked by tools/build_mesa.sh.
+PROGRAMS := $(filter-out egl-smoke egl-wayland-smoke armgl-import-smoke \
+	armgl-compositor-smoke,$(PROGRAMS))
+# Raylib applications require the private Raylib/Mesa dependency graph and
+# are compiled and linked atomically by tools/build_raylib.sh.
+PROGRAMS := $(filter-out raylib-smoke raypot-demo,$(PROGRAMS))
+
 EXTERNAL_DIRS := $(sort $(dir $(wildcard opt/*/src/*.c)))
 EXTERNALS := $(patsubst opt/%/src/,%,$(EXTERNAL_DIRS))
 
 # These tools have their own configure/build flow and are staged by dedicated
 # top-level build switches.  The generic "one directory -> one binary" rule is
 # intentionally too small for them.
-EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs epoll-shim tcc zlib libjpeg libpng libtiff,$(EXTERNALS))
+EXTERNALS := $(filter-out bmake bsdawk bsddiff bsdelftools bsdinstall bsdm4 bsdmtree bsdpax bsdpatch bsdsed bsdxargs epoll-shim tcc zlib libjpeg libpng libtiff nuklear,$(EXTERNALS))
 
 ifneq ($(ENABLE_TCC),1)
 PROGRAMS := $(filter-out tcc,$(PROGRAMS))
@@ -156,31 +171,66 @@ $(ARMOS_WLCOMP_OBJECTS): CFLAGS += -O3
 WAYLAND_CLIENT_OBJECTS := $(BUILD_DIR)/lib/wayland/client.o
 WAYLAND_SERVER_OBJECTS := $(BUILD_DIR)/lib/wayland/server.o
 WAYLAND_CURSOR_OBJECTS := $(BUILD_DIR)/lib/wayland/cursor.o
+WAYLAND_EGL_OBJECTS := $(BUILD_DIR)/lib/wayland/egl.o
 XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
 THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
 SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
+VIRGL_WINSYS_OBJECTS := $(BUILD_DIR)/lib/virgl/winsys.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
+WAYLAND_EGL_LIBRARY := $(OUT_USR_LIB)/libwayland-egl.a
 XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
 THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
 SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
+VIRGL_WINSYS_LIBRARY := $(OUT_USR_LIB)/libarmos-virgl-winsys.a
+ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY ?=
+ARMOS_MESA_EGL_LIBRARY ?=
+ARMOS_MESA_GLES2_LIBRARY ?=
 WAYLAND_LIBRARIES := $(WAYLAND_CLIENT_LIBRARY) $(WAYLAND_SERVER_LIBRARY) \
-                     $(WAYLAND_CURSOR_LIBRARY) $(XKBCOMMON_LIBRARY)
+                     $(WAYLAND_CURSOR_LIBRARY) $(WAYLAND_EGL_LIBRARY) \
+                     $(XKBCOMMON_LIBRARY)
 WAYLAND_API_TEST_OBJECT := $(BUILD_DIR)/programs/wayland-lib-test/wayland-lib-test.o
 WAYLAND_API_TEST_TARGET := $(OUT_USR_BIN)/wayland-lib-test
 TEAPOT_DEMO_OBJECT := $(BUILD_DIR)/programs/teapot-demo/teapot-demo.o
 TEAPOT_DEMO_TARGET := $(OUT_USR_BIN)/teapot-demo
+NUKLEAR_OBJECT := $(BUILD_DIR)/opt/nuklear/src/nuklear.o
+NUKLEAR_LIBRARY := $(OUT_OPT)/nuklear/lib/libnuklear.a
+ARMUI_OBJECT := $(BUILD_DIR)/lib/armui/armui.o
+ARMUI_RENDERER_OBJECT := $(BUILD_DIR)/lib/armui/nuklear_software.o
+ARMUI_APPLICATION_OBJECT := $(BUILD_DIR)/lib/armui/application.o
+ARMUI_LIBRARY := $(OUT_USR_LIB)/libarmui.a
+ARMUI_DEMO_OBJECT := $(BUILD_DIR)/programs/armui-demo/armui-demo.o
+ARMUI_DEMO_TARGET := $(OUT_USR_BIN)/armui-demo
+ARMOS_SERVICES_OBJECT := $(BUILD_DIR)/lib/armos-services/services.o
+ARMOS_SERVICES_LIBRARY := $(OUT_USR_LIB)/libarmos-services.a
+CONTROL_CENTER_OBJECT := \
+	$(BUILD_DIR)/programs/armos-control-center/armos-control-center.o
+CONTROL_CENTER_TARGET := $(OUT_USR_BIN)/armos-control-center
+ARMOS_SHELL_OBJECT := \
+	$(BUILD_DIR)/programs/armos-shell/armos-shell.o
+ARMOS_SHELL_TARGET := $(OUT_SBIN)/armos-shell
+VIRGL_SMOKE_OBJECT := $(BUILD_DIR)/programs/virgl-smoke/virgl-smoke.o
+VIRGL_SMOKE_TARGET := $(OUT_USR_BIN)/virgl-smoke
 
 TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
-           $(WAYLAND_API_TEST_TARGET) \
-           $(TEAPOT_DEMO_TARGET)
+           $(VIRGL_WINSYS_LIBRARY) $(WAYLAND_API_TEST_TARGET) \
+           $(VIRGL_SMOKE_TARGET)
+
+ifeq ($(BUILD_NUKLEAR),1)
+TARGETS += $(NUKLEAR_LIBRARY) $(ARMUI_LIBRARY) $(ARMUI_DEMO_TARGET) \
+           $(TEAPOT_DEMO_TARGET) $(ARMOS_SERVICES_LIBRARY) \
+           $(CONTROL_CENTER_TARGET) $(ARMOS_SHELL_TARGET)
+endif
 
 $(TEAPOT_DEMO_OBJECT): programs/teapot-demo/teapot_model.h
 # The demo is deliberately CPU-rendered and benefits substantially over -Os.
 $(TEAPOT_DEMO_OBJECT): CFLAGS += -O3
+$(NUKLEAR_OBJECT) $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) $(ARMUI_DEMO_OBJECT) \
+	$(TEAPOT_DEMO_OBJECT): CFLAGS += -Iopt/nuklear/include
 
-.PHONY: all clean install check-newlib newlib-port list init mash hello64 armos-wlcomp
+.PHONY: all clean install check-newlib newlib-port list init mash hello64 \
+	armos-wlcomp armos-wlcomp-gpu armui-demo virgl-smoke
 .PHONY: $(COREUTILS) $(SYSTEM_TOOLS) $(PROGRAMS) $(EXTERNALS)
 
 # Pattern-generated program objects are final cache entries, not disposable
@@ -188,6 +238,8 @@ $(TEAPOT_DEMO_OBJECT): CFLAGS += -O3
 .SECONDARY:
 
 all: check-newlib $(TARGETS)
+
+virgl-smoke: $(VIRGL_SMOKE_TARGET)
 
 check-newlib:
 	@if [ -z "$(NEWLIB_SYSROOT)" ] || [ ! -f "$(NEWLIB_SYSROOT)/include/stdio.h" ] || [ ! -f "$(NEWLIB_LIBC)" ]; then \
@@ -218,6 +270,38 @@ init: $(OUT_SBIN)/init
 mash: $(OUT_SBIN)/mash
 hello64: $(OUT_USR_BIN)/hello64
 armos-wlcomp: $(ARMOS_WLCOMP_TARGET)
+
+# Mesa is built after the base userland so the normal compositor must remain
+# independently linkable.  This explicit second-stage target installs the
+# optional provider without changing the software-only dependency graph.  The
+# provider factory is referenced weakly by gpu_backend.c; --whole-archive is
+# therefore required so a static linker cannot discard the implementation.
+armos-wlcomp-gpu: $(LINK_DEPS) $(ARMOS_WLCOMP_OBJECTS) \
+		$(WAYLAND_SERVER_LIBRARY) $(VIRGL_WINSYS_LIBRARY) \
+		$(SYSLOG_LIBRARY)
+	@test -f "$(ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY)" || { \
+		echo "Error: ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY is missing."; \
+		exit 1; \
+	}
+	@test -f "$(ARMOS_MESA_EGL_LIBRARY)" || { \
+		echo "Error: ARMOS_MESA_EGL_LIBRARY is missing."; \
+		exit 1; \
+	}
+	@test -f "$(ARMOS_MESA_GLES2_LIBRARY)" || { \
+		echo "Error: ARMOS_MESA_GLES2_LIBRARY is missing."; \
+		exit 1; \
+	}
+	mkdir -p $(OUT_SBIN)
+	$(CC) $(LDFLAGS) -o $(ARMOS_WLCOMP_TARGET) \
+		$(PORT_OBJECTS) $(ARMOS_WLCOMP_OBJECTS) \
+		-Wl,-u,wl_gpu_backend_provider_create \
+		-Wl,--whole-archive "$(ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY)" \
+		-Wl,--no-whole-archive -Wl,--start-group \
+		"$(ARMOS_MESA_EGL_LIBRARY)" "$(ARMOS_MESA_GLES2_LIBRARY)" \
+		$(VIRGL_WINSYS_LIBRARY) $(SYSLOG_LIBRARY) \
+		$(WAYLAND_SERVER_LIBRARY) "$(NEWLIB_LIBM)" \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)" -Wl,--end-group
+armui-demo: $(ARMUI_DEMO_TARGET)
 $(SYSTEM_TOOLS): %: $(OUT_SBIN)/%
 $(COREUTILS): %: $(OUT_BIN)/%
 $(PROGRAMS): %: $(OUT_USR_BIN)/%
@@ -257,6 +341,18 @@ $(BUILD_DIR)/lib/syslog/%.o: lib/syslog/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/virgl/%.o: lib/virgl/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/armui/%.o: lib/armui/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/armos-services/%.o: lib/armos-services/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(WAYLAND_CLIENT_LIBRARY): $(WAYLAND_CLIENT_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
@@ -266,6 +362,10 @@ $(WAYLAND_SERVER_LIBRARY): $(WAYLAND_SERVER_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(WAYLAND_CURSOR_LIBRARY): $(WAYLAND_CURSOR_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(WAYLAND_EGL_LIBRARY): $(WAYLAND_EGL_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -281,6 +381,23 @@ $(SYSLOG_LIBRARY): $(SYSLOG_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
+$(VIRGL_WINSYS_LIBRARY): $(VIRGL_WINSYS_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(NUKLEAR_LIBRARY): $(NUKLEAR_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(ARMUI_LIBRARY): $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) \
+		$(ARMUI_APPLICATION_OBJECT) $(NUKLEAR_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
+$(ARMOS_SERVICES_LIBRARY): $(ARMOS_SERVICES_OBJECT)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
 $(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LIBRARIES)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(WAYLAND_API_TEST_OBJECT) \
@@ -288,11 +405,45 @@ $(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LI
 		$(WAYLAND_SERVER_LIBRARY) $(XKBCOMMON_LIBRARY) \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
-$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) $(WAYLAND_CLIENT_LIBRARY)
+$(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
-		$(WAYLAND_CLIENT_LIBRARY) "$(NEWLIB_LIBM)" \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(ARMUI_DEMO_TARGET): $(LINK_DEPS) $(ARMUI_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMUI_DEMO_OBJECT) \
+		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" \
+		"$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(CONTROL_CENTER_TARGET): $(LINK_DEPS) $(CONTROL_CENTER_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(CONTROL_CENTER_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(ARMOS_SHELL_TARGET): $(LINK_DEPS) $(ARMOS_SHELL_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(ARMOS_SHELL_OBJECT) \
+		$(ARMOS_SERVICES_LIBRARY) $(ARMUI_LIBRARY) \
+		$(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		"$(NEWLIB_LIBM)" "$(NEWLIB_LIBC)" "$(LIBGCC)"
+
+$(VIRGL_SMOKE_TARGET): $(LINK_DEPS) $(VIRGL_SMOKE_OBJECT) \
+		$(VIRGL_WINSYS_LIBRARY)
+	mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(VIRGL_SMOKE_OBJECT) \
+		$(VIRGL_WINSYS_LIBRARY) "$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(BUILD_DIR)/system/init/%.o: system/init/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
@@ -399,13 +550,73 @@ install: $(TARGETS)
 	cp $(WAYLAND_CLIENT_LIBRARY) $(USERFS_USR_LIB)/libwayland-client.a
 	cp $(WAYLAND_SERVER_LIBRARY) $(USERFS_USR_LIB)/libwayland-server.a
 	cp $(WAYLAND_CURSOR_LIBRARY) $(USERFS_USR_LIB)/libwayland-cursor.a
+	cp $(WAYLAND_EGL_LIBRARY) $(USERFS_USR_LIB)/libwayland-egl.a
 	cp $(XKBCOMMON_LIBRARY) $(USERFS_USR_LIB)/libxkbcommon.a
 	cp $(THREADS_LIBRARY) $(USERFS_USR_LIB)/libthreads.a
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
+	cp $(VIRGL_WINSYS_LIBRARY) \
+		$(USERFS_USR_LIB)/libarmos-virgl-winsys.a
+	cp $(VIRGL_SMOKE_TARGET) $(USERFS_USR_BIN)/virgl-smoke
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/virgl-smoke
+	mkdir -p $(USERFS_ROOT)/usr/include/uapi/armos
+	rm -f $(USERFS_ROOT)/usr/include/uapi/armos/gpu.h
+	cp ../include/uapi/armos/drm.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/drm.h
+	cp ../include/uapi/armos/drm_virgl.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/drm_virgl.h
+	cp ../include/uapi/armos/spawn.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/spawn.h
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/spawn.h \
+		$(USERFS_ROOT)/usr/include/armos/spawn.h
+	cp include/wayland-egl-core.h \
+		$(USERFS_ROOT)/usr/include/wayland-egl-core.h
+	cp include/wayland-egl-backend.h \
+		$(USERFS_ROOT)/usr/include/wayland-egl-backend.h
+	cp include/wayland-armos-gpu-client-protocol.h \
+		$(USERFS_ROOT)/usr/include/wayland-armos-gpu-client-protocol.h
+	rm -f $(USERFS_USR_BIN)/gpu-info
 	cp $(WAYLAND_API_TEST_TARGET) $(USERFS_USR_BIN)/wayland-lib-test
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/wayland-lib-test
+ifeq ($(BUILD_NUKLEAR),1)
 	cp $(TEAPOT_DEMO_TARGET) $(USERFS_USR_BIN)/teapot-demo
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/teapot-demo
+	cp $(ARMUI_DEMO_TARGET) $(USERFS_USR_BIN)/armui-demo
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/armui-demo
+	cp $(CONTROL_CENTER_TARGET) $(USERFS_USR_BIN)/armos-control-center
+	$(STRIP) --strip-all $(USERFS_USR_BIN)/armos-control-center
+	cp $(ARMOS_SHELL_TARGET) $(USERFS_SBIN)/armos-shell
+	$(STRIP) --strip-all $(USERFS_SBIN)/armos-shell
+	mkdir -p $(USERFS_USR_LIB) $(USERFS_ROOT)/usr/include/armui
+	cp $(ARMUI_LIBRARY) $(USERFS_USR_LIB)/libarmui.a
+	cp $(ARMOS_SERVICES_LIBRARY) \
+		$(USERFS_USR_LIB)/libarmos-services.a
+	cp include/armui/armui.h $(USERFS_ROOT)/usr/include/armui/armui.h
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/services.h \
+		$(USERFS_ROOT)/usr/include/armos/services.h
+	cp include/armos-shell-client-protocol.h \
+		$(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
+	mkdir -p $(USERFS_OPT)/nuklear/include $(USERFS_OPT)/nuklear/lib
+	cp opt/nuklear/include/nuklear.h $(USERFS_OPT)/nuklear/include/nuklear.h
+	cp opt/nuklear/include/armos_nuklear_config.h \
+		$(USERFS_OPT)/nuklear/include/armos_nuklear_config.h
+	cp $(NUKLEAR_LIBRARY) $(USERFS_OPT)/nuklear/lib/libnuklear.a
+else
+	rm -f $(USERFS_USR_BIN)/teapot-demo
+	rm -f $(USERFS_USR_BIN)/armui-demo
+	rm -f $(USERFS_USR_BIN)/armos-control-center
+	rm -f $(USERFS_SBIN)/armos-shell
+	rm -f $(USERFS_USR_LIB)/libarmui.a
+	rm -f $(USERFS_USR_LIB)/libarmos-services.a
+	rm -rf $(USERFS_ROOT)/usr/include/armui
+	rm -rf $(USERFS_ROOT)/usr/include/armos
+	rm -f $(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
+	rm -rf $(USERFS_OPT)/nuklear
+endif
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/virgl_winsys.h \
+		$(USERFS_ROOT)/usr/include/armos/virgl_winsys.h
 
 clean:
 	rm -rf $(BUILD_DIR)

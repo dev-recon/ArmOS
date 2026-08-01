@@ -22,6 +22,7 @@
 #include <kernel/types.h>
 #include <kernel/task.h>
 #include <kernel/user_layout.h>
+#include <uapi/armos/signal.h>
 
 
 /* Signal numbers */
@@ -59,9 +60,10 @@
 #define SIGNAL_STACK_BASE_DEFAULT   (USER_SIGNAL_REGION_START + DEFAULT_SIGNAL_STACK_SIZE)
 
 /* Signal flags */
-#define SA_RESTART    0x01
-#define SA_NODEFER    0x02
-#define SA_RESETHAND  0x04
+#define SA_RESTART    ARMOS_SA_RESTART
+#define SA_NODEFER    ARMOS_SA_NODEFER
+#define SA_RESETHAND  ARMOS_SA_RESETHAND
+#define SA_NOCLDWAIT  ARMOS_SA_NOCLDWAIT
 
 typedef enum {
     SIGNAL_CHECK_NONE = 0,

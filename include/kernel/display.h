@@ -23,11 +23,8 @@
 #include <kernel/vfs.h>  /* Pour file_t */
 #include <kernel/display_backend.h>
 
-/* Default QEMU framebuffer geometry. Physical backends select their own. */
-#define FB_WIDTH        1024
-#define FB_HEIGHT       768
+/* The common framebuffer format is fixed; geometry belongs to its backend. */
 #define FB_BPP          32
-#define FB_SIZE         (FB_WIDTH * FB_HEIGHT * (FB_BPP / 8))  /* ~3MB */
 
 /* FB_BASE sera alloue dynamiquement en RAM */
 extern uint8_t* framebuffer_base;  /* CPU virtual pointer to the framebuffer */

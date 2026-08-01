@@ -35,6 +35,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <arm_os_abi.h>
+#include <armos/spawn.h>
 
 extern int sched_yield(void);
 extern ssize_t pread(int fd, void *buf, size_t count, off_t offset);
@@ -66,6 +67,7 @@ static volatile int cow_shared_value = 11;
 static volatile int sleep_signal_seen = 0;
 static volatile int winch_signal_seen = 0;
 static volatile int compat_signal_seen = 0;
+static volatile sig_atomic_t compat_sigchld_value = 0;
 static struct sysinfo_response sysinfo_scratch;
 static char systest_tmp_root[64];
 
@@ -140,6 +142,11 @@ static void systest_compat_signal_handler(int sig)
 {
     (void)sig;
     compat_signal_seen++;
+}
+
+static void systest_sigchld_handler(int sig)
+{
+    compat_sigchld_value = sig;
 }
 
 static int read_file(const char *path, char *buf, int size)
@@ -1204,6 +1211,20 @@ static void test_posix_compat_syscalls(void)
                "wait4 status reports exit code", child_status);
     }
 
+    compat_sigchld_value = 0;
+    signal(SIGCHLD, systest_sigchld_handler);
+    child = fork();
+    if (child == 0)
+        _exit(34);
+    if (expect(child > 0, "SIGCHLD translation fork child", child) == 0) {
+        expect(waitpid(child, &child_status, 0) == child,
+               "SIGCHLD translation collects child", errno);
+        expect(compat_sigchld_value == SIGCHLD,
+               "SIGCHLD handler receives newlib signal number",
+               compat_sigchld_value);
+    }
+    signal(SIGCHLD, SIG_DFL);
+
     if (!stdin_is_foreground_tty()) {
         skip("tty ioctl/termios mutation (not foreground job)");
         unlink(path);
@@ -1518,6 +1539,63 @@ static void test_fork_wait_kill(void)
     waited = waitpid(pid, &status, 0);
     expect(waited == pid && status_signaled(status, SIGKILL),
            "waitpid collects killed child", status);
+}
+
+static void test_sigchld_discard_reaps_children(void)
+{
+    enum { CHILDREN = 24 };
+    void (*old_handler)(int);
+    int pids[CHILDREN];
+    int created = 0;
+    int unreaped = 0;
+
+    old_handler = signal(SIGCHLD, SIG_IGN);
+    if (expect(old_handler != SIG_ERR,
+               "SIGCHLD ignore installs auto-reap", errno) < 0)
+        return;
+
+    for (int i = 0; i < CHILDREN; i++) {
+        int pid = fork();
+
+        if (pid == 0)
+            _exit(i & 0x7f);
+        if (pid < 0)
+            break;
+        pids[created++] = pid;
+    }
+
+    for (int round = 0; round < 200; round++) {
+        unreaped = 0;
+        for (int i = 0; i < created; i++) {
+            int status = 0;
+            int waited;
+
+            if (pids[i] < 0)
+                continue;
+            errno = 0;
+            waited = waitpid(pids[i], &status, WNOHANG);
+            if (waited == 0) {
+                unreaped++;
+            } else if (waited == pids[i]) {
+                fail("SIGCHLD ignore exposed waitable zombie", pids[i]);
+                pids[i] = -1;
+            } else if (waited < 0 && errno == ECHILD) {
+                pids[i] = -1;
+            } else if (pids[i] >= 0) {
+                fail("SIGCHLD ignore waitpid result", errno);
+                pids[i] = -1;
+            }
+        }
+        if (unreaped == 0)
+            break;
+        usleep(1000);
+    }
+
+    expect(created == CHILDREN,
+           "SIGCHLD ignore created child batch", created);
+    expect(unreaped == 0,
+           "SIGCHLD ignore auto-reaps child batch", unreaped);
+    (void)signal(SIGCHLD, old_handler);
 }
 
 static void test_process_groups(void)
@@ -2526,6 +2604,30 @@ static void test_lifecycle_exec_fail_loop(void)
     expect(ok, "lifecycle repeated exec failure is reaped", ok);
 }
 
+static void test_direct_spawn(void)
+{
+    char *argv[] = { "true", NULL };
+    char *envp[] = { "PATH=/bin:/usr/bin", NULL };
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_CWD,
+        .cwd = "/"
+    };
+    int status = -1;
+    pid_t pid;
+
+    pid = armos_spawnve("/bin/true", argv, envp, &attributes);
+    if (expect(pid > 0, "direct spawn publishes complete child", pid) == 0)
+        expect(waitpid(pid, &status, 0) == pid && status_exited(status, 0),
+               "direct spawn child exits and is reaped", status);
+
+    errno = 0;
+    pid = armos_spawnve("/bin/missing-spawn-target", argv, envp,
+                        &attributes);
+    expect(pid < 0 && errno == ENOENT,
+           "failed direct spawn leaves no child", errno);
+}
+
 static void test_lifecycle_wnohang_kill(void)
 {
     int status = -1;
@@ -2905,6 +3007,7 @@ int main(int argc, char **argv)
     test_ext2_write_edges();
     test_rm_recursive_utility();
     test_fork_wait_kill();
+    test_sigchld_discard_reaps_children();
     test_process_groups();
     test_waitpid_process_group();
     test_waitpid_wuntraced_continue();
@@ -2920,6 +3023,7 @@ int main(int argc, char **argv)
     test_cow_fork_stress();
     test_asid_churn();
     test_asid_live_saturation();
+    test_direct_spawn();
     test_lifecycle_exec_fail_loop();
     test_lifecycle_wnohang_kill();
     test_lifecycle_orphan_reaper();

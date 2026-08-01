@@ -158,6 +158,9 @@ release build system.
 
 QEMU 10.0.2 is the reference emulator for the 0.7 line. Hardware images use a
 dedicated FAT32 firmware partition and an ext2 root filesystem.
+The repository can install and validate the host SDL/OpenGL/VirGL
+prerequisites before building its private QEMU; see
+[QEMU 10.0.2 VirGL host build](docs/QEMU_VIRGL_HOST.md).
 
 ## Try ArmOS
 

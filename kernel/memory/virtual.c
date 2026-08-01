@@ -78,9 +78,20 @@ void vm_release_vmas(vm_space_t *space)
         if ((vma->flags & VMA_SHARED) &&
             !(vma->flags & VMA_EXTERNAL))
             shm_release_mapping(vma->shm_id);
+        if (vma->release)
+            vma->release(vma->release_cookie);
         kfree(vma);
         vma = next;
     }
+}
+
+void vm_set_vma_release(vma_t *vma, void (*release)(uintptr_t),
+                        uintptr_t cookie)
+{
+    if (!vma)
+        return;
+    vma->release = release;
+    vma->release_cookie = cookie;
 }
 
 vma_t *find_vma(vm_space_t *space, vaddr_t address)
@@ -242,6 +253,8 @@ int remove_vma(vm_space_t *space, vaddr_t start, vaddr_t end)
         vma = *link;
         if (vma->start == start && vma->end == end) {
             *link = vma->next;
+            if (vma->release)
+                vma->release(vma->release_cookie);
             kfree(vma);
             return 0;
         }
@@ -382,6 +395,8 @@ int vm_unmap_range(vm_space_t *space, vaddr_t start, size_t size)
             if ((vma->flags & VMA_SHARED) &&
                 !(vma->flags & VMA_EXTERNAL))
                 shm_release_mapping(vma->shm_id);
+            if (vma->release)
+                vma->release(vma->release_cookie);
             kfree(vma);
             vma = next;
         } else if (cut_start == vma->start) {

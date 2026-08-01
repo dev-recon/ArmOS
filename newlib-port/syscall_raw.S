@@ -155,7 +155,7 @@ RAW_SYSCALL sys_shm_unlink, 191
 RAW_SYSCALL sys_shm_map, 192
 RAW_SYSCALL sys_shm_unmap, 193
 RAW_SYSCALL sys_shutdown, 194
-RAW_SYSCALL5 sys_mmap, 195
+RAW_SYSCALL6 sys_mmap, 195
 RAW_SYSCALL sys_munmap, 196
 RAW_SYSCALL sys_sysconf, 197
 RAW_SYSCALL sys_gettid, 224
@@ -187,6 +187,7 @@ RAW_SYSCALL sys_eventfd2, 337
 RAW_SYSCALL sys_timerfd_create, 338
 RAW_SYSCALL sys_timerfd_settime, 339
 RAW_SYSCALL sys_timerfd_gettime, 340
+RAW_SYSCALL5 sys_spawnve, 341
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function

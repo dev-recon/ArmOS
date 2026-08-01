@@ -8,7 +8,8 @@
 +        .render_worker_count = 0,
          .server_socket_path = get_server_socket_path(),
          .presentation_timings = false,
-         .selection_target = SELECTION_TARGET_PRIMARY,
+-        .selection_target = SELECTION_TARGET_PRIMARY,
++        .selection_target = SELECTION_TARGET_CLIPBOARD,
          .hold_at_exit = false,
 @@ -2964,7 +2964,7 @@
              .delayed_render_lower_ns = 500000,         /* 0.5ms */
@@ -110,3 +111,200 @@
      int xcursor_size = 24;
  
      {
+--- a/shm.c
++++ b/shm.c
+@@ -406,7 +406,7 @@ get_new_buffers(struct buffer_chain *chain, size_t count,
+     }
+ #endif
+ 
+-#if defined(MEMFD_CREATE)
++#if defined(MEMFD_CREATE) && !defined(ARM_OS_NEWLIB)
+     /* Seal file - we no longer allow any kind of resizing */
+     /* TODO: wayland mmaps(PROT_WRITE), for some unknown reason, hence we cannot use F_SEAL_FUTURE_WRITE */
+     if (fcntl(pool_fd, F_ADD_SEALS,
+--- a/commands.h
++++ b/commands.h
+@@ -4,3 +4,4 @@
+ 
+ void cmd_scrollback_up(struct terminal *term, int rows);
+ void cmd_scrollback_down(struct terminal *term, int rows);
++void cmd_scrollback_to(struct terminal *term, int position, int extent);
+--- a/commands.c
++++ b/commands.c
+@@ -10,6 +10,45 @@
+ #include "url-mode.h"
+ #include "util.h"
+ 
++void
++cmd_scrollback_to(struct terminal *term, int position, int extent)
++{
++    int scrollback_start;
++    int empty_rows = 0;
++    int populated_rows;
++    int available_rows;
++    int new_view;
++
++    if (term->grid == &term->alt || urls_mode_is_active(term) ||
++        term->mouse_tracking != MOUSE_NONE || extent <= 0)
++        return;
++
++    scrollback_start = term->grid->offset + term->rows;
++    while (empty_rows < term->grid->num_rows &&
++           term->grid->rows[
++               scrollback_start & (term->grid->num_rows - 1)] == NULL) {
++        scrollback_start++;
++        empty_rows++;
++    }
++    populated_rows = term->grid->num_rows - empty_rows;
++    available_rows = populated_rows - term->rows;
++    if (available_rows <= 0)
++        return;
++
++    position = max(0, min(position, extent));
++    new_view = scrollback_start +
++        (int)((int64_t)position * available_rows / extent);
++    new_view &= term->grid->num_rows - 1;
++    if (new_view == term->grid->view)
++        return;
++
++    selection_cancel(term);
++    term->grid->view = new_view;
++    term_damage_view(term);
++    render_refresh_urls(term);
++    render_refresh(term);
++}
++
+ void
+ cmd_scrollback_up(struct terminal *term, int rows)
+ {
+--- a/input.c
++++ b/input.c
+@@ -1532,12 +1532,17 @@ wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
+     switch (surf_kind) {
+     case TERM_SURF_NONE:
+     case TERM_SURF_SEARCH:
+-    case TERM_SURF_SCROLLBACK_INDICATOR:
+     case TERM_SURF_RENDER_TIMER:
+     case TERM_SURF_JUMP_LABEL:
+     case TERM_SURF_BUTTON_MINIMIZE:
+     case TERM_SURF_BUTTON_MAXIMIZE:
+     case TERM_SURF_BUTTON_CLOSE:
+         break;
++
++    case TERM_SURF_SCROLLBACK_INDICATOR:
++        if (button == BTN_LEFT)
++            cmd_scrollback_to(term, y,
++                term->height - term->margins.top - term->margins.bottom);
++        break;
+ 
+     case TERM_SURF_TITLE:
+@@ -1928,8 +1932,14 @@ wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
+             term_shutdown(term);
+         break;
+ 
+-    case TERM_SURF_SEARCH:
+     case TERM_SURF_SCROLLBACK_INDICATOR:
++        if (button == BTN_LEFT &&
++            state == WL_POINTER_BUTTON_STATE_PRESSED)
++            cmd_scrollback_to(term, seat->mouse.y,
++                term->height - term->margins.top - term->margins.bottom);
++        break;
++
++    case TERM_SURF_SEARCH:
+     case TERM_SURF_RENDER_TIMER:
+     case TERM_SURF_JUMP_LABEL:
+         break;
+--- a/render.c
++++ b/render.c
+@@ -2021,9 +2021,91 @@ render_csd(struct terminal *term)
+         render_csd_button(term, i, &infos[i], bufs[i]);
+     render_csd_title(term, &infos[CSD_SURF_TITLE], bufs[CSD_SURF_TITLE]);
+ }
+ 
++static void
++render_arm_os_scrollback_bar(struct terminal *term)
++{
++    struct wl_window *win = term->window;
++    int scrollback_start = term->grid->offset + term->rows;
++    int empty_rows = 0;
++
++    while (empty_rows < term->grid->num_rows &&
++           term->grid->rows[
++               scrollback_start & (term->grid->num_rows - 1)] == NULL) {
++        scrollback_start++;
++        empty_rows++;
++    }
++
++    int populated_rows = term->grid->num_rows - empty_rows;
++    if (populated_rows <= term->rows) {
++        if (win->scrollback_indicator.surf != NULL)
++            wayl_win_subsurface_destroy(&win->scrollback_indicator);
++        return;
++    }
++
++    if (win->scrollback_indicator.surf == NULL &&
++        !wayl_win_subsurface_new(win, &win->scrollback_indicator)) {
++        LOG_ERR("failed to create scrollback bar surface");
++        return;
++    }
++
++    int rebased_view =
++        term->grid->view - scrollback_start + term->grid->num_rows;
++    rebased_view &= term->grid->num_rows - 1;
++    int available_rows = populated_rows - term->rows;
++    rebased_view = max(0, min(rebased_view, available_rows));
++    int scale = term->scale;
++    int width = 10 * scale;
++    int height = term->height - term->margins.top - term->margins.bottom;
++
++    height = height / scale * scale;
++    if (height <= 0)
++        return;
++
++    int thumb_height = max(2 * term->cell_height,
++        (int)((int64_t)height * term->rows / populated_rows));
++    thumb_height = min(thumb_height, height);
++    int thumb_y = available_rows > 0
++        ? (int)((int64_t)(height - thumb_height) * rebased_view /
++                available_rows)
++        : 0;
++
++    struct buffer *buf = shm_get_buffer(
++        term->render.chains.scrollback_indicator, width, height);
++    pixman_color_t track = color_hex_to_pixman_with_alpha(
++        0x3b4652u, 0xd000);
++    pixman_color_t thumb = color_hex_to_pixman_with_alpha(
++        0x56bdf0u, 0xffff);
++
++    pixman_image_fill_rectangles(
++        PIXMAN_OP_SRC, buf->pix[0], &track, 1,
++        &(pixman_rectangle16_t){0, 0, width, height});
++    pixman_image_fill_rectangles(
++        PIXMAN_OP_SRC, buf->pix[0], &thumb, 1,
++        &(pixman_rectangle16_t){0, thumb_y, width, thumb_height});
++
++    int x = term->width - term->margins.right - width;
++    int y = term->margins.top;
++    x = max(0, x);
++    wl_subsurface_set_position(
++        win->scrollback_indicator.sub, x / scale, y / scale);
++    quirk_weston_subsurface_desync_on(win->scrollback_indicator.sub);
++    wl_surface_attach(win->scrollback_indicator.surf, buf->wl_buf, 0, 0);
++    wl_surface_damage_buffer(
++        win->scrollback_indicator.surf, 0, 0, width, height);
++    wl_surface_set_buffer_scale(win->scrollback_indicator.surf, scale);
++    wl_surface_set_opaque_region(win->scrollback_indicator.surf, NULL);
++    wl_surface_commit(win->scrollback_indicator.surf);
++    quirk_weston_subsurface_desync_off(win->scrollback_indicator.sub);
++}
++
+ static void
+ render_scrollback_position(struct terminal *term)
+ {
++#if defined(ARM_OS_NEWLIB)
++    render_arm_os_scrollback_bar(term);
++    return;
++#endif
++
+     if (term->conf->scrollback.indicator.position == SCROLLBACK_INDICATOR_POSITION_NONE)
+         return;

@@ -5,6 +5,28 @@ the CPU architecture and display controller. The compositor is a normal
 userland process; display, input, shared memory, descriptor passing and process
 isolation remain common kernel services.
 
+Application-facing responsibilities and the two supported application models
+are defined in `docs/GRAPHICAL_APPLICATION_CONTRACT.md`. Terminal applications
+run through Foot and PTYs. Graphical applications use the public ArmUI API and
+its common Wayland backend; demos must not define alternative lifecycle rules.
+
+The ArmUI desktop stack, including transactional pointer input, transient
+popups, the Control Center service boundary and the authenticated system-bar
+role, has been validated as one end-to-end architecture.
+
+At graphical-session startup the compositor launches the system shell first,
+then starts the initial terminal after the shell panel has committed its first
+buffer. This mapped-buffer boundary replaces arbitrary delays and prevents the
+two font/UI-heavy clients from competing for the first visible frame. Input is
+drained with a bounded budget and consecutive pointer motion is coalesced while
+preserving ordering around buttons and keys, so pointer traffic cannot starve
+client dispatch or presentation.
+
+The shell and terminal are created with the common `armos_spawnve` process
+contract. Their ELF images are loaded into fresh address spaces, avoiding a COW
+clone of the Mesa-populated compositor while retaining inherited descriptors,
+credentials, working-directory and close-on-exec semantics.
+
 ## Architecture
 
 The graphical session is split into three layers:
@@ -26,10 +48,20 @@ VirtIO-GPU framebuffer or Raspberry Pi firmware HDMI framebuffer
 
 `windowserverd` is a small kernel task responsible only for starting and
 reaping the privileged compositor. It executes `/sbin/armos-wlcomp` in a
-regular user address space. The compositor starts `/usr/bin/foot` as the
-initial unprivileged graphical terminal. If the graphical session terminates,
+regular user address space. The compositor starts `/sbin/armos-shell` as its
+authenticated system-bar client and `/usr/bin/foot` as the initial
+unprivileged graphical terminal. If the graphical session terminates,
 the kernel launcher restores console ownership but does not automatically
 restart the compositor.
+
+The initial terminal is a bootstrap client, not a session owner. Closing it,
+killing it or losing its Wayland connection removes only that client's
+surfaces; `armos-wlcomp` keeps serving the desktop and the system bar may
+launch another terminal. Programs started by the bar receive the same bounded
+desktop environment as the initial terminal, including
+`SHELL=/sbin/mash`, `LANG=C.UTF-8` and the Wayland socket identity. A client
+exit must never close the listening socket or satisfy the compositor's exit
+condition.
 
 Platform and architecture code provide framebuffer and input backends only.
 Wayland protocol handling, focus, stacking, decorations, clipping and layout
@@ -43,10 +75,16 @@ The current server publishes:
 - `wl_shm`, growable pools and subregion-backed buffers;
 - `wl_seat` with pointer and keyboard input;
 - `wl_output` and `zxdg_output_manager_v1`;
-- `xdg_wm_base`, `xdg_surface` and `xdg_toplevel`;
+- `xdg_wm_base`, `xdg_surface`, `xdg_toplevel`, `xdg_positioner` and
+  `xdg_popup`;
 - `zxdg_decoration_manager_v1` for server-side decorations;
 - `wl_subcompositor` and subsurfaces;
 - `wl_data_device_manager` for the current selection path.
+
+The private `armos_shell_v1` interface is deliberately narrow. A
+per-compositor capability token authorizes one system panel, and the
+compositor alone controls its placement and the reserved desktop work area.
+It is not an application-facing replacement for standard Wayland protocols.
 
 ArmOS also supplies native `libwayland-client`, `libwayland-server` and
 `libwayland-cursor` compatibility libraries. They are sufficient for the
@@ -90,7 +128,9 @@ BUILD_NANO=yes
 
 Nano is installed below `/opt/nano` and exposed as `/usr/bin/nano`. Foot is
 installed as `/usr/bin/foot`; the compositor itself is installed as
-`/sbin/armos-wlcomp`.
+`/sbin/armos-wlcomp`. The ArmUI system bar is installed as
+`/sbin/armos-shell`, while `armos-control-center` is an ordinary
+`/usr/bin` application.
 
 For a manual compositor test:
 
@@ -99,8 +139,9 @@ su
 armos-wlcomp
 ```
 
-The normal graphical boot path starts the compositor and Foot automatically
-when the platform reports a usable display and permits the compositor.
+The normal graphical boot path starts the compositor, system bar and Foot
+automatically when the platform reports a usable display and permits the
+compositor.
 
 ## Platform Status
 
@@ -175,10 +216,26 @@ reuse it. Composition therefore performs one SHM-to-canvas transfer rather
 than an upload followed by a second transfer. Buffer pitch and pool remapping
 remain explicit, and the protocol/backend split is unchanged.
 
+EGL clients use the same scene and damage pipeline without a CPU round-trip.
+Their shared DRM BO is imported once as a backend-neutral GPU image and sampled
+directly during composition; only compositor-owned decorations use the cached
+CPU-uploaded layer. If direct import is unavailable, the compositor accepts a
+CPU mapping only when the BO explicitly grants CPU-read access. This preserves
+one global buffer lifecycle for all graphical clients rather than introducing
+application-specific paths.
+
+The QEMU VirtIO-GPU backend treats VirGL `PIPE_BUFFER` resources as byte arrays:
+their byte size is encoded in `width`, so texture dimension limits do not apply
+to them. Texture limits remain enforced for actual images. This distinction is
+confined to the qemu-virt backend and does not leak into the common DRM or
+Wayland contracts.
+
 The next performance milestone is to measure the remaining time separately in
 tile composition and backend presentation after mapped presentation.
 `armos-wlcomp --profile` reports whole-frame and presentation time plus fill,
-copy and blend pixel counts. Primitive-local timestamps are deliberately
+copy and blend pixel counts. It also reports cumulative `gpu_imports_total`
+and interval-local `gpu_direct_blits`, which expose whether EGL buffers stay on
+the direct GPU path. Primitive-local timestamps are deliberately
 avoided: dozens of `clock_gettime` system calls per tiled frame measurably
 distorted Raspberry Pi performance. Large Raspberry Pi operations may then use
 DMA above a measured size threshold, with cache maintenance and a CPU fallback

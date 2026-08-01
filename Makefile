@@ -35,6 +35,7 @@ endif
 
 TARGET_ARCH ?= arm32
 TARGET_PLATFORM ?= qemu-virt
+BUILD_NUKLEAR_ENABLED = $(if $(filter 1 yes true on,$(BUILD_NUKLEAR)),1,0)
 
 ifneq ($(wildcard $(ARMOS_CONFIG)),)
 _ARMOS_CONFIG_STATUS := $(shell ARMOS_CONFIG_LOADED=0 \
@@ -195,6 +196,7 @@ COMMON_KERNEL_OBJS = \
 	kernel/drivers/event_timer.o \
 	kernel/drivers/null.o \
 	kernel/drivers/input.o \
+	kernel/drivers/drm.o \
 	kernel/drivers/power.o \
 	kernel/drivers/usb/core.o \
 	kernel/timer/timer.o \
@@ -539,6 +541,7 @@ ifeq ($(TARGET_ARCH),arm64)
 $(PLATFORM_DISK_IMG): FORCE tools/build_arm64_disk.sh \
 		tools/build_arm64_userland.sh userland/Makefile Makefile
 	TARGET_PLATFORM="$(TARGET_PLATFORM)" \
+	BUILD_NUKLEAR="$(BUILD_NUKLEAR_ENABLED)" \
 	PLATFORM_DISK_LAYOUT="$(PLATFORM_DISK_LAYOUT)" \
 	PLATFORM_DISK_HIDDEN_BOOT="$(PLATFORM_DISK_HIDDEN_BOOT)" \
 	PLATFORM_DISK_SIZE_MB="$(PLATFORM_DISK_SIZE_MB)" \
@@ -580,7 +583,8 @@ endif
 
 platform-disk:
 	ARMOS_BUILD_LOCK_DIR="$(CURDIR)/$(TARGET_WORK_DIR)/.build.lock" \
-		./tools/with_build_lock.sh $(MAKE) platform-disk-locked
+		./tools/with_build_lock.sh $(MAKE) \
+		BUILD_NUKLEAR="$(BUILD_NUKLEAR_ENABLED)" platform-disk-locked
 
 platform-disk-locked: $(PLATFORM_DISK_IMG)
 

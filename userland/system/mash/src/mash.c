@@ -166,12 +166,12 @@ static void shell_set_foreground_pgid(int pgid) {
         tcsetpgrp(STDIN_FILENO, pgid);
 }
 
-static void shell_restore_tty_mode(void)
+static int shell_set_tty_mode(int action)
 {
     struct termios tio;
 
     if (tcgetattr(STDIN_FILENO, &tio) < 0)
-        return;
+        return -1;
 
     tio.c_iflag |= ICRNL;
     tio.c_oflag |= OPOST | ONLCR;
@@ -192,7 +192,22 @@ static void shell_restore_tty_mode(void)
     tio.c_cc[VEOF] = 0x04;
     tio.c_cc[VSUSP] = 0x1A;
 
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &tio);
+    return tcsetattr(STDIN_FILENO, action, &tio);
+}
+
+void shell_restore_tty_mode(void)
+{
+    (void)shell_set_tty_mode(TCSAFLUSH);
+}
+
+int shell_repair_tty_mode(void)
+{
+    /*
+     * A foreground shell can recover after a misbehaving/background client
+     * left the shared PTY in polling mode. Do not flush here: a key may arrive
+     * between the zero-length read and this repair.
+     */
+    return shell_set_tty_mode(TCSANOW);
 }
 
 static int shell_prepare_child_pgid(int child_pid)

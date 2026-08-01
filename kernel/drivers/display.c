@@ -2302,8 +2302,8 @@ void fill_framebuffer_device_stat(const char *path, struct stat* st)
     st->st_uid = 0;
     st->st_gid = 0;
     st->st_rdev = rdev;
-    st->st_size = fb_size ? (off_t)fb_size : (off_t)FB_SIZE;
-    st->st_blksize = pitch ? pitch : FB_WIDTH * (FB_BPP / 8);
+    st->st_size = (off_t)fb_size;
+    st->st_blksize = pitch ? pitch : PAGE_SIZE;
     st->st_blocks = (st->st_size + 511) / 512;
     st->st_atime = now;
     st->st_mtime = now;

@@ -73,6 +73,9 @@ static ssize_t eventfd_read(file_t *file, void *buffer, size_t count)
         return -EINVAL;
 
     while (1) {
+        const void *wait_key = state;
+        uint32_t generation = task_poll_generation();
+
         spin_lock(&state->lock);
         if (state->counter != 0) {
             if (state->semaphore) {
@@ -83,7 +86,7 @@ static ssize_t eventfd_read(file_t *file, void *buffer, size_t count)
                 state->counter = 0;
             }
             spin_unlock(&state->lock);
-            task_poll_notify();
+            task_poll_notify_key(state);
             memcpy(buffer, &value, sizeof(value));
             return (ssize_t)sizeof(value);
         }
@@ -91,7 +94,8 @@ static ssize_t eventfd_read(file_t *file, void *buffer, size_t count)
 
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, 0u,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
 }
@@ -110,18 +114,22 @@ static ssize_t eventfd_write(file_t *file, const void *buffer, size_t count)
         return -EINVAL;
 
     while (1) {
+        const void *wait_key = state;
+        uint32_t generation = task_poll_generation();
+
         spin_lock(&state->lock);
         if (value <= EVENTFD_COUNTER_MAX - state->counter) {
             state->counter += value;
             spin_unlock(&state->lock);
-            task_poll_notify();
+            task_poll_notify_key(state);
             return (ssize_t)sizeof(value);
         }
         spin_unlock(&state->lock);
 
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, 0u,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
 }
@@ -196,6 +204,10 @@ static ssize_t timerfd_read(file_t *file, void *buffer, size_t count)
         return -EINVAL;
 
     while (1) {
+        const void *wait_key = state;
+        uint32_t generation = task_poll_generation();
+        uint32_t deadline;
+
         spin_lock(&state->lock);
         timerfd_update_locked(state, get_system_ticks());
         if (state->expirations != 0) {
@@ -205,11 +217,13 @@ static ssize_t timerfd_read(file_t *file, void *buffer, size_t count)
             memcpy(buffer, &expirations, sizeof(expirations));
             return (ssize_t)sizeof(expirations);
         }
+        deadline = state->armed ? state->deadline : 0u;
         spin_unlock(&state->lock);
 
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, deadline,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
 }
@@ -439,7 +453,7 @@ int sys_timerfd_settime(int fd, int flags,
         state->deadline = (flags & ARMOS_TFD_TIMER_ABSTIME) != 0 ?
             first : get_system_ticks() + first;
     spin_unlock(&state->lock);
-    task_poll_notify();
+    task_poll_notify_key(state);
 
     if (old_value &&
         copy_to_user(old_value, &previous, sizeof(previous)) < 0)

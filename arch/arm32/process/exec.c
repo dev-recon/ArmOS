@@ -24,7 +24,8 @@
 
 #define EM_ARM 40u
 
-int arch_exec_parse_image(const void *image, size_t image_size,
+int arch_exec_parse_image(const void *image, size_t header_size,
+                          size_t file_size,
                           exec_image_layout_t *layout)
 {
     const uint8_t *bytes = image;
@@ -32,16 +33,16 @@ int arch_exec_parse_image(const void *image, size_t image_size,
     uint32_t index;
     bool tls_seen = false;
 
-    if (!image || !layout || image_size < sizeof(*header) ||
+    if (!image || !layout || header_size < sizeof(*header) ||
         header->e_ident[0] != 0x7f || header->e_ident[1] != 'E' ||
         header->e_ident[2] != 'L' || header->e_ident[3] != 'F' ||
         header->e_ident[4] != 1 || header->e_ident[5] != 1 ||
         header->e_type != 2 || header->e_machine != EM_ARM ||
         header->e_version != 1 ||
         header->e_phentsize != sizeof(elf32_phdr_t) ||
-        header->e_phnum == 0 || header->e_phoff > image_size ||
+        header->e_phnum == 0 || header->e_phoff > header_size ||
         (size_t)header->e_phnum * sizeof(elf32_phdr_t) >
-            image_size - header->e_phoff)
+            header_size - header->e_phoff)
         return -1;
 
     memset(layout, 0, sizeof(*layout));
@@ -55,8 +56,8 @@ int arch_exec_parse_image(const void *image, size_t image_size,
         if (program->p_type == PT_TLS) {
             if (tls_seen || program->p_memsz == 0 ||
                 program->p_filesz > program->p_memsz ||
-                program->p_offset > image_size ||
-                program->p_filesz > image_size - program->p_offset ||
+                program->p_offset > file_size ||
+                program->p_filesz > file_size - program->p_offset ||
                 program->p_vaddr + program->p_memsz < program->p_vaddr ||
                 program->p_vaddr + program->p_memsz > USER_SPACE_END ||
                 (program->p_align > 1u &&
@@ -74,8 +75,8 @@ int arch_exec_parse_image(const void *image, size_t image_size,
             continue;
         if (layout->segment_count >= EXEC_IMAGE_MAX_SEGMENTS ||
             program->p_memsz == 0 || program->p_filesz > program->p_memsz ||
-            program->p_offset > image_size ||
-            program->p_filesz > image_size - program->p_offset ||
+            program->p_offset > file_size ||
+            program->p_filesz > file_size - program->p_offset ||
             program->p_vaddr + program->p_memsz < program->p_vaddr ||
             program->p_vaddr + program->p_memsz > USER_SPACE_END)
             return -1;

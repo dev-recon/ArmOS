@@ -31,7 +31,8 @@
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/legacy/kernel/ata-ramfs/include",
                 "${workspaceFolder}/arch/arm32/include",
-                "${workspaceFolder}/arch/arm64/include"
+                "${workspaceFolder}/arch/arm64/include",
+                "${workspaceFolder}/userland/opt/nuklear/include"
             ],
             "browse": {
                 "path": [
@@ -54,7 +55,8 @@
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/legacy/kernel/ata-ramfs/include",
                 "${workspaceFolder}/arch/arm32/include",
-                "${workspaceFolder}/arch/arm64/include"
+                "${workspaceFolder}/arch/arm64/include",
+                "${workspaceFolder}/userland/opt/nuklear/include"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             },
@@ -105,7 +107,8 @@
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/legacy/kernel/ata-ramfs/include",
                 "${workspaceFolder}/arch/arm32/include",
-                "${workspaceFolder}/arch/arm64/include"
+                "${workspaceFolder}/arch/arm64/include",
+                "${workspaceFolder}/userland/opt/nuklear/include"
             ],
             "browse": {
                 "path": [
@@ -128,7 +131,8 @@
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/legacy/kernel/ata-ramfs/include",
                 "${workspaceFolder}/arch/arm32/include",
-                "${workspaceFolder}/arch/arm64/include"
+                "${workspaceFolder}/arch/arm64/include",
+                "${workspaceFolder}/userland/opt/nuklear/include"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             },

@@ -23,6 +23,7 @@
 #include <kernel/types.h>
 
 #define EXEC_IMAGE_MAX_SEGMENTS 16u
+#define EXEC_IMAGE_HEADER_LIMIT (64u * 1024u)
 
 struct inode;
 struct vm_space;

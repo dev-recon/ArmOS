@@ -278,26 +278,17 @@ bool has_children(task_t* parent, pid_t pid)
 /**
  * Retirer un enfant de la liste du parent - ADAPTe
  */
-void remove_child_from_parent(task_t* parent, task_t* child_to_remove)
+bool remove_child_from_parent_locked(task_t* parent,
+                                     task_t* child_to_remove)
 {
-    unsigned long flags;
+    if (!parent || !child_to_remove ||
+        parent->type != TASK_TYPE_PROCESS ||
+        child_to_remove->type != TASK_TYPE_PROCESS ||
+        !parent->process || !child_to_remove->process)
+        return false;
 
-    if (!parent || !child_to_remove || 
-        parent->type != TASK_TYPE_PROCESS || 
-        child_to_remove->type != TASK_TYPE_PROCESS || !parent->process || !child_to_remove->process) {
-        KERROR("remove_child_from_parent: NULL Proc\n");
-        //KDEBUG("[REMOVE_CHILD] Parent ou enfant invalid\n");
-        return;
-    }
-    
-    /* ACCeS CORRECT */
-    //KDEBUG("[REMOVE_CHILD] Retrait PID %u du parent PID %u\n", 
-    //       child_to_remove->process->pid, parent->process->pid);
-    spin_lock_irqsave(&task_lock, &flags);
-    
     if (parent->process->children == child_to_remove) {
         parent->process->children = child_to_remove->process->sibling_next;
-        //KDEBUG("[REMOVE_CHILD] Enfant retire en tete de liste\n");
     } else {
         task_t* current = parent->process->children;
         int count = 0;
@@ -311,21 +302,37 @@ void remove_child_from_parent(task_t* parent, task_t* child_to_remove)
         
         if (current && current->process && count < MAX_TASKS) {
             current->process->sibling_next = child_to_remove->process->sibling_next;
-            //KDEBUG("[REMOVE_CHILD] Enfant retire du milieu de liste\n");
         } else {
-            KERROR("[REMOVE_CHILD] Child PID %u not found under parent PID %u\n",
-                   child_to_remove->process->pid, parent->process->pid);
-            spin_unlock_irqrestore(&task_lock, flags);
-            return;
+            return false;
         }
     }
-    
-    /* Nettoyer les references de l'enfant - ACCeS CORRECT */
+
     child_to_remove->process->sibling_next = NULL;
     child_to_remove->process->parent = NULL;
+    return true;
+}
+
+void remove_child_from_parent(task_t* parent, task_t* child_to_remove)
+{
+    unsigned long flags;
+    bool removed;
+
+    if (!parent || !child_to_remove ||
+        parent->type != TASK_TYPE_PROCESS ||
+        child_to_remove->type != TASK_TYPE_PROCESS ||
+        !parent->process || !child_to_remove->process) {
+        KERROR("remove_child_from_parent: NULL Proc\n");
+        return;
+    }
+
+    spin_lock_irqsave(&task_lock, &flags);
+    removed = remove_child_from_parent_locked(parent, child_to_remove);
     spin_unlock_irqrestore(&task_lock, flags);
-    
-    //KDEBUG("[REMOVE_CHILD] Retrait termine\n");
+
+    if (!removed) {
+        KERROR("[REMOVE_CHILD] Child PID %u not found under parent PID %u\n",
+               child_to_remove->process->pid, parent->process->pid);
+    }
 }
 
 /**

@@ -11,7 +11,7 @@
  * Responsibilities:
  * - Own the Wayland local socket and accept bounded client connections.
  * - Drive protocol dispatch through the shared Wayland server event loop.
- * - Own the initial Foot terminal for the lifetime of the graphical session.
+ * - Launch an initial Foot terminal without tying compositor lifetime to it.
  * - Provide a headless mode for deterministic protocol validation.
  * - Support silent supervised startup without writing over shell prompts.
  *
@@ -21,6 +21,8 @@
  */
 
 #include "armos_wlcomp.h"
+#include <armos/spawn.h>
+#include "gpu_present.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -36,13 +38,13 @@
 #include <time.h>
 #include <unistd.h>
 
-static volatile sig_atomic_t wl_terminal_changed;
+static volatile sig_atomic_t wl_child_changed;
 
 static int wl_server_client_event(int fd, uint32_t mask, void *data);
 
 static void wl_server_client_dispatch_idle(void *data);
 
-static int wl_server_defer_client_dispatch(struct wl_server_client *client)
+int wl_server_defer_client_dispatch(struct wl_server_client *client)
 {
     if (!client || !client->server)
         return -1;
@@ -61,6 +63,20 @@ static uint64_t wl_monotonic_us(void)
         return 0u;
     return (uint64_t)now.tv_sec * 1000000u +
            (uint64_t)now.tv_nsec / 1000u;
+}
+
+static void wl_server_profile_startup(const struct wl_server *server,
+                                      bool enabled, const char *phase)
+{
+    uint64_t now_us;
+
+    if (!server || !enabled || !phase || server->startup_started_us == 0u)
+        return;
+    now_us = wl_monotonic_us();
+    if (now_us >= server->startup_started_us)
+        fprintf(stderr, "armos-wlcomp: startup %s=%llums\n", phase,
+                (unsigned long long)(
+                    (now_us - server->startup_started_us) / 1000u));
 }
 
 static void wl_server_profile_frame(struct wl_server *server,
@@ -84,17 +100,25 @@ static void wl_server_profile_frame(struct wl_server *server,
         return;
     wl_render_profile_take(&primitives);
     compose_us = server->profile_render_us;
-    if (compose_us >= renderer->profile_present_us)
+    /* GPU presentation completes in a separate event-loop transaction. */
+    if (renderer->output_backend != WL_RENDERER_OUTPUT_GPU &&
+        compose_us >= renderer->profile_present_us)
         compose_us -= renderer->profile_present_us;
     fprintf(stderr,
             "WLPROFILE frames=%llu compose_avg_us=%llu "
             "present_avg_us=%llu present_pixels=%llu "
+            "gpu_imports_total=%llu gpu_direct_blits=%llu "
+            "gpu_fenced_releases=%llu gpu_immediate_releases=%llu "
             "fill_pixels=%llu copy_pixels=%llu blend_pixels=%llu\n",
             (unsigned long long)server->profile_frames,
             (unsigned long long)(compose_us / server->profile_frames),
             (unsigned long long)(renderer->profile_present_us /
                                  server->profile_frames),
             (unsigned long long)renderer->profile_present_pixels,
+            (unsigned long long)renderer->profile_gpu_imports,
+            (unsigned long long)renderer->profile_gpu_direct_blits,
+            (unsigned long long)renderer->profile_gpu_fenced_releases,
+            (unsigned long long)renderer->profile_gpu_immediate_releases,
             (unsigned long long)primitives.fill_pixels,
             (unsigned long long)primitives.copy_pixels,
             (unsigned long long)primitives.blend_pixels);
@@ -103,12 +127,15 @@ static void wl_server_profile_frame(struct wl_server *server,
     server->profile_frames = 0u;
     renderer->profile_present_us = 0u;
     renderer->profile_present_pixels = 0u;
+    renderer->profile_gpu_direct_blits = 0u;
+    renderer->profile_gpu_fenced_releases = 0u;
+    renderer->profile_gpu_immediate_releases = 0u;
 }
 
-static void wl_server_terminal_signal(int signal_number)
+static void wl_server_child_signal(int signal_number)
 {
     (void)signal_number;
-    wl_terminal_changed = 1;
+    wl_child_changed = 1;
 }
 
 static void wl_server_usage(const char *program)
@@ -155,9 +182,15 @@ static int wl_server_accept_client(struct wl_server *server)
 {
     struct wl_server_client *client;
     int fd = accept(server->listen_fd, NULL, NULL);
+    int flags;
 
     if (fd < 0)
         return -1;
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
     client = wl_server_free_client(server);
     if (!client) {
         close(fd);
@@ -202,15 +235,17 @@ static int wl_server_listen_event(int fd, uint32_t mask, void *data)
 static int wl_server_render_event(void *data)
 {
     struct wl_server *server = data;
-    uint64_t started_us = server->renderer.profile_enabled ?
-        wl_monotonic_us() : 0u;
+    uint64_t frame_started_us = wl_monotonic_us();
+    uint64_t profile_started_us = server->renderer.profile_enabled ?
+        frame_started_us : 0u;
     int result;
 
     server->render_pending = false;
     /*
-     * Rendering and framebuffer presentation are synchronous. Drain pending
-     * key releases first so a client repeat timer cannot overtake them while
-     * a large software frame is being composed.
+     * Drain pending key releases before composing. Software presentation is
+     * synchronous; GPU presentation completes later through its fence source,
+     * but command generation can still be a substantial non-preemptible user
+     * workload for this event-loop turn.
      */
     if (server->input_fd >= 0) {
         result = wl_server_handle_input(server);
@@ -232,7 +267,9 @@ static int wl_server_render_event(void *data)
         result = wl_renderer_compose_damage(server);
     } else if (!server->pointer_presented ||
                server->presented_pointer_x != server->pointer_x ||
-               server->presented_pointer_y != server->pointer_y) {
+               server->presented_pointer_y != server->pointer_y ||
+               server->presented_pointer_cursor !=
+                   server->pointer_cursor) {
         result = wl_renderer_compose_pointer(server);
     } else {
         result = 0;
@@ -241,25 +278,27 @@ static int wl_server_render_event(void *data)
         server->fatal_error = true;
         return -1;
     }
-    if (wl_server_complete_frame_callbacks(server) < 0) {
+    /*
+     * Software frames are complete synchronously.  GPU callbacks tagged with
+     * a non-zero presentation serial are completed by their output fence;
+     * only callbacks not associated with a submitted GPU frame remain here.
+     */
+    if (wl_server_complete_frame_callbacks(server, 0u) < 0) {
         server->fatal_error = true;
         return -1;
     }
-    wl_server_profile_frame(server, started_us);
+    wl_server_profile_frame(server, profile_started_us);
     {
-        uint64_t now_us = wl_monotonic_us();
-
-        if (now_us != 0u) {
-            if (server->next_frame_us == 0u)
-                server->next_frame_us =
-                    now_us + WL_RENDER_FRAME_INTERVAL_US;
-            else {
-                do {
-                    server->next_frame_us +=
-                        WL_RENDER_FRAME_INTERVAL_US;
-                } while (server->next_frame_us <= now_us);
-            }
-        }
+        /*
+         * Frame pacing is anchored to the start of composition.  Anchoring
+         * it to completion would add a second frame interval after every
+         * expensive frame (16 ms rendering + 16 ms sleep ~= 30 Hz).  A frame
+         * that overruns its deadline is therefore eligible for the short
+         * overdue coalescing window in wl_server_schedule_render().
+         */
+        if (frame_started_us != 0u)
+            server->next_frame_us =
+                frame_started_us + WL_RENDER_FRAME_INTERVAL_US;
     }
     return 0;
 }
@@ -277,6 +316,14 @@ int wl_server_schedule_render(struct wl_server *server, bool scene_damage)
     if (server->render_pending)
         return 0;
     server->render_pending = true;
+    /*
+     * One GPU frame may be awaiting its explicit completion fence. Preserve
+     * the accumulated damage without arming a polling timer; the fence event
+     * schedules the next frame once the output buffer is reusable.
+     */
+    if (wl_gpu_presenter_pending(server->renderer.gpu_presenter) &&
+        !wl_gpu_presenter_can_submit(server->renderer.gpu_presenter))
+        return 0;
     now_us = wl_monotonic_us();
     if (now_us == 0u || server->next_frame_us == 0u ||
         now_us >= server->next_frame_us) {
@@ -320,7 +367,9 @@ static int wl_server_input_event(int fd, uint32_t mask, void *data)
         (server->scene_damage_pending || server->damage_pending ||
          !server->pointer_presented ||
          server->presented_pointer_x != server->pointer_x ||
-         server->presented_pointer_y != server->pointer_y) &&
+         server->presented_pointer_y != server->pointer_y ||
+         server->presented_pointer_cursor !=
+             server->pointer_cursor) &&
         wl_server_schedule_render(server, false) < 0) {
         server->fatal_error = true;
         return -1;
@@ -343,8 +392,11 @@ static int wl_server_client_event(int fd, uint32_t mask, void *data)
     }
     if (!client)
         return -1;
-    result = (mask & WL_EVENT_READABLE) != 0u ?
-        wl_server_receive_client(server, client) : -1;
+    result = 0;
+    if ((mask & WL_EVENT_READABLE) != 0u)
+        result = wl_server_receive_client(server, client);
+    if (result >= 0 && (mask & WL_EVENT_WRITABLE) != 0u)
+        result = wl_client_flush_output(client);
     if (result < 0 ||
         (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u) {
         wl_server_disconnect_client(server, client);
@@ -399,25 +451,46 @@ static pid_t wl_server_launch_terminal(void)
         "XDG_RUNTIME_DIR=/tmp",
         NULL
     };
-    pid_t child = fork();
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_UID | ARMOS_SPAWN_SET_GID |
+                 ARMOS_SPAWN_SET_CWD,
+        .uid = 1000,
+        .gid = 1000,
+        .cwd = "/home/user"
+    };
 
-    if (child != 0)
-        return child;
-
-    if (getuid() == 0 && (setgid(1000) < 0 || setuid(1000) < 0)) {
-        perror("armos-wlcomp: terminal credentials");
-        _exit(126);
-    }
-    if (chdir("/home/user") < 0) {
-        perror("armos-wlcomp: terminal cwd");
-        _exit(126);
-    }
-    execve("/usr/bin/foot", argv, envp);
-    perror("armos-wlcomp: exec /usr/bin/foot");
-    _exit(127);
+    return armos_spawnve("/usr/bin/foot", argv, envp, &attributes);
 }
 
-static int wl_server_run(struct wl_server *server, pid_t *terminal_pid)
+static pid_t wl_server_launch_shell(uint32_t token)
+{
+    static char *const argv[] = {"armos-shell", NULL};
+    char token_environment[48];
+    char *envp[] = {
+        "PATH=/sbin:/bin:/usr/bin",
+        "HOME=/root",
+        "USER=root",
+        "LOGNAME=root",
+        "LANG=C.UTF-8",
+        "WAYLAND_DISPLAY=wayland-0",
+        "XDG_RUNTIME_DIR=/tmp",
+        token_environment,
+        NULL
+    };
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_CWD,
+        .cwd = "/"
+    };
+
+    snprintf(token_environment, sizeof(token_environment),
+             "ARMOS_SHELL_TOKEN=%u", (unsigned)token);
+    return armos_spawnve("/sbin/armos-shell", argv, envp, &attributes);
+}
+
+static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,
+                         pid_t *shell_pid)
 {
     server->event_display = wl_display_create();
     if (!server->event_display)
@@ -441,15 +514,21 @@ static int wl_server_run(struct wl_server *server, pid_t *terminal_pid)
             return -1;
     }
     while (!server->fatal_error && !server->exit_requested) {
-        if (terminal_pid && *terminal_pid > 0 && wl_terminal_changed) {
+        if (wl_child_changed) {
             int status;
-            pid_t waited;
 
-            wl_terminal_changed = 0;
-            waited = waitpid(*terminal_pid, &status, WNOHANG);
-            if (waited == *terminal_pid) {
+            wl_child_changed = 0;
+            if (shell_pid && *shell_pid > 0 &&
+                waitpid(*shell_pid, &status, WNOHANG) == *shell_pid) {
+                *shell_pid = -1;
+                server->shell_client = NULL;
+                server->panel_height = 0u;
+                (void)wl_server_schedule_render(server, true);
+            }
+            if (terminal_pid && *terminal_pid > 0 &&
+                waitpid(*terminal_pid, &status, WNOHANG) ==
+                    *terminal_pid) {
                 *terminal_pid = -1;
-                return 0;
             }
         }
         if (wl_event_loop_dispatch(server->event_loop, -1) < 0 &&
@@ -467,6 +546,7 @@ int main(int argc, char **argv)
     bool quiet = false;
     bool profile = false;
     pid_t terminal_pid = -1;
+    pid_t shell_pid = -1;
 
     (void)signal(SIGPIPE, SIG_IGN);
     /*
@@ -492,14 +572,22 @@ int main(int argc, char **argv)
     }
 
     memset(&server, 0, sizeof(server));
+    server.startup_started_us = wl_monotonic_us();
+    server.shell_token =
+        (uint32_t)wl_monotonic_us() ^ (uint32_t)getpid() ^
+        0xa53c9e17u;
+    if (server.shell_token == 0u)
+        server.shell_token = 1u;
     server.listen_fd = -1;
     server.input_fd = -1;
+    server.gpu_present_fence_fd = -1;
     for (size_t index = 0; index < WL_SERVER_MAX_CLIENTS; index++)
         server.clients[index].fd = -1;
     if (wl_renderer_init(&server.renderer, headless) < 0) {
         perror("armos-wlcomp: renderer");
         return 1;
     }
+    wl_server_profile_startup(&server, profile, "renderer-ready");
     server.pointer_x = (int32_t)server.renderer.framebuffer.width / 2;
     server.pointer_y = (int32_t)server.renderer.framebuffer.height / 2;
     if (!headless) {
@@ -535,31 +623,48 @@ int main(int argc, char **argv)
         wl_renderer_destroy(&server.renderer);
         return 1;
     }
+    wl_server_profile_startup(&server, profile, "initial-frame");
     server.renderer.profile_enabled =
         profile || getenv("ARMOS_WL_PROFILE") != NULL;
     wl_render_profile_set_enabled(server.renderer.profile_enabled);
 
     if (!quiet) {
+        const char *output =
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_GPU ?
+                ", gpu" :
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_DRM ?
+                ", drm" :
+            server.renderer.output_backend == WL_RENDERER_OUTPUT_FRAMEBUFFER ?
+                ", framebuffer" : ", headless";
+
         printf("armos-wlcomp: ready on %s (%ux%u%s)\n", socket_path,
                (unsigned)server.renderer.framebuffer.width,
                (unsigned)server.renderer.framebuffer.height,
-               headless ? ", headless" : "");
+               output);
     }
     if (!headless) {
-        wl_terminal_changed = 0;
-        if (signal(SIGCHLD, wl_server_terminal_signal) == SIG_ERR) {
+        wl_child_changed = 0;
+        if (signal(SIGCHLD, wl_server_child_signal) == SIG_ERR) {
             perror("armos-wlcomp: SIGCHLD");
             server.fatal_error = true;
         } else {
+            shell_pid = wl_server_launch_shell(server.shell_token);
+            if (shell_pid < 0) {
+                perror("armos-wlcomp: shell");
+                shell_pid = -1;
+            }
             terminal_pid = wl_server_launch_terminal();
             if (terminal_pid < 0) {
                 perror("armos-wlcomp: terminal");
                 server.fatal_error = true;
             }
+            wl_server_profile_startup(
+                &server, server.renderer.profile_enabled,
+                "clients-fork");
         }
     }
     if (!server.fatal_error &&
-        wl_server_run(&server, &terminal_pid) < 0)
+        wl_server_run(&server, &terminal_pid, &shell_pid) < 0)
         perror("armos-wlcomp: event loop");
     for (size_t index = 0u; index < WL_SERVER_MAX_CLIENTS; index++) {
         if (server.clients[index].used)
@@ -575,6 +680,13 @@ int main(int argc, char **argv)
 
         (void)kill(terminal_pid, SIGTERM);
         while (waitpid(terminal_pid, &status, 0) < 0 && errno == EINTR)
+            ;
+    }
+    if (shell_pid > 0) {
+        int status;
+
+        (void)kill(shell_pid, SIGTERM);
+        while (waitpid(shell_pid, &status, 0) < 0 && errno == EINTR)
             ;
     }
     return server.fatal_error ? 1 : 0;

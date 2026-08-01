@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <malloc.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pwd.h>
@@ -38,9 +39,11 @@
 #include <utime.h>
 #include <unistd.h>
 #include <armos/thread.h>
+#include <armos/spawn.h>
 #include <uapi/armos/file.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/shm.h>
+#include <uapi/armos/signal.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/syscall.h>
 #include <uapi/armos/time.h>
@@ -196,6 +199,10 @@ extern long sys_futex(volatile uint32_t *address, int operation,
 extern long sys_set_tls(unsigned long tls_base);
 extern long sys_get_tls_info(armos_tls_info_t *info);
 extern long sys_execve(const char *pathname, char *const argv[], char *const envp[]);
+extern long sys_spawnve(const char *pathname, char *const argv[],
+                        char *const envp[],
+                        const armos_spawn_attributes_t *attributes,
+                        size_t attributes_size);
 extern long sys_waitpid(int pid, int *status, int options);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
 extern long sys_brk(unsigned long brk);
@@ -229,7 +236,8 @@ extern long sys_timerfd_settime(int fd, int flags,
 extern long sys_timerfd_gettime(int fd,
                                 struct armos_itimerspec *current_value);
 extern long sys_mknod(const char *pathname, int mode, unsigned long dev);
-extern long sys_mmap(void *addr, unsigned long length, int prot, int flags, int fd);
+extern long sys_mmap(void *addr, unsigned long length, int prot, int flags,
+                     int fd, unsigned long offset);
 extern long sys_munmap(void *addr, unsigned long length);
 extern long sys_mprotect(void *addr, unsigned long length, int prot);
 extern long sys_select(int nfds, void *readfds, void *writefds, void *exceptfds, void *timeout);
@@ -445,6 +453,29 @@ char *dirname(char *path)
         slash--;
     *slash = '\0';
     return path;
+}
+
+#ifdef basename
+#undef basename
+#endif
+
+char *basename(char *path)
+{
+    static char dot[] = ".";
+    char *end;
+    char *base;
+
+    if (!path || !*path)
+        return dot;
+
+    end = path + strlen(path);
+    while (end > path + 1 && end[-1] == '/')
+        *--end = '\0';
+
+    base = strrchr(path, '/');
+    if (base == path && path[1] == '\0')
+        return path;
+    return base ? base + 1 : path;
 }
 
 static int passwd_fd = -1;
@@ -721,6 +752,70 @@ static int signal_os_to_newlib(int sig)
     default:
         return sig;
     }
+}
+
+static uint32_t sigset_newlib_to_os(sigset_t set);
+static sigset_t sigset_os_to_newlib(uint32_t set);
+
+/*
+ * The ArmOS kernel and bare-metal newlib profiles do not assign the same
+ * numbers to every signal.  Keep the POSIX-facing handler here and translate
+ * the signal number supplied by the kernel before invoking it.
+ */
+static void (*newlib_signal_handlers[32])(int);
+
+static void signal_dispatch_from_os(int os_sig)
+{
+    void (*handler)(int);
+
+    if (os_sig <= 0 || os_sig >= 32)
+        return;
+    handler = newlib_signal_handlers[os_sig];
+    if (handler && handler != SIG_IGN)
+        handler(signal_os_to_newlib(os_sig));
+}
+
+static int signal_flags_newlib_to_os(int flags)
+{
+    unsigned int input = (unsigned int)flags;
+    unsigned int output = 0;
+
+    /*
+     * Older ArmOS programs used bit zero for SA_RESTART.  Preserve that ABI
+     * while new programs use the distinct POSIX-facing value from newlib.
+     * SA_NOCLDSTOP is not implemented by the kernel yet.
+     */
+    if ((input & (unsigned int)SA_RESTART) != 0 || (input & 0x01u) != 0)
+        output |= ARMOS_SA_RESTART;
+    if ((input & (unsigned int)SA_NODEFER) != 0)
+        output |= ARMOS_SA_NODEFER;
+    if ((input & (unsigned int)SA_RESETHAND) != 0)
+        output |= ARMOS_SA_RESETHAND;
+#ifdef SA_NOCLDWAIT
+    if ((input & (unsigned int)SA_NOCLDWAIT) != 0)
+        output |= ARMOS_SA_NOCLDWAIT;
+#endif
+
+    return (int)output;
+}
+
+static int signal_flags_os_to_newlib(int flags)
+{
+    unsigned int input = (unsigned int)flags;
+    unsigned int output = 0;
+
+    if ((input & ARMOS_SA_RESTART) != 0)
+        output |= (unsigned int)SA_RESTART;
+    if ((input & ARMOS_SA_NODEFER) != 0)
+        output |= (unsigned int)SA_NODEFER;
+    if ((input & ARMOS_SA_RESETHAND) != 0)
+        output |= (unsigned int)SA_RESETHAND;
+#ifdef SA_NOCLDWAIT
+    if ((input & ARMOS_SA_NOCLDWAIT) != 0)
+        output |= (unsigned int)SA_NOCLDWAIT;
+#endif
+
+    return (int)output;
 }
 
 static int wait_status_os_to_newlib(int status)
@@ -1346,6 +1441,43 @@ gid_t getegid(void)
     return (gid_t)sys_getegid();
 }
 
+/*
+ * Newlib exposes secure_getenv() when GNU interfaces are visible, but its
+ * generic library does not provide an implementation.  Keep the policy in
+ * the common libc adaptation layer: environment variables are visible only
+ * when the real and effective credentials still match.
+ */
+char *secure_getenv(const char *name)
+{
+    if (getuid() != geteuid() || getgid() != getegid())
+        return NULL;
+
+    return getenv(name);
+}
+
+/*
+ * Some newlib configurations declare posix_memalign() without shipping the
+ * wrapper, while memalign() is available.  Keep POSIX validation in the
+ * common libc adaptation layer so every userland consumer observes one
+ * architecture-independent contract.
+ */
+int posix_memalign(void **result, size_t alignment, size_t size)
+{
+    void *pointer;
+
+    if (!result || alignment < sizeof(void *) ||
+        alignment % sizeof(void *) != 0 ||
+        (alignment & (alignment - 1u)) != 0)
+        return EINVAL;
+
+    pointer = memalign(alignment, size == 0 ? 1u : size);
+    if (!pointer)
+        return ENOMEM;
+
+    *result = pointer;
+    return 0;
+}
+
 int setgid(gid_t gid)
 {
     return ret_errno(sys_setgid((int)gid));
@@ -1421,9 +1553,60 @@ int _execve(const char *pathname, char *const argv[], char *const envp[])
     return ret_errno(sys_execve(pathname, argv, envp));
 }
 
+pid_t armos_spawnve(const char *pathname, char *const argv[],
+                    char *const envp[],
+                    const armos_spawn_attributes_t *attributes)
+{
+    long result = sys_spawnve(pathname, argv, envp, attributes,
+                              attributes ? sizeof(*attributes) : 0u);
+
+    if (result < 0) {
+        errno = (int)-result;
+        return (pid_t)-1;
+    }
+    return (pid_t)result;
+}
+
 int execv(const char *pathname, char *const argv[])
 {
     return _execve(pathname, argv, environ);
+}
+
+int execl(const char *pathname, const char *arg0, ...)
+{
+    va_list ap;
+    const char *arg;
+    char **argv;
+    size_t argc = 0;
+    size_t index;
+    int result;
+
+    va_start(ap, arg0);
+    for (arg = arg0; arg; arg = va_arg(ap, const char *))
+        argc++;
+    va_end(ap);
+
+    if (argc > (SIZE_MAX / sizeof(*argv)) - 1) {
+        errno = E2BIG;
+        return -1;
+    }
+
+    argv = malloc((argc + 1) * sizeof(*argv));
+    if (!argv)
+        return -1;
+
+    va_start(ap, arg0);
+    arg = arg0;
+    for (index = 0; index < argc; index++) {
+        argv[index] = (char *)arg;
+        arg = va_arg(ap, const char *);
+    }
+    va_end(ap);
+    argv[argc] = NULL;
+
+    result = execv(pathname, argv);
+    free(argv);
+    return result;
 }
 
 int execvp(const char *file, char *const argv[])
@@ -1822,6 +2005,26 @@ int fcntl(int fd, int cmd, ...)
     va_end(ap);
 
     return ret_errno(sys_fcntl(fd, cmd, arg));
+}
+
+long fpathconf(int fd, int name)
+{
+    struct stat status;
+
+    if (fstat(fd, &status) < 0)
+        return -1;
+
+    switch (name) {
+    case _PC_PIPE_BUF:
+        return 4096;
+    case _PC_NAME_MAX:
+        return NAME_MAX;
+    case _PC_PATH_MAX:
+        return PATH_MAX;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
 }
 
 int ioctl(int fd, unsigned long request, ...)
@@ -2557,13 +2760,24 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
 {
     struct os_sigaction os_act;
     struct os_sigaction os_old;
+    void (*previous_handler)(int);
+    int os_sig;
     long ret;
 
-    ret = sys_sigaction(signal_newlib_to_os(sig),
+    os_sig = signal_newlib_to_os(sig);
+    if (os_sig <= 0 || os_sig >= 32) {
+        errno = EINVAL;
+        return -1;
+    }
+    previous_handler = newlib_signal_handlers[os_sig];
+    ret = sys_sigaction(os_sig,
                         act ? (void *)&(struct os_sigaction) {
-                            .sa_handler = act->sa_handler,
-                            .sa_mask = (uint32_t)act->sa_mask,
-                            .sa_flags = act->sa_flags,
+                            .sa_handler =
+                                act->sa_handler == SIG_DFL ||
+                                act->sa_handler == SIG_IGN ?
+                                act->sa_handler : signal_dispatch_from_os,
+                            .sa_mask = sigset_newlib_to_os(act->sa_mask),
+                            .sa_flags = signal_flags_newlib_to_os(act->sa_flags),
                             .sa_restorer = __signal_return_trampoline,
                         } : NULL,
                         oldact ? &os_old : NULL);
@@ -2572,10 +2786,14 @@ int sigaction(int sig, const struct sigaction *act, struct sigaction *oldact)
         return -1;
     }
 
+    if (act)
+        newlib_signal_handlers[os_sig] = act->sa_handler;
     if (oldact) {
-        oldact->sa_handler = os_old.sa_handler;
-        oldact->sa_mask = (sigset_t)os_old.sa_mask;
-        oldact->sa_flags = os_old.sa_flags;
+        oldact->sa_handler =
+            os_old.sa_handler == signal_dispatch_from_os ?
+            previous_handler : os_old.sa_handler;
+        oldact->sa_mask = sigset_os_to_newlib(os_old.sa_mask);
+        oldact->sa_flags = signal_flags_os_to_newlib(os_old.sa_flags);
     }
 
     (void)os_act;
@@ -3016,12 +3234,12 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
     long ret;
 
-    if (offset != 0) {
-        errno = ENOSYS;
+    if (offset < 0) {
+        errno = EINVAL;
         return (void *)-1;
     }
 
-    ret = sys_mmap(addr, length, prot, flags, fd);
+    ret = sys_mmap(addr, length, prot, flags, fd, (unsigned long)offset);
     if (ret < 0) {
         errno = (int)-ret;
         return (void *)-1;

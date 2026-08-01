@@ -1,0 +1,542 @@
+From: ArmOS Project <devnull@armos.local>
+Subject: [PATCH] mesa: add ArmOS VirGL, Gallium and static EGL hooks
+
+ArmOS links Mesa statically and exposes VirGL through its own portable DRM
+userspace ABI.  It therefore has neither libdl nor the Linux DRM/vtest
+winsyses.  Select the ArmOS adapter explicitly without changing the other
+platform paths.  Build the architecture-neutral ArmGL state-tracker frontend
+and provider loader separately from the selected GPU winsys.  Enable the
+ArmOS surfaceless EGL platform and static EGL/GLES2 library targets.
+---
+
+diff --git a/meson.build b/meson.build
+index 1111111..2222222 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1072,6 +1072,8 @@ foreach a : ['warn_unused_result', 'weak', 'format', 'packed', 'returns_nonnull',
+ # TODO: this is very incomplete
+ if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd', 'haiku', 'android', 'managarm'].contains(host_machine.system())
+   pre_args += '-D_GNU_SOURCE'
++elif host_machine.system() == 'armos'
++  pre_args += ['-D_GNU_SOURCE', '-D_POSIX_C_SOURCE=200809L']
+ elif host_machine.system() == 'sunos'
+   pre_args += '-D__EXTENSIONS__'
+ elif host_machine.system() == 'windows'
+@@ -1535,7 +1535,7 @@ ld_args_build_id = cc.get_supported_link_arguments('-Wl,--build-id=sha1')
+
+ # check for dl support
+ dep_dl = null_dep
+-if host_machine.system() != 'windows'
++if not ['windows', 'armos'].contains(host_machine.system())
+   if not cc.has_function('dlopen')
+     dep_dl = cc.find_library('dl', required : true)
+   endif
+@@ -1599,4 +1599,7 @@ if host_machine.system() == 'windows'
+   dep_thread = null_dep
++elif host_machine.system() == 'armos'
++  # ArmOS pthread symbols are provided by the static userland runtime.
++  dep_thread = declare_dependency()
+ else
+   dep_thread = dependency('threads')
+ endif
+
+diff --git a/include/EGL/eglplatform.h b/include/EGL/eglplatform.h
+--- a/include/EGL/eglplatform.h
++++ b/include/EGL/eglplatform.h
+@@ -52,6 +52,12 @@ typedef void *EGLNativeDisplayType;
+ typedef void *EGLNativePixmapType;
+ typedef void *EGLNativeWindowType;
+
++#elif defined(__ARMOS__)
++
++typedef void *EGLNativeDisplayType;
++typedef khronos_uintptr_t EGLNativePixmapType;
++typedef khronos_uintptr_t EGLNativeWindowType;
++
+ #elif defined(_WIN32) || defined(__VC32__) && !defined(__CYGWIN__) && !defined(__SCITECH_SNAP__) /* Win32 and WinCE */
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN 1
+diff --git a/include/c99_alloca.h b/include/c99_alloca.h
+--- a/include/c99_alloca.h
++++ b/include/c99_alloca.h
+@@ -38,6 +38,10 @@
+
+ #  define alloca _alloca
+
++#elif defined(__ARMOS__)
++
++#  define alloca __builtin_alloca
++
+ #elif defined(__sun) || defined(__CYGWIN__)
+
+ #  include <alloca.h>
+diff --git a/src/util/detect_os.h b/src/util/detect_os.h
+--- a/src/util/detect_os.h
++++ b/src/util/detect_os.h
+@@ -15,6 +15,11 @@
+ #define DETECT_OS_H
+
++#if defined(__ARMOS__)
++#define DETECT_OS_ARMOS 1
++#define DETECT_OS_POSIX 1
++#endif
++
+ #if defined(__linux__)
+ #define DETECT_OS_LINUX 1
+ #define DETECT_OS_POSIX 1
+ #endif
+@@ -85,5 +90,8 @@
+  * Make sure DETECT_OS_* are always defined, so that they can be used with #if
+  */
++#ifndef DETECT_OS_ARMOS
++#define DETECT_OS_ARMOS 0
++#endif
+ #ifndef DETECT_OS_ANDROID
+ #define DETECT_OS_ANDROID 0
+ #endif
+diff --git a/src/compiler/glsl/glsl_lexer.ll b/src/compiler/glsl/glsl_lexer.ll
+--- a/src/compiler/glsl/glsl_lexer.ll
++++ b/src/compiler/glsl/glsl_lexer.ll
+@@ -23,6 +23,10 @@
+  */
+ #include <ctype.h>
+ #include <limits.h>
++#if defined(__ARMOS__) && !defined(LLONG_MAX)
++/* GCC's freestanding C++ limits wrapper omits the C99 spelling. */
++#define LLONG_MAX __LONG_LONG_MAX__
++#endif
+ #include "util/strtod.h"
+ #include "ast.h"
+ #include "glsl_parser_extras.h"
+diff --git a/src/util/os_misc.c b/src/util/os_misc.c
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -56,6 +56,8 @@
+ #  include <unistd.h>
+ #  include <log/log.h>
+ #  include <cutils/properties.h>
++#elif DETECT_OS_ARMOS
++#  include <unistd.h>
+ #elif DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || DETECT_OS_HURD || DETECT_OS_MANAGARM
+ #  include <unistd.h>
+ #elif DETECT_OS_OPENBSD || DETECT_OS_FREEBSD
+diff --git a/src/util/os_time.c b/src/util/os_time.c
+--- a/src/util/os_time.c
++++ b/src/util/os_time.c
+@@ -63,7 +63,7 @@ os_time_get_nano(void)
+ void
+ os_time_nanosleep_until(int64_t deadline)
+ {
+-#if DETECT_OS_LINUX || DETECT_OS_MANAGARM
++#if DETECT_OS_ARMOS || DETECT_OS_LINUX || DETECT_OS_MANAGARM
+    struct timespec time;
+    time.tv_sec = deadline / INT64_C(1000000000);
+    time.tv_nsec = deadline % INT64_C(1000000000);
+@@ -80,7 +80,7 @@ os_time_nanosleep_until(int64_t deadline)
+ void
+ os_time_sleep(int64_t usecs)
+ {
+-#if DETECT_OS_LINUX || DETECT_OS_MANAGARM || DETECT_OS_FUCHSIA
++#if DETECT_OS_ARMOS || DETECT_OS_LINUX || DETECT_OS_MANAGARM || DETECT_OS_FUCHSIA
+    struct timespec time;
+    time.tv_sec = usecs / 1000000;
+    time.tv_nsec = (usecs % 1000000) * 1000;
+diff --git a/src/util/u_dl.c b/src/util/u_dl.c
+--- a/src/util/u_dl.c
++++ b/src/util/u_dl.c
+@@ -29,7 +29,7 @@
+
+ #include "detect_os.h"
+
+-#if DETECT_OS_POSIX_LITE
++#if DETECT_OS_POSIX_LITE && !DETECT_OS_ARMOS
+ #include <dlfcn.h>
+ #endif
+ #if DETECT_OS_WINDOWS
+@@ -44,6 +44,6 @@ struct util_dl_library *
+ util_dl_open(const char *filename)
+ {
+-#if DETECT_OS_POSIX_LITE
++#if DETECT_OS_POSIX_LITE && !DETECT_OS_ARMOS
+    return (struct util_dl_library *)dlopen(filename, RTLD_LAZY | RTLD_LOCAL);
+ #elif DETECT_OS_WINDOWS
+    return (struct util_dl_library *)LoadLibraryA(filename);
+@@ -58,7 +58,7 @@ util_dl_proc
+ util_dl_get_proc_address(struct util_dl_library *library,
+                          const char *procname)
+ {
+-#if DETECT_OS_POSIX_LITE
++#if DETECT_OS_POSIX_LITE && !DETECT_OS_ARMOS
+    return (util_dl_proc) pointer_to_func(dlsym((void *)library, procname));
+ #elif DETECT_OS_WINDOWS
+    return (util_dl_proc)GetProcAddress((HMODULE)library, procname);
+@@ -69,7 +69,7 @@ util_dl_get_proc_address(struct util_dl_library *library,
+ char *
+ util_dl_get_path_from_proc(const void *func_proc)
+ {
+-#if defined(HAVE_DLADDR)
++#if defined(HAVE_DLADDR) && !DETECT_OS_ARMOS
+    Dl_info info;
+    if (dladdr(func_proc, &info) == 0) {
+       return NULL;
+@@ -104,7 +104,7 @@ util_dl_get_path_from_proc(const void *func_proc)
+ void
+ util_dl_close(struct util_dl_library *library)
+ {
+-#if DETECT_OS_POSIX_LITE
++#if DETECT_OS_POSIX_LITE && !DETECT_OS_ARMOS
+    dlclose((void *)library);
+ #elif DETECT_OS_WINDOWS
+    FreeLibrary((HMODULE)library);
+@@ -117,7 +117,7 @@ util_dl_close(struct util_dl_library *library)
+ const char *
+ util_dl_error(void)
+ {
+-#if DETECT_OS_POSIX_LITE
++#if DETECT_OS_POSIX_LITE && !DETECT_OS_ARMOS
+    return dlerror();
+ #elif DETECT_OS_WINDOWS
+    return "unknown error";
+diff --git a/src/util/u_qsort.cpp b/src/util/u_qsort.cpp
+--- a/src/util/u_qsort.cpp
++++ b/src/util/u_qsort.cpp
+@@ -22,7 +22,9 @@
+  */
+
+ #include "u_qsort.h"
++#if !defined(__ARMOS__)
+ #include <thread>
++#endif
+
+ thread_local int (*tl_qsort_r_compar)(const void *, const void *, void *);
+ thread_local void *tl_qsort_r_arg;
+diff --git a/src/util/enum_operators.h b/src/util/enum_operators.h
+--- a/src/util/enum_operators.h
++++ b/src/util/enum_operators.h
+@@ -24,7 +24,12 @@
+ #if defined(__cplusplus) && !defined(__OPENCL_VERSION__)
+
+ #include "macros.h"
++#if defined(__ARMOS__)
++#define MESA_CPP_UNDERLYING_TYPE(Enum) __underlying_type(Enum)
++#else
+ #include <type_traits>
++#define MESA_CPP_UNDERLYING_TYPE(Enum) std::underlying_type_t<Enum>
++#endif
+
+ // some enum helpers
+ #define MESA_DEFINE_CPP_ENUM_BINARY_OPERATOR(Enum, op) \
+@@ -32,7 +37,7 @@ extern "C++" {                                         \
+ UNUSED static constexpr                                \
+ Enum operator op (Enum a, Enum b)                      \
+ {                                                      \
+-   using IntType = std::underlying_type_t<Enum>;       \
++   using IntType = MESA_CPP_UNDERLYING_TYPE(Enum);     \
+    IntType ua = static_cast<IntType>(a);               \
+    IntType ub = static_cast<IntType>(b);               \
+    return static_cast<Enum>(ua op ub);                 \
+@@ -41,6 +46,6 @@ UNUSED static constexpr                                \
+ Enum& operator op##= (Enum &a, Enum b)                 \
+ {                                                      \
+-   using IntType = std::underlying_type_t<Enum>;       \
++   using IntType = MESA_CPP_UNDERLYING_TYPE(Enum);     \
+    IntType ua = static_cast<IntType>(a);               \
+    IntType ub = static_cast<IntType>(b);               \
+    ua op##= ub;                                        \
+@@ -55,7 +60,7 @@ extern "C++" {                                        \
+ UNUSED static constexpr                               \
+ Enum operator op (Enum a)                             \
+ {                                                     \
+-   using IntType = std::underlying_type_t<Enum>;      \
++   using IntType = MESA_CPP_UNDERLYING_TYPE(Enum);    \
+    IntType ua = static_cast<IntType>(a);              \
+    return static_cast<Enum>(op ua);                   \
+ }                                                     \
+diff --git a/src/util/meson.build b/src/util/meson.build
+--- a/src/util/meson.build
++++ b/src/util/meson.build
+@@ -127,10 +127,6 @@ files_mesa_util = files(
+   'strndup.h',
+   'strtod.c',
+   'strtod.h',
+-  'texcompress_astc_luts.cpp',
+-  'texcompress_astc_luts.h',
+-  'texcompress_astc_luts_wrap.cpp',
+-  'texcompress_astc_luts_wrap.h',
+   'timespec.h',
+   'u_atomic.c',
+   'u_atomic.h',
+@@ -181,6 +177,10 @@ files_mesa_util = files(
+   'mesa_cache_db_multipart.h',
+ )
+
++if host_machine.system() == 'armos'
++  files_mesa_util += files('armos_cxx_runtime.cpp')
++endif
++
+ libmesa_util_links = []
+
+ if host_machine.cpu_family() == 'aarch64' and cc.get_id() != 'msvc'
+diff --git a/src/mesa/meson.build b/src/mesa/meson.build
+--- a/src/mesa/meson.build
++++ b/src/mesa/meson.build
+@@ -362,7 +362,5 @@ files_libmesa = files(
+   'state_tracker/st_shader_cache.c',
+   'state_tracker/st_shader_cache.h',
+-  'state_tracker/st_texcompress_compute.c',
+-  'state_tracker/st_texcompress_compute.h',
+   'state_tracker/st_texture.c',
+   'state_tracker/st_texture.h',
+   'state_tracker/st_util.h',
+diff --git a/src/mesa/state_tracker/st_context.c b/src/mesa/state_tracker/st_context.c
+--- a/src/mesa/state_tracker/st_context.c
++++ b/src/mesa/state_tracker/st_context.c
+@@ -351,8 +351,10 @@ st_destroy_context_priv(struct st_context *st, bool destroy_pipe)
+    st_destroy_drawtex(st);
+    st_destroy_pbo_helpers(st);
+
++#if !defined(__ARMOS__)
+    if (_mesa_has_compute_shaders(st->ctx) && st->transcode_astc)
+       st_destroy_texcompress_compute(st);
++#endif
+
+    st_destroy_bound_texture_handles(st);
+    st_destroy_bound_image_handles(st);
+@@ -742,6 +744,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
+       return NULL;
+    }
+
++#if !defined(__ARMOS__)
+    if (_mesa_has_compute_shaders(ctx) &&
+        st->transcode_astc && !st_init_texcompress_compute(st)) {
+       /* Transcoding ASTC to DXT5 using compute shaders can provide a
+@@ -753,6 +756,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
+       st_destroy_context_priv(st, false);
+       return NULL;
+    }
++#endif
+
+    /* This must be done after extensions are initialized to enable persistent
+     * mappings immediately.
+diff --git a/src/mesa/state_tracker/st_cb_texture.c b/src/mesa/state_tracker/st_cb_texture.c
+--- a/src/mesa/state_tracker/st_cb_texture.c
++++ b/src/mesa/state_tracker/st_cb_texture.c
+@@ -710,6 +710,7 @@ st_UnmapTextureImage(struct gl_context *ctx,
+          const bool log_unmap_time = false;
+          const int64_t unmap_start_us = log_unmap_time ? os_time_get() : 0;
+
++#if !defined(__ARMOS__)
+          if (_mesa_is_format_astc_2d(texImage->TexFormat) &&
+              !_mesa_is_format_astc_2d(texImage->pt->format) &&
+              util_format_is_compressed(texImage->pt->format)) {
+@@ -741,6 +742,7 @@ st_UnmapTextureImage(struct gl_context *ctx,
+                return;
+             }
+          }
++#endif
+
+          struct pipe_transfer *transfer;
+          GLubyte *map = st_texture_image_map(st, texImage,
+diff --git a/src/mesa/main/texcompress_astc.cpp b/src/mesa/main/texcompress_astc.cpp
+--- a/src/mesa/main/texcompress_astc.cpp
++++ b/src/mesa/main/texcompress_astc.cpp
+@@ -37,7 +37,11 @@
+ #include "macros.h"
+ #include "util/half_float.h"
+ #include <stdio.h>
++#if defined(__ARMOS__)
++#include <stdlib.h>
++#else
+ #include <cstdlib>  // for abort() on windows
++#endif
+
+ static bool VERBOSE_DECODE = false;
+ static bool VERBOSE_WRITE = false;
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -423,6 +423,8 @@ if _platforms.contains('auto')
+     _platforms = ['windows']
+   elif host_machine.system() == 'darwin'
+     _platforms = ['x11', 'macos']
++  elif host_machine.system() == 'armos'
++    _platforms = []
+   else
+     error('Unknown OS @0@. Please pass -Dplatforms to set platforms. Patches gladly accepted to fix this.'.format(
+           host_machine.system()))
+@@ -436,6 +438,12 @@ with_platform_wayland = _platforms.contains('wayland')
+ with_platform_haiku = _platforms.contains('haiku')
+ with_platform_windows = _platforms.contains('windows')
+ with_platform_macos = _platforms.contains('macos')
++with_platform_armos = host_machine.system() == 'armos'
++if with_platform_armos
++  # ArmOS provides its own Wayland ABI.  Enable Mesa's platform selector
++  # without pulling the Linux wayland-client/pkg-config dependency graph.
++  pre_args += '-DHAVE_WAYLAND_PLATFORM'
++endif
+
+ with_glx = get_option('glx')
+ if with_glx == 'auto'
+@@ -487,7 +490,7 @@ with_xlib_lease = get_option('xlib-lease') \
+   .allowed()
+
+ with_egl = get_option('egl') \
+-  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android, error_message : 'EGL requires DRI, Haiku, Windows or Android') \
++  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android or with_platform_armos, error_message : 'EGL requires DRI, Haiku, Windows, Android or ArmOS') \
+   .require(with_glx != 'xlib', error_message :'EGL requires DRI, but GLX is being built with xlib support') \
+   .disable_auto_if(with_platform_haiku) \
+   .allowed()
+diff --git a/src/meson.build b/src/meson.build
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -119,6 +119,9 @@ if with_gallium_or_lvp
+ endif
+ # These require libgallium (shared_glapi_lib)
+ if with_gallium and (with_glx != 'disabled' or with_egl)
++  if host_machine.system() == 'armos'
++    shared_glapi_lib = libglapi
++  endif
+   if with_gles1 and not with_glvnd
+     subdir('mesa/glapi/es1api')
+   endif
+diff --git a/src/mesa/glapi/es2api/meson.build b/src/mesa/glapi/es2api/meson.build
+--- a/src/mesa/glapi/es2api/meson.build
++++ b/src/mesa/glapi/es2api/meson.build
+@@ -22,7 +22,7 @@ gles2_def = custom_target(
+   command : gen_vs_module_defs_normal_command,
+ )
+
+-libgles2 = shared_library(
++libgles2 = library(
+   'GLESv2' + get_option('gles-lib-suffix'),
+   ['libgles2_public.c', es2_glapi_mapi_tmp_h],
+   vs_module_defs : gles2_def,
+diff --git a/src/egl/meson.build b/src/egl/meson.build
+--- a/src/egl/meson.build
++++ b/src/egl/meson.build
+@@ -137,5 +137,20 @@ if with_dri
+     files_egl += files('drivers/dri2/platform_android.c')
+   endif
++elif with_platform_armos
++  c_args_for_egl += '-D_EGL_BUILT_IN_DRIVER_ARMOS'
++  files_egl += files('drivers/armos/egl_armos.c')
++  incs_for_egl += [
++    inc_gallium,
++    inc_gallium_aux,
++    inc_gallium_drivers,
++    inc_mesa,
++    include_directories('../gallium/frontends/armgl'),
++    include_directories('../gallium/targets/armos'),
++  ]
++  link_for_egl += [
++    libmesa, libgallium, libgalliumvl_stub, libglapi,
++    libarmgl, libarmospipe,
++  ]
+ elif with_platform_haiku
+   c_args_for_egl += [
+     '-D_EGL_BUILT_IN_DRIVER_HAIKU',
+@@ -200,7 +213,7 @@ egl_def = custom_target(
+   command : gen_vs_module_defs_normal_command,
+ )
+
+-libegl = shared_library(
++libegl = library(
+   egl_lib_name,
+   files_egl,
+   c_args : [
+diff --git a/src/gallium/drivers/virgl/virgl_context.c b/src/gallium/drivers/virgl/virgl_context.c
+index 9999999..aaaaaaa 100644
+--- a/src/gallium/drivers/virgl/virgl_context.c
++++ b/src/gallium/drivers/virgl/virgl_context.c
+@@ -22,7 +22,7 @@
+  */
+
+ #include <string.h>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__ARMOS__)
+ #include <libsync.h>
+ #endif
+
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 3333333..4444444 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -170,7 +173,9 @@ endif
+ endif
+ if with_gallium_virgl
+   subdir('winsys/virgl/common')
+-  if not with_platform_windows
++  if host_machine.system() == 'armos'
++    subdir('winsys/virgl/armos')
++  elif not with_platform_windows
+     subdir('winsys/virgl/drm')
+     subdir('winsys/virgl/vtest')
+   endif
+@@ -230,6 +233,10 @@ if with_dri
+ endif
+ if with_platform_haiku
+   subdir('frontends/hgl')
+ endif
++if host_machine.system() == 'armos'
++  subdir('frontends/armgl')
++  subdir('targets/armos')
++endif
+ if with_gallium_st_d3d10umd
+   subdir('frontends/d3d10umd')
+diff --git a/meson.options b/meson.options
+index 7777777..8888888 100644
+--- a/meson.options
++++ b/meson.options
+@@ -1,6 +1,13 @@
+ # Copyright © 2017-2019 Intel Corporation
+ # SPDX-License-Identifier: MIT
+
++option(
++  'armos-virgl-winsys-dir',
++  type : 'string',
++  value : '',
++  description : 'Target directory containing libarmos-virgl-winsys.a',
++)
++
+ option(
+   'split-debug',
+   type : 'feature',
+diff --git a/src/gallium/drivers/virgl/meson.build b/src/gallium/drivers/virgl/meson.build
+index 5555555..6666666 100644
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -25,7 +25,9 @@ libvirgl = static_library(
+ )
+
+ virgl_deps = [libvirgl]
+-if not with_platform_windows
++if host_machine.system() == 'armos'
++  virgl_deps += libvirglarmos
++elif not with_platform_windows
+   virgl_deps += libvirgldrm
+   virgl_deps += libvirglvtest
+ endif
+diff --git a/src/gallium/auxiliary/driver_ddebug/dd_draw.c b/src/gallium/auxiliary/driver_ddebug/dd_draw.c
+index 7777777..8888888 100644
+--- a/src/gallium/auxiliary/driver_ddebug/dd_draw.c
++++ b/src/gallium/auxiliary/driver_ddebug/dd_draw.c
+@@ -36,5 +36,6 @@
+ #include "tgsi/tgsi_scan.h"
+ #include "util/os_time.h"
++#include "c99_alloca.h"
+ #include <inttypes.h>
+ #include "util/detect.h"
+
+diff --git a/src/gallium/auxiliary/hud/hud_context.c b/src/gallium/auxiliary/hud/hud_context.c
+index 9999999..aaaaaaa 100644
+--- a/src/gallium/auxiliary/hud/hud_context.c
++++ b/src/gallium/auxiliary/hud/hud_context.c
+@@ -2054,7 +2054,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
+    list_inithead(&hud->pane_list);
+
+    /* setup sig handler once for all hud contexts */
+-#if DETECT_OS_POSIX
++#if DETECT_OS_POSIX && !DETECT_OS_ARMOS
+    if (!sig_handled && signo != 0) {
+       action.sa_sigaction = &signal_visible_handler;
+       action.sa_flags = SA_SIGINFO;

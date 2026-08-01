@@ -1,2 +1,3 @@
 0001-enable-posix-for-arm-none-eabi.patch
 0002-expose-armos-pthread-features.patch
+0003-expose-armos-sigaction-flags.patch

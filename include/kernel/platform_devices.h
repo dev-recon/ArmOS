@@ -33,6 +33,7 @@ typedef struct {
 void platform_console_early_init(void);
 void platform_console_enable_rx(void);
 platform_devices_state_t platform_devices_init(void);
+bool platform_device_irq_dispatch(uint32_t irq);
 bool platform_block_init(void);
 void platform_block_shutdown(void);
 

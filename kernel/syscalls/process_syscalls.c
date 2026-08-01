@@ -40,6 +40,7 @@
 #include <kernel/null.h>
 #include <kernel/keyboard.h>
 #include <kernel/display.h>
+#include <kernel/drm.h>
 #include <kernel/virtio_net.h>
 #include <kernel/mount.h>
 #include <kernel/virtio_block.h>
@@ -374,9 +375,13 @@ int sys_fstatvfs(int fd, armos_statvfs_t* buf)
     return 0;
 }
 
-static int pipe_wait_interruptible(void)
+static int pipe_wait_interruptible(struct pipe_buffer *buffer,
+                                   uint32_t generation)
 {
-    return task_poll_wait_once() == 0 ? 0 : -EINTR;
+    const void *wait_key = buffer;
+
+    return task_poll_wait(task_current_local(), generation, 0u,
+                          &wait_key, 1u) == 0 ? 0 : -EINTR;
 }
 
 bool can_read(file_t* file) {
@@ -412,6 +417,8 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
     }
 
     while (1) {
+        uint32_t generation = task_poll_generation();
+
         irq_flags = disable_interrupts_save();
 
         /* Si pas de données et plus d'écrivains -> EOF */
@@ -431,14 +438,14 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
         restore_interrupts(irq_flags);
 
         if (bytes_read > 0) {
-            task_poll_notify();
+            task_poll_notify_key(buffer);
             return bytes_read;
         }
 
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
 
-        if (pipe_wait_interruptible() < 0)
+        if (pipe_wait_interruptible(buffer, generation) < 0)
             return -EINTR;
     }
 }
@@ -458,6 +465,8 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
     }
     
     while (bytes_written < count) {
+        uint32_t generation = task_poll_generation();
+
         irq_flags = disable_interrupts_save();
 
         /* Si pas de lecteurs -> SIGPIPE */
@@ -478,7 +487,7 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
 
         restore_interrupts(irq_flags);
         if (bytes_written > 0)
-            task_poll_notify();
+            task_poll_notify_key(buffer);
 
         if (bytes_written >= count)
             return bytes_written;
@@ -486,7 +495,7 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
         if ((file->flags & O_NONBLOCK) != 0)
             return bytes_written > 0 ? (ssize_t)bytes_written : -EAGAIN;
 
-        if (pipe_wait_interruptible() < 0)
+        if (pipe_wait_interruptible(buffer, generation) < 0)
             return bytes_written > 0 ? (ssize_t)bytes_written : -EINTR;
     }
 
@@ -517,6 +526,8 @@ int pipe_close(file_t* file) {
         }
     }
     
+    task_poll_notify_key(buffer);
+
     /* Libérer si plus personne n'utilise le pipe */
     if (buffer->readers == 0 && buffer->writers == 0) {
         //KDEBUG("NO MORE USERS OF THIS PIPE. Freeing it.\n");
@@ -524,7 +535,6 @@ int pipe_close(file_t* file) {
     }
     
     kfree(pipe);
-    task_poll_notify();
     //KDEBUG("PIPE CLOSED\n");
 
     return 0;
@@ -868,6 +878,9 @@ static bool fd_read_ready(file_t *file)
     if (file->type == FILE_TYPE_TIMERFD)
         return timerfd_read_ready(file);
 
+    if (file->type == FILE_TYPE_DRM_FENCE)
+        return armos_drm_fence_file_read_ready(file);
+
     return file->f_op && file->f_op->read;
 }
 
@@ -893,6 +906,19 @@ static bool fd_write_ready(file_t *file)
         return eventfd_write_ready(file);
 
     return file->f_op && file->f_op->write;
+}
+
+static const void *fd_poll_key(file_t *file)
+{
+    if (!file)
+        return NULL;
+    if (file->type == FILE_TYPE_PIPE) {
+        struct pipe_inode_info *pipe = file->private_data;
+
+        return pipe && pipe->buffer ? (const void *)pipe->buffer :
+                                      (const void *)file;
+    }
+    return file->private_data ? file->private_data : file;
 }
 
 int sys_fcntl(int fd, int cmd, uintptr_t arg)
@@ -994,6 +1020,9 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
     file = task->process->files[fd];
     if (!file)
         return -EBADF;
+
+    if (file->type == FILE_TYPE_DRM)
+        return armos_drm_device_ioctl(file, request, arg);
 
     if (file->type == FILE_TYPE_PTY_MASTER &&
         (request == ARMOS_TIOCGPTN || request == ARMOS_TIOCSPTLCK))
@@ -1144,6 +1173,8 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         while (tty_has_pending_output()) {
             if (has_pending_signals(task))
                 return -EINTR;
@@ -1159,6 +1190,8 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_set_termios_for_id(tty_id, &tio, 0);
 
     case TCSETSF:
@@ -1168,11 +1201,18 @@ int sys_ioctl(int fd, uint32_t request, uintptr_t arg)
             return -EFAULT;
         if (copy_from_user(&tio, (void*)arg, sizeof(tio)) < 0)
             return -EFAULT;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_set_termios_for_id(tty_id, &tio, 1);
 
     case TCFLSH:
         if (!file_is_tty(file))
             return -ENOTTY;
+        if ((int)arg != TCIFLUSH && (int)arg != TCOFLUSH &&
+            (int)arg != TCIOFLUSH)
+            return -EINVAL;
+        if (tty_job_control_check_for_id(tty_id, SIGTTOU) < 0)
+            return -EINTR;
         return tty_flush_for_id(tty_id, (int)arg);
     default:
         return -ENOTTY;
@@ -1465,6 +1505,8 @@ int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, void* t
     uint32_t read_in[8], write_in[8];
     uint32_t read_out[8], write_out[8], except_out[8];
     uint32_t *read_ptr = NULL, *write_ptr = NULL;
+    const void *wait_keys[MAX_FILES];
+    uint32_t wait_key_count = 0u;
     int words;
     int ready;
 
@@ -1501,6 +1543,17 @@ int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, void* t
     }
 
     while (1) {
+        uint32_t generation = task_poll_generation();
+
+        wait_key_count = 0u;
+        for (int fd = 0; fd < nfds && fd < MAX_FILES; fd++) {
+            file_t *file = task->process->files[fd];
+
+            if (file && ((read_ptr && fdset_has(read_ptr, fd)) ||
+                         (write_ptr && fdset_has(write_ptr, fd))))
+                wait_keys[wait_key_count++] = fd_poll_key(file);
+        }
+
         ready = select_scan(nfds, read_ptr, write_ptr, read_out, write_out, except_out);
         if (ready < 0)
             return ready;
@@ -1510,7 +1563,10 @@ int sys_select(int nfds, void* readfds, void* writefds, void* exceptfds, void* t
             break;
         if (has_pending_signals(task))
             return -EINTR;
-        task_sleep_ms(1);
+        if (task_poll_wait(
+                task, generation, timeout ? deadline : 0u,
+                wait_keys, wait_key_count) < 0)
+            return -EINTR;
     }
 
     if (readfds && copy_to_user(readfds, read_out, words * sizeof(uint32_t)) < 0)
@@ -1527,6 +1583,7 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
 {
     task_t *task = task_current_local();
     struct pollfd_kernel local[64];
+    const void *wait_keys[64];
     uint32_t deadline = 0;
     int ready;
 
@@ -1545,6 +1602,7 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
     while (1) {
         uint32_t generation = task_poll_generation();
         uint32_t wait_deadline = deadline;
+        uint32_t wait_key_count = 0u;
 
         ready = 0;
         for (uint32_t i = 0; i < nfds; i++) {
@@ -1571,6 +1629,7 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
                      (int32_t)(timer_deadline - wait_deadline) < 0))
                     wait_deadline = timer_deadline;
             }
+            wait_keys[wait_key_count++] = fd_poll_key(file);
             if (local[i].revents)
                 ready++;
         }
@@ -1581,7 +1640,8 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms)
             break;
         if (has_pending_signals(task))
             return -EINTR;
-        if (task_poll_wait(task, generation, wait_deadline) < 0)
+        if (task_poll_wait(task, generation, wait_deadline,
+                           wait_keys, wait_key_count) < 0)
             return -EINTR;
     }
 
@@ -3346,7 +3406,8 @@ out:
     return ret;
 }
 
-void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
+void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd,
+               uintptr_t offset)
 {
     task_t *task = task_current_local();
     vm_space_t *vm;
@@ -3369,7 +3430,7 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
     if (flags & ARMOS_MAP_FIXED)
         return (void *)-ENOSYS;
     is_anon = (flags & ARMOS_MAP_ANON) != 0;
-    if (is_anon && fd != -1)
+    if (is_anon && (fd != -1 || offset != 0))
         return (void *)-EINVAL;
     if (!is_anon && (fd < 0 || fd >= MAX_FILES))
         return (void *)-EBADF;
@@ -3398,8 +3459,16 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
             file_t *file = vfs_get_file_from_fd(task, fd);
             bool is_framebuffer =
                 file && file->type == FILE_TYPE_FRAMEBUFFER;
+            bool is_drm = file && file->type == FILE_TYPE_DRM;
 
             close_file(file);
+            if (is_drm)
+                return armos_drm_map_fd(
+                    fd, addr, length,
+                    vma_flags | VMA_SHARED | VMA_DONTFORK |
+                    VMA_EXTERNAL, offset);
+            if (offset != 0)
+                return (void *)-EINVAL;
             if (is_framebuffer)
                 return framebuffer_map_fd(
                     fd, addr, length,
@@ -3414,6 +3483,8 @@ void* sys_mmap(void* addr, size_t length, int prot, int flags, int fd)
         bool is_shm = file && file->type == FILE_TYPE_SHM;
 
         close_file(file);
+        if (offset != 0)
+            return (void *)-EINVAL;
         if (is_shm)
             return shm_map_fd(fd, addr, length, vma_flags);
     }

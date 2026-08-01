@@ -45,6 +45,11 @@ int wl_display_dispatch_queue(struct wl_display *display,
                               struct wl_event_queue *queue);
 int wl_display_dispatch_queue_pending(struct wl_display *display,
                                       struct wl_event_queue *queue);
+/* ArmOS extension: bound default-queue work without changing standard semantics. */
+int armos_wl_display_dispatch_pending_bounded(struct wl_display *display,
+                                              uint32_t max_events);
+int armos_wl_display_dispatch_bounded(struct wl_display *display,
+                                      uint32_t max_events);
 int wl_display_roundtrip_queue(struct wl_display *display,
                                struct wl_event_queue *queue);
 int wl_display_prepare_read_queue(struct wl_display *display,
@@ -66,6 +71,7 @@ void *wl_proxy_get_user_data(struct wl_proxy *proxy);
 uint32_t wl_proxy_get_id(struct wl_proxy *proxy);
 uint32_t wl_proxy_get_version(struct wl_proxy *proxy);
 const char *wl_proxy_get_class(struct wl_proxy *proxy);
+struct wl_display *wl_proxy_get_display(struct wl_proxy *proxy);
 
 #ifdef __cplusplus
 }

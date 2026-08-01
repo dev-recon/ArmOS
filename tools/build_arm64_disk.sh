@@ -102,7 +102,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$SKIP_USERLAND" -eq 0 ]; then
-    "$ROOT_DIR/tools/build_arm64_userland.sh" --install
+    BUILD_NUKLEAR="${BUILD_NUKLEAR:-0}" \
+        "$ROOT_DIR/tools/build_arm64_userland.sh" --install
 fi
 
 mkdir -p "$(dirname "$OUTPUT")" "$(dirname "$ROOTFS")" "$DISK_WORK_DIR"

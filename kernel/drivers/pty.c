@@ -65,7 +65,7 @@ static bool pty_slave_putc(void *context, char character)
     pair->output[pair->head] = character;
     pair->head = next;
     spin_unlock(&pair->lock);
-    task_poll_notify();
+    task_poll_notify_key(pair);
     return true;
 }
 
@@ -77,10 +77,16 @@ static ssize_t pty_master_read(file_t *file, void *buffer, size_t count)
 
     if (!pair || !buffer)
         return -EINVAL;
-    while (!pty_master_read_ready(file)) {
+    while (1) {
+        const void *wait_key = pair;
+        uint32_t generation = task_poll_generation();
+
+        if (pty_master_read_ready(file))
+            break;
         if ((file->flags & O_NONBLOCK) != 0)
             return -EAGAIN;
-        if (task_poll_wait_once() != 0)
+        if (task_poll_wait(task_current_local(), generation, 0u,
+                           &wait_key, 1u) != 0)
             return -EINTR;
     }
     spin_lock(&pair->lock);
@@ -90,7 +96,7 @@ static ssize_t pty_master_read(file_t *file, void *buffer, size_t count)
     }
     spin_unlock(&pair->lock);
     if (copied != 0u)
-        task_poll_notify();
+        task_poll_notify_key(pair);
     tty_drain_output_for_id(PTY_TTY_BASE + (int)pair->index);
     return (ssize_t)copied;
 }
@@ -118,7 +124,7 @@ static int pty_master_close(file_t *file)
     pair->used = false;
     tty_unregister_virtual(PTY_TTY_BASE + (int)pair->index);
     spin_unlock(&pty_table_lock);
-    task_poll_notify();
+    task_poll_notify_key(pair);
     return 0;
 }
 

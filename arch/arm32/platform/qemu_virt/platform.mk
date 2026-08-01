@@ -12,7 +12,7 @@ PLATFORM_OBJS = \
 	kernel/platform/qemu_virt/devices.o \
 	kernel/drivers/keyboard.o \
 	kernel/drivers/display.o \
-	kernel/drivers/virtio_gpu.o \
+	kernel/platform/qemu_virt/virtio_gpu.o \
 	kernel/drivers/virtio_input.o \
 	kernel/drivers/virtio_net.o \
 	kernel/drivers/virtio_block.o \

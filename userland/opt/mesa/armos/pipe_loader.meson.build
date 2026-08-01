@@ -1,0 +1,20 @@
+# ArmOS Gallium target selection for Mesa 25.3.x.
+#
+# The bundle builder copies this source into src/gallium/targets/armos.  This
+# is the only Mesa layer that selects a concrete pipe driver. EGL and Wayland
+# consume the resulting pipe_screen without knowing whether it is VirGL, V3D
+# or another negotiated provider.
+
+libarmospipe = static_library(
+  'armospipe',
+  'pipe_loader_armos.c',
+  include_directories : [
+    inc_include,
+    inc_src,
+    inc_gallium,
+    include_directories('../../winsys/virgl/armos'),
+  ],
+  dependencies : [idep_mesautil],
+  link_with : [libvirgl, libvirglarmos],
+  gnu_symbol_visibility : 'hidden',
+)

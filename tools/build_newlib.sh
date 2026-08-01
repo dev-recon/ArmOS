@@ -180,8 +180,15 @@ echo "=== Installing newlib into $SYSROOT ==="
 make -C "$OBJ_DIR" install-target-newlib
 cp "$ROOT_DIR/userland/include/semaphore.h" "$SYSROOT/include/semaphore.h"
 mkdir -p "$SYSROOT/include/uapi/armos"
+rm -f "$SYSROOT/include/uapi/armos/gpu.h"
 cp "$ROOT_DIR/include/uapi/armos/input.h" \
     "$SYSROOT/include/uapi/armos/input.h"
+cp "$ROOT_DIR/include/uapi/armos/spawn.h" \
+    "$SYSROOT/include/uapi/armos/spawn.h"
+cp "$ROOT_DIR/include/uapi/armos/drm.h" \
+    "$SYSROOT/include/uapi/armos/drm.h"
+cp "$ROOT_DIR/include/uapi/armos/drm_virgl.h" \
+    "$SYSROOT/include/uapi/armos/drm_virgl.h"
 
 if [ ! -f "$SYSROOT/include/stdio.h" ] || [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: expected newlib sysroot files were not produced." >&2
