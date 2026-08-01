@@ -113,9 +113,10 @@ remain pending while command generation continues, and intervening damage is
 retained when all submission slots are occupied. Fence notification is armed
 strictly in submission order so multiple readable fences cannot reorder
 scanout.
-Direct import of client GPU buffers and acquire fences are implemented. The
-next synchronization milestone is scanout release-fence propagation, followed
-by the common Raylib GLES2 port. VC4/V3D remains a platform
+Direct import of client GPU buffers, acquire fences and per-buffer compositor
+release fences are implemented. The common Raylib 6.0 Wayland/EGL/GLES2 port
+now builds and initializes through VirGL; completing its first rendered frame
+is the active GPU command/resource-lifecycle validation milestone. VC4/V3D remains a platform
 implementation behind the
 same object and synchronization model.
 

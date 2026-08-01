@@ -1,0 +1,20 @@
+--- a/src/rcore.c
++++ b/src/rcore.c
+@@ -545,6 +545,8 @@
+     #include "platforms/rcore_web.c"
+ #elif defined(PLATFORM_DRM)
+     #include "platforms/rcore_drm.c"
++#elif defined(PLATFORM_ARMOS)
++    #include "platforms/rcore_armos.c"
+ #elif defined(PLATFORM_ANDROID)
+     #include "platforms/rcore_android.c"
+ #elif defined(PLATFORM_MEMORY)
+@@ -619,6 +621,8 @@
+     TRACELOG(LOG_INFO, "Platform backend: WEB (HTML5)");
+ #elif defined(PLATFORM_DRM)
+     TRACELOG(LOG_INFO, "Platform backend: NATIVE DRM");
++#elif defined(PLATFORM_ARMOS)
++    TRACELOG(LOG_INFO, "Platform backend: ARMOS (Wayland/EGL)");
+ #elif defined(PLATFORM_ANDROID)
+     TRACELOG(LOG_INFO, "Platform backend: ANDROID");
+ #elif defined(PLATFORM_MEMORY)

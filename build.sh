@@ -65,8 +65,10 @@ enable_complete_userland_build()
     if [ "$TARGET_ARCH" = "arm64" ] &&
        [ "$TARGET_PLATFORM" = "qemu-virt" ]; then
         BUILD_MESA=1
+        BUILD_RAYLIB=1
     else
         BUILD_MESA=0
+        BUILD_RAYLIB=0
     fi
     BUILD_ZLIB=1
     BUILD_LIBJPEG=1
@@ -108,7 +110,8 @@ BUILD_FCFT="${BUILD_FCFT:-0}"
 BUILD_FOOT="${BUILD_FOOT:-0}"
 BUILD_NUKLEAR="${BUILD_NUKLEAR:-0}"
 BUILD_MESA="${BUILD_MESA:-0}"
-export BUILD_NUKLEAR BUILD_MESA
+BUILD_RAYLIB="${BUILD_RAYLIB:-0}"
+export BUILD_NUKLEAR BUILD_MESA BUILD_RAYLIB
 ENABLE_NET="${ENABLE_NET:-0}"
 ENABLE_WIFI="${ENABLE_WIFI:-0}"
 ENABLE_GPU="${ENABLE_GPU:-0}"
@@ -447,6 +450,16 @@ if [ "$BUILD_MESA" = "1" ]; then
     "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/egl-wayland-smoke"
     "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/armgl-import-smoke"
     "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/armgl-compositor-smoke"
+fi
+
+if [ "$BUILD_RAYLIB" = "1" ]; then
+    echo "=== Building Raylib Wayland/EGL/OpenGL ES 2 bundle ==="
+    WORK_DIR="$TARGET_BUNDLES/raylib" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/tools/patches/raylib-6.0 $ROOT_DIR/userland/programs/raylib-smoke" \
+        build_cached_bundle raylib ./tools/build_raylib.sh mesa
+    rsync -a "$TARGET_BUNDLES/raylib/bundle/" "$TARGET_USERFS/"
+    "${ARCH}strip" --strip-all "$TARGET_USERFS/usr/bin/raylib-smoke"
 fi
 
 if [ "$BUILD_LIBJPEG" = "1" ]; then

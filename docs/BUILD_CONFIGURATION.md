@@ -220,6 +220,7 @@ BUILD_FCFT=no
 BUILD_FOOT=no
 BUILD_NUKLEAR=no
 BUILD_MESA=no
+BUILD_RAYLIB=no
 BUILD_XV_DEPS=no
 BUILD_FBVIEW=no
 ```
@@ -273,6 +274,12 @@ private Mesa implementation with exceptions and RTTI disabled. ArmOS adds only
 source, the C++ standard library nor C++ headers are installed in `userfs`.
 Applications, TCC, EGL and GLES continue to consume C interfaces exclusively;
 this exception does not add C++ to the native ArmOS toolchain contract.
+
+`BUILD_RAYLIB=yes` requires `BUILD_MESA=yes`. It builds the pinned Raylib 6.0
+release as a static C library under `/opt/raylib` and installs the
+`raylib-smoke` validation client. Its ArmOS platform backend uses only Wayland,
+EGL and OpenGL ES 2. VirGL under QEMU and the future VC4/V3D Mesa backend on
+Raspberry Pi therefore share the same application-facing Raylib contract.
 
 The repository intentionally shares one `userfs` source tree between ARM32
 and ARM64 builds. Before rebuilding, `build.sh` checks every installed ELF.

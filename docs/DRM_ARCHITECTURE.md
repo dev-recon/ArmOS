@@ -491,7 +491,13 @@ common DRM core and in the VirtIO backend.
    and publishes each child only after its ELF image, descriptors, credentials,
    working directory, signals and stack are complete. It is common to ARM32 and
    ARM64 and has no dependency on Wayland or the selected GPU backend.
-3. Port Raylib on the common EGL/OpenGL ES 2 path.
+3. Port Raylib on the common EGL/OpenGL ES 2 path. The pinned Raylib 6.0
+   bundle, first-party Wayland platform backend and `raylib-smoke` client now
+   compile and reach a VirGL-backed GLES context. The backend handles XDG
+   configure/close, resize, pointer, XKB keyboard input and EGL presentation
+   without hardware-specific APIs. Full Raylib frame validation is the next
+   gate: its richer Gallium command stream currently exposes a missing VirGL
+   resource-lifecycle case that the simpler EGL diagnostics do not exercise.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.
 
