@@ -391,12 +391,28 @@ static int virtio_gpu_backend_buffer_create(
             resource_desc.target >= PIPE_MAX_TEXTURE_TYPES ||
             resource_desc.width == 0 || resource_desc.height == 0 ||
             resource_desc.depth == 0 || resource_desc.array_size == 0 ||
-            resource_desc.width > 16384u ||
-            resource_desc.height > 16384u ||
-            resource_desc.depth > 2048u ||
             resource_desc.last_level > 15u ||
             resource_desc.nr_samples > 16u)
             return -EINVAL;
+        if (resource_desc.target == PIPE_BUFFER) {
+            /*
+             * VirGL encodes a buffer's byte length in width.  Texture
+             * dimension limits therefore do not apply: Gallium uploaders
+             * routinely allocate buffers larger than 16384 bytes.  The
+             * common DRM layer already bounds the backing BO size.
+             */
+            if (resource_desc.height != 1u ||
+                resource_desc.depth != 1u ||
+                resource_desc.array_size != 1u ||
+                resource_desc.last_level != 0u ||
+                resource_desc.nr_samples > 1u ||
+                resource_desc.width > desc->size)
+                return -EINVAL;
+        } else if (resource_desc.width > 16384u ||
+                   resource_desc.height > 16384u ||
+                   resource_desc.depth > 2048u) {
+            return -EINVAL;
+        }
         for (uint32_t index = 0;
              index < sizeof(resource_desc.reserved) /
                          sizeof(resource_desc.reserved[0]); index++) {

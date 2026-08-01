@@ -19,6 +19,7 @@
  */
 
 #include "armos_wlcomp.h"
+#include "gpu_backend.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -185,6 +186,9 @@ static void wl_destroy_gpu_buffer(struct wl_server_client *client,
     if (!client || !buffer || !buffer->gpu_backed)
         return;
     renderer = client->server ? &client->server->renderer : NULL;
+    if (renderer && buffer->gpu_image)
+        wl_gpu_backend_destroy_image(
+            renderer->gpu_backend, buffer->gpu_image);
     if (buffer->drm_mapping && buffer->drm_mapping != MAP_FAILED)
         (void)munmap(buffer->drm_mapping, buffer->drm_size);
     if (renderer && renderer->drm_fd >= 0 && buffer->drm_handle != 0u) {
@@ -1761,7 +1765,8 @@ static int wl_dispatch_gpu_buffer_manager(
             import_request.stride < import_request.width * 4u ||
             import_request.format != ARMOS_DRM_FORMAT_BGRA8888 ||
             import_request.size == 0u || import_request.size > SIZE_MAX ||
-            (import_request.bo_flags & ARMOS_DRM_BO_CPU_READ) == 0u) {
+            (uint64_t)import_request.stride * import_request.height >
+                import_request.size) {
             armos_drm_bo_destroy_t destroy = {
                 .handle = import_request.handle,
             };
@@ -1803,20 +1808,6 @@ static int wl_dispatch_gpu_buffer_manager(
                                     WL_PROTOCOL_ERROR_IMPLEMENTATION,
                                     "buffer limit reached");
         }
-        buffer->drm_mapping = mmap(
-            NULL, (size_t)import_request.size, PROT_READ,
-            MAP_SHARED, renderer->drm_fd,
-            (off_t)import_request.map_offset);
-        if (buffer->drm_mapping == MAP_FAILED) {
-            buffer->drm_mapping = NULL;
-            buffer->gpu_backed = true;
-            buffer->drm_handle = import_request.handle;
-            wl_destroy_gpu_buffer(client, buffer);
-            memset(buffer, 0, sizeof(*buffer));
-            return wl_protocol_fail(client, object->id,
-                                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
-                                    "cannot map GPU buffer");
-        }
         buffer->object_id = new_id;
         buffer->object_alive = true;
         buffer->gpu_backed = true;
@@ -1828,6 +1819,51 @@ static int wl_dispatch_gpu_buffer_manager(
         buffer->height = import_request.height;
         buffer->stride = import_request.stride;
         buffer->format = WL_SHM_FORMAT_ARGB8888;
+        if (renderer->gpu_backend) {
+            armos_drm_bo_export_t export_request;
+            struct wl_gpu_image_config image_config;
+
+            memset(&export_request, 0, sizeof(export_request));
+            export_request.handle = buffer->drm_handle;
+            export_request.flags = ARMOS_DRM_SHARE_CLOEXEC;
+            if (ioctl(renderer->drm_fd, ARMOS_DRM_IOCTL_BO_EXPORT,
+                      &export_request) == 0) {
+                memset(&image_config, 0, sizeof(image_config));
+                image_config.width = buffer->width;
+                image_config.height = buffer->height;
+                image_config.stride = buffer->stride;
+                image_config.alpha =
+                    buffer->format == WL_SHM_FORMAT_ARGB8888;
+                buffer->gpu_image = wl_gpu_backend_import_image(
+                    renderer->gpu_backend, &image_config,
+                    export_request.fd);
+                close(export_request.fd);
+            }
+            if (buffer->gpu_image)
+                renderer->profile_gpu_imports++;
+        }
+        if (!buffer->gpu_image) {
+            if ((import_request.bo_flags & ARMOS_DRM_BO_CPU_READ) == 0u) {
+                wl_destroy_gpu_buffer(client, buffer);
+                memset(buffer, 0, sizeof(*buffer));
+                return wl_protocol_fail(
+                    client, object->id,
+                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                    "GPU buffer is neither importable nor CPU-readable");
+            }
+            buffer->drm_mapping = mmap(
+                NULL, buffer->drm_size, PROT_READ, MAP_SHARED,
+                renderer->drm_fd, (off_t)import_request.map_offset);
+            if (buffer->drm_mapping == MAP_FAILED) {
+                buffer->drm_mapping = NULL;
+                wl_destroy_gpu_buffer(client, buffer);
+                memset(buffer, 0, sizeof(*buffer));
+                return wl_protocol_fail(
+                    client, object->id,
+                    WL_PROTOCOL_ERROR_IMPLEMENTATION,
+                    "cannot map GPU buffer fallback");
+            }
+        }
         if (wl_client_add_object(client, new_id, WL_SERVER_OBJECT_BUFFER,
                                  1u, buffer) < 0) {
             wl_destroy_gpu_buffer(client, buffer);

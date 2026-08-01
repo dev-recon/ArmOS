@@ -411,24 +411,25 @@ armos_egl_image_create_buffer(struct armos_egl_surface *surface,
 }
 
 static EGLBoolean
-armos_egl_add_config(_EGLDisplay *display)
+armos_egl_add_config(_EGLDisplay *display, EGLint config_id,
+                     EGLint depth_size, EGLint stencil_size)
 {
    struct armos_egl_config *config = calloc(1, sizeof(*config));
 
    if (!config)
       return _eglError(EGL_BAD_ALLOC, "ArmOS EGL config");
 
-   _eglInitConfig(&config->base, display, 1);
+   _eglInitConfig(&config->base, display, config_id);
    config->base.BufferSize = 32;
    config->base.RedSize = 8;
    config->base.GreenSize = 8;
    config->base.BlueSize = 8;
    config->base.AlphaSize = 8;
-   config->base.DepthSize = 24;
-   config->base.StencilSize = 8;
+   config->base.DepthSize = depth_size;
+   config->base.StencilSize = stencil_size;
    config->base.ColorBufferType = EGL_RGB_BUFFER;
    config->base.ConfigCaveat = EGL_NONE;
-   config->base.ConfigID = 1;
+   config->base.ConfigID = config_id;
    config->base.Level = 0;
    config->base.NativeRenderable = EGL_FALSE;
    config->base.NativeVisualID = 0;
@@ -499,7 +500,16 @@ armos_egl_initialize(_EGLDisplay *display)
    display->Extensions.KHR_surfaceless_context = EGL_TRUE;
    display->Extensions.MESA_query_driver = EGL_TRUE;
 
-   if (!armos_egl_add_config(display)) {
+   /*
+    * Keep the default configuration color-only.  Applications which do not
+    * request a depth or stencil buffer must not inherit one: besides wasting
+    * memory, some VirGL hosts cannot create Z24S8 resources even though the
+    * advertised capset contains the format.  A distinct configuration keeps
+    * the EGL contract explicit.  Z24/S8 is deliberately not advertised until
+    * the backend can validate resource creation, rendering and export rather
+    * than trusting a potentially optimistic VirGL capset.
+    */
+   if (!armos_egl_add_config(display, 1, 0, 0)) {
       display->DriverData = NULL;
       armos_egl_display_release(armos);
       return EGL_FALSE;

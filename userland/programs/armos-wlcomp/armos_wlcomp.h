@@ -117,6 +117,7 @@ struct wl_server_buffer;
 struct wl_server_surface;
 struct wl_server_client;
 struct wl_server;
+struct wl_gpu_image;
 
 struct wl_renderer_rect {
     int32_t x0;
@@ -204,6 +205,7 @@ struct wl_server_buffer {
     uint32_t drm_command_handle;
     uint8_t *drm_mapping;
     size_t drm_size;
+    struct wl_gpu_image *gpu_image;
 };
 
 struct wl_server_callback {
@@ -387,6 +389,8 @@ struct wl_server_renderer {
     int32_t clip_y1;
     uint64_t profile_present_us;
     uint64_t profile_present_pixels;
+    uint64_t profile_gpu_imports;
+    uint64_t profile_gpu_direct_blits;
     struct wl_gpu_backend *gpu_backend;
     struct wl_gpu_presenter *gpu_presenter;
     struct wl_gpu_surface_cache *gpu_surface_cache;

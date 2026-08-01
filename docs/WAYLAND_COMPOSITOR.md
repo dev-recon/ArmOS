@@ -203,10 +203,26 @@ reuse it. Composition therefore performs one SHM-to-canvas transfer rather
 than an upload followed by a second transfer. Buffer pitch and pool remapping
 remain explicit, and the protocol/backend split is unchanged.
 
+EGL clients use the same scene and damage pipeline without a CPU round-trip.
+Their shared DRM BO is imported once as a backend-neutral GPU image and sampled
+directly during composition; only compositor-owned decorations use the cached
+CPU-uploaded layer. If direct import is unavailable, the compositor accepts a
+CPU mapping only when the BO explicitly grants CPU-read access. This preserves
+one global buffer lifecycle for all graphical clients rather than introducing
+application-specific paths.
+
+The QEMU VirtIO-GPU backend treats VirGL `PIPE_BUFFER` resources as byte arrays:
+their byte size is encoded in `width`, so texture dimension limits do not apply
+to them. Texture limits remain enforced for actual images. This distinction is
+confined to the qemu-virt backend and does not leak into the common DRM or
+Wayland contracts.
+
 The next performance milestone is to measure the remaining time separately in
 tile composition and backend presentation after mapped presentation.
 `armos-wlcomp --profile` reports whole-frame and presentation time plus fill,
-copy and blend pixel counts. Primitive-local timestamps are deliberately
+copy and blend pixel counts. It also reports cumulative `gpu_imports_total`
+and interval-local `gpu_direct_blits`, which expose whether EGL buffers stay on
+the direct GPU path. Primitive-local timestamps are deliberately
 avoided: dozens of `clock_gettime` system calls per tiled frame measurably
 distorted Raspberry Pi performance. Large Raspberry Pi operations may then use
 DMA above a measured size threshold, with cache maintenance and a CPU fallback

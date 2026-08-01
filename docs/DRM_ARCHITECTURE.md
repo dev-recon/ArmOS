@@ -288,6 +288,28 @@ exportable scanout resource. Activation in `armos-wlcomp` follows only after
 all scene layers use this contract, so z-order, pointer and decorations never
 fall into a partial hybrid renderer.
 
+Committed EGL client buffers now remain GPU resources throughout composition.
+The compositor exports the client BO through the common DRM sharing contract,
+imports it once through `gpu_backend.h`, retains that image for the lifetime of
+the Wayland buffer and samples it directly for every damaged tile. It does not
+map or read the BO on the CPU when import succeeds. Server-side decorations
+remain a separate cached layer, so window policy and client content do not
+become coupled to a particular GPU provider.
+
+Import failure has one explicit compatibility path: a BO advertised as
+CPU-readable may be mapped and composed by the software renderer. A GPU-only
+BO which is not importable is rejected instead of silently presenting stale
+content. Acquire fences are consumed before the imported image is sampled.
+The current presenter waits for the composition fence before scanout, which
+makes the existing immediate Wayland buffer release safe; asynchronous
+presentation and release fences are the next lifecycle milestone.
+
+`armos-wlcomp --profile` reports `gpu_imports_total` and
+`gpu_direct_blits`. The first is cumulative because imports occur at buffer
+creation, while the second is reset with each profiling interval and counts
+tile-local direct image blits. A running EGL client should increase both
+counters without increasing CPU transfer traffic.
+
 Raspberry Pi continues to use the firmware framebuffer and therefore does not
 expose DRM nodes until its native backend is present.
 
@@ -445,11 +467,10 @@ common DRM core and in the VirtIO backend.
    attaches the resource. ARM32 source and ABI compilation is validated;
    the complete Mesa bundle and runtime remain required before enabling the
    option in the tracked ARM32 profile.
-2. Import committed client GPU buffers directly as compositor images. Client
-   BO transport and explicit acquire fences are already wired; the remaining
-   work removes the transitional device-to-CPU transfer, retains imported
-   images until release and emits the release fence from the composition
-   transaction.
+2. Complete asynchronous presentation and release-fence propagation. Direct
+   client BO import and acquire-fence consumption are complete; the remaining
+   work removes the synchronous compositor fence wait, retains frame resources
+   until scanout completion and emits the release fence from that transaction.
 3. Port Raylib on the common EGL/OpenGL ES 2 path.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.

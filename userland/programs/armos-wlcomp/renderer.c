@@ -773,7 +773,7 @@ static bool wl_renderer_surface_clip_opaque(
     uint32_t width;
     uint32_t height;
 
-    if (!renderer->clip_enabled || !surface->pixels || surface->shaded ||
+    if (!renderer->clip_enabled || surface->shaded ||
         wl_surface_is_child_role(surface))
         return false;
     content_x = surface->x;
@@ -803,6 +803,8 @@ static bool wl_renderer_surface_clip_opaque(
             rect->y1 >= (int32_t)(source_y0 + height))
             return true;
     }
+    if (!surface->pixels)
+        return false;
     for (uint32_t row = 0u; row < height; row++) {
         const uint32_t *source = surface->pixels +
             (size_t)(source_y0 + row) * surface->pixels_pitch + source_x0;
@@ -813,6 +815,40 @@ static bool wl_renderer_surface_clip_opaque(
         }
     }
     return true;
+}
+
+static void wl_renderer_draw_surface_frame(
+    struct wl_server_renderer *renderer,
+    const struct wl_server_surface *surface, bool active,
+    uint32_t title_height, uint32_t frame_width, uint32_t frame_height)
+{
+    for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
+        uint32_t alpha = 8u + (8u - spread) * 3u;
+
+        wl_renderer_shadow_ring(
+            renderer, surface->x - (int32_t)spread,
+            surface->y - (int32_t)spread + 4,
+            frame_width + spread * 2u, frame_height + spread * 2u,
+            WL_WINDOW_RADIUS + spread,
+            surface->x, surface->y, frame_width, frame_height,
+            alpha << 24);
+    }
+    wl_renderer_rounded_rect(renderer, surface->x, surface->y,
+                             frame_width, frame_height, WL_WINDOW_RADIUS,
+                             0xfff4f4f5u);
+    wl_renderer_rounded_rect(
+        renderer, surface->x + 1, surface->y + 1,
+        frame_width > 2u ? frame_width - 2u : frame_width,
+        title_height,
+        WL_WINDOW_RADIUS > 1u ? WL_WINDOW_RADIUS - 1u : 0u,
+        active ? WL_WINDOW_TITLE_ACTIVE : WL_WINDOW_TITLE_INACTIVE);
+    wl_renderer_circle(renderer, surface->x + 14, surface->y + 14,
+                       5u, 0xffff5f57u);
+    wl_renderer_circle(renderer, surface->x + 30, surface->y + 14,
+                       5u, 0xffffbd2eu);
+    wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
+                       5u, 0xff28c840u);
+    wl_renderer_title(renderer, surface);
 }
 
 static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
@@ -864,34 +900,9 @@ static void wl_renderer_draw_surface(struct wl_server_renderer *renderer,
         content_only_damage = true;
 
     if (!content_only_damage && title_height != 0u) {
-        /* Soft multi-pass shadow, generated rather than sourced from an asset. */
-        for (uint32_t spread = 8u; spread > 0u; spread -= 2u) {
-            uint32_t alpha = 8u + (8u - spread) * 3u;
-
-            wl_renderer_shadow_ring(
-                renderer, surface->x - (int32_t)spread,
-                surface->y - (int32_t)spread + 4,
-                frame_width + spread * 2u, frame_height + spread * 2u,
-                WL_WINDOW_RADIUS + spread,
-                surface->x, surface->y, frame_width, frame_height,
-                (alpha << 24));
-        }
-        wl_renderer_rounded_rect(renderer, surface->x, surface->y,
-                                 frame_width, frame_height, WL_WINDOW_RADIUS,
-                                 0xfff4f4f5u);
-        wl_renderer_rounded_rect(
-            renderer, surface->x + 1, surface->y + 1,
-            frame_width > 2u ? frame_width - 2u : frame_width,
-            title_height,
-            WL_WINDOW_RADIUS > 1u ? WL_WINDOW_RADIUS - 1u : 0u,
-            active ? WL_WINDOW_TITLE_ACTIVE : WL_WINDOW_TITLE_INACTIVE);
-        wl_renderer_circle(renderer, surface->x + 14, surface->y + 14,
-                           5u, 0xffff5f57u);
-        wl_renderer_circle(renderer, surface->x + 30, surface->y + 14,
-                           5u, 0xffffbd2eu);
-        wl_renderer_circle(renderer, surface->x + 46, surface->y + 14,
-                           5u, 0xff28c840u);
-        wl_renderer_title(renderer, surface);
+        wl_renderer_draw_surface_frame(
+            renderer, surface, active,
+            title_height, frame_width, frame_height);
     }
     if (surface->shaded)
         return;
@@ -1100,7 +1111,9 @@ static void wl_renderer_build_scene(struct wl_server *server,
 
             if (!surface->used || !surface->mapped ||
                 surface->role == WL_SERVER_SURFACE_ROLE_CURSOR ||
-                !surface->pixels)
+                (!surface->pixels &&
+                 (!surface->current_buffer ||
+                  !surface->current_buffer->gpu_image)))
                 continue;
             position = scene->count;
             while (position > 0u &&
@@ -1166,7 +1179,10 @@ static uint64_t wl_gpu_surface_signature(
 {
     uint64_t hash = UINT64_C(1469598103934665603);
 
-    hash = wl_gpu_signature_mix(hash, surface->gpu_content_generation);
+    if (!surface->current_buffer ||
+        !surface->current_buffer->gpu_image)
+        hash = wl_gpu_signature_mix(
+            hash, surface->gpu_content_generation);
     hash = wl_gpu_signature_mix(hash, surface->width);
     hash = wl_gpu_signature_mix(hash, surface->height);
     hash = wl_gpu_signature_mix(hash, surface->role);
@@ -1338,8 +1354,20 @@ static bool wl_gpu_surface_cache_update(
         local_surface.role = WL_SERVER_SURFACE_ROLE_TOPLEVEL;
         local_surface.server_decorated = false;
     }
-    wl_renderer_draw_surface(
-        &local_renderer, &local_surface, active, false);
+    if (surface->current_buffer && surface->current_buffer->gpu_image) {
+        uint32_t local_title_height =
+            wl_surface_has_server_decoration(&local_surface) ?
+            WL_WINDOW_TITLE_HEIGHT : 0u;
+
+        if (local_title_height != 0u) {
+            wl_renderer_draw_surface_frame(
+                &local_renderer, &local_surface, active,
+                local_title_height, frame_width, frame_height);
+        }
+    } else {
+        wl_renderer_draw_surface(
+            &local_renderer, &local_surface, active, false);
+    }
 
     if (surface->opaque && !surface->shaded) {
         uint32_t content_y = margin_y + title_height;
@@ -1622,16 +1650,13 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
             for (size_t index = first; index < scene.count; index++) {
                 const struct wl_server_surface *surface =
                     scene.ordered[index];
-                struct wl_gpu_surface_cache *cache =
-                    wl_gpu_surface_cache_get(renderer, surface);
+                struct wl_server_buffer *buffer =
+                    surface->current_buffer;
+                struct wl_gpu_surface_cache *cache = NULL;
                 int32_t destination_x;
                 int32_t destination_y;
                 bool alpha;
 
-                if (!cache || !wl_gpu_surface_cache_update(
-                        server, cache, surface,
-                        surface == server->focus_surface))
-                    goto fail;
                 if (wl_surface_is_child_role(surface)) {
                     if (wl_surface_content_origin(
                             surface, &destination_x, &destination_y) < 0)
@@ -1640,15 +1665,35 @@ static int wl_renderer_compose_gpu(struct wl_server *server)
                     destination_x = surface->x;
                     destination_y = surface->y;
                 }
-                destination_x += cache->offset_x;
-                destination_y += cache->offset_y;
-                alpha = !surface->opaque ||
-                    wl_surface_has_server_decoration(surface);
-                if (!wl_gpu_blit_clipped(
-                        renderer, cache->image,
-                        cache->width, cache->height,
-                        destination_x, destination_y, alpha))
-                    goto fail;
+                if (!buffer || !buffer->gpu_image ||
+                    wl_surface_has_server_decoration(surface)) {
+                    cache = wl_gpu_surface_cache_get(renderer, surface);
+                    if (!cache || !wl_gpu_surface_cache_update(
+                            server, cache, surface,
+                            surface == server->focus_surface))
+                        goto fail;
+                    if (!wl_gpu_blit_clipped(
+                            renderer, cache->image,
+                            cache->width, cache->height,
+                            destination_x + cache->offset_x,
+                            destination_y + cache->offset_y,
+                            !surface->opaque ||
+                            wl_surface_has_server_decoration(surface)))
+                        goto fail;
+                }
+                if (buffer && buffer->gpu_image && !surface->shaded) {
+                    int32_t content_x;
+                    int32_t content_y;
+
+                    if (wl_surface_content_origin(
+                            surface, &content_x, &content_y) < 0 ||
+                        !wl_gpu_blit_clipped(
+                            renderer, buffer->gpu_image,
+                            buffer->width, buffer->height,
+                            content_x, content_y, !surface->opaque))
+                        goto fail;
+                    renderer->profile_gpu_direct_blits++;
+                }
             }
             if (!wl_gpu_draw_resize_outline(server) ||
                 !wl_gpu_blit_clipped(
@@ -2129,7 +2174,8 @@ static int wl_surface_buffer_valid(const struct wl_server_buffer *buffer)
     if (buffer->gpu_backed) {
         last_row = (uint64_t)(buffer->height - 1u) * buffer->stride;
         end = last_row + (uint64_t)buffer->width * 4u;
-        return buffer->drm_mapping && buffer->drm_size != 0u &&
+        return (buffer->gpu_image || buffer->drm_mapping) &&
+            buffer->drm_size != 0u &&
             end <= buffer->drm_size &&
             (uint64_t)buffer->stride * buffer->height <= UINT32_MAX;
     }
@@ -2196,7 +2242,8 @@ static int wl_surface_acquire_fence_event(
     if (count != (ssize_t)sizeof(fence_result) ||
         fence_result.status != 0 ||
         (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) != 0u ||
-        wl_surface_gpu_transfer(&server->renderer, buffer) < 0) {
+        ((!buffer || !buffer->gpu_image) &&
+         wl_surface_gpu_transfer(&server->renderer, buffer) < 0)) {
         (void)wl_client_send_error(
             client, surface->object_id, 3u,
             "GPU acquire fence or transfer failed");
@@ -2436,7 +2483,8 @@ int wl_surface_commit(struct wl_server *server,
         surface->resize_from_left = false;
         surface->resize_from_top = false;
         surface->pixels = buffer->gpu_backed ?
-            (uint32_t *)(void *)buffer->drm_mapping :
+            (buffer->gpu_image ? NULL :
+             (uint32_t *)(void *)buffer->drm_mapping) :
             (uint32_t *)(void *)(buffer->pool->mapping + buffer->offset);
         surface->pixels_pitch = buffer->stride / sizeof(uint32_t);
         if (!same_extent)
