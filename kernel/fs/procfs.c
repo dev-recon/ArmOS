@@ -1064,6 +1064,7 @@ static const char* proc_syscall_name(uint32_t nr)
         case __NR_link: return "link";
         case __NR_unlink: return "unlink";
         case __NR_execve: return "execve";
+        case __NR_spawnve: return "spawnve";
         case __NR_chdir: return "chdir";
         case __NR_alarm: return "alarm";
         case __NR_pause: return "pause";

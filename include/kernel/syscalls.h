@@ -27,6 +27,7 @@
 #include <uapi/armos/file.h>
 #include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
+#include <uapi/armos/spawn.h>
 #include <uapi/armos/statvfs.h>
 #include <uapi/armos/syscall.h>
 #include <uapi/armos/thread.h>
@@ -177,6 +178,7 @@ struct process;
 #define __NR_timerfd_create     ARMOS_NR_TIMERFD_CREATE
 #define __NR_timerfd_settime    ARMOS_NR_TIMERFD_SETTIME
 #define __NR_timerfd_gettime    ARMOS_NR_TIMERFD_GETTIME
+#define __NR_spawnve            ARMOS_NR_SPAWNVE
 #define __NR_sysinfo            116     /* reused for getprocs — remplacer par /proc plus tard */
 
 #define MAX_SYSCALLS            ARMOS_SYSCALL_MAX
@@ -382,6 +384,9 @@ int sys_futex(uint32_t* address, int operation, uint32_t value,
 int sys_set_tls(unsigned long tls_base);
 int sys_get_tls_info(armos_tls_info_t* info);
 int sys_execve(const char* filename, char* const argv[], char* const envp[]);
+int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
+                const armos_spawn_attributes_t* attributes,
+                size_t attributes_size);
 void sys_exit(int status);
 void sys_thread_exit(int status) __attribute__((noreturn));
 int sys_waitpid(pid_t pid, int* status, int options);

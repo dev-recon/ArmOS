@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include <armos/services.h>
+#include <armos/spawn.h>
 #include <armui/armui.h>
 
 struct armos_shell {
@@ -47,18 +48,16 @@ static int shell_launch(const char *path, const char *name)
         "XDG_RUNTIME_DIR=/tmp",
         NULL
     };
-    pid_t child = fork();
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_UID | ARMOS_SPAWN_SET_GID |
+                 ARMOS_SPAWN_SET_CWD,
+        .uid = 1000,
+        .gid = 1000,
+        .cwd = "/home/user"
+    };
 
-    if (child < 0)
-        return -1;
-    if (child != 0)
-        return 0;
-    if (getuid() == 0 && (setgid(1000) < 0 || setuid(1000) < 0))
-        _exit(126);
-    if (chdir("/home/user") < 0)
-        _exit(126);
-    execve(path, argv, envp);
-    _exit(127);
+    return armos_spawnve(path, argv, envp, &attributes) < 0 ? -1 : 0;
 }
 
 static unsigned int shell_frame(

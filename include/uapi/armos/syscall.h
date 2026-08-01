@@ -81,6 +81,7 @@
 #define ARMOS_NR_TIMERFD_CREATE 338
 #define ARMOS_NR_TIMERFD_SETTIME 339
 #define ARMOS_NR_TIMERFD_GETTIME 340
+#define ARMOS_NR_SPAWNVE          341
 #define ARMOS_SYSCALL_MAX 512
 
 /* Values shared with the newlib _SC_* namespace used by ArmOS. */

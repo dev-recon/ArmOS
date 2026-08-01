@@ -21,6 +21,7 @@
  */
 
 #include "armos_wlcomp.h"
+#include <armos/spawn.h>
 #include "gpu_present.h"
 
 #include <errno.h>
@@ -440,22 +441,16 @@ static pid_t wl_server_launch_terminal(void)
         "XDG_RUNTIME_DIR=/tmp",
         NULL
     };
-    pid_t child = fork();
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_UID | ARMOS_SPAWN_SET_GID |
+                 ARMOS_SPAWN_SET_CWD,
+        .uid = 1000,
+        .gid = 1000,
+        .cwd = "/home/user"
+    };
 
-    if (child != 0)
-        return child;
-
-    if (getuid() == 0 && (setgid(1000) < 0 || setuid(1000) < 0)) {
-        perror("armos-wlcomp: terminal credentials");
-        _exit(126);
-    }
-    if (chdir("/home/user") < 0) {
-        perror("armos-wlcomp: terminal cwd");
-        _exit(126);
-    }
-    execve("/usr/bin/foot", argv, envp);
-    perror("armos-wlcomp: exec /usr/bin/foot");
-    _exit(127);
+    return armos_spawnve("/usr/bin/foot", argv, envp, &attributes);
 }
 
 static pid_t wl_server_launch_shell(uint32_t token)
@@ -473,20 +468,15 @@ static pid_t wl_server_launch_shell(uint32_t token)
         token_environment,
         NULL
     };
-    pid_t child;
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_CWD,
+        .cwd = "/"
+    };
 
     snprintf(token_environment, sizeof(token_environment),
              "ARMOS_SHELL_TOKEN=%u", (unsigned)token);
-    child = fork();
-    if (child != 0)
-        return child;
-    if (chdir("/") < 0) {
-        perror("armos-wlcomp: shell cwd");
-        _exit(126);
-    }
-    execve("/sbin/armos-shell", argv, envp);
-    perror("armos-wlcomp: exec /sbin/armos-shell");
-    _exit(127);
+    return armos_spawnve("/sbin/armos-shell", argv, envp, &attributes);
 }
 
 static int wl_server_run(struct wl_server *server, pid_t *terminal_pid,

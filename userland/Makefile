@@ -561,6 +561,11 @@ install: $(TARGETS)
 		$(USERFS_ROOT)/usr/include/uapi/armos/drm.h
 	cp ../include/uapi/armos/drm_virgl.h \
 		$(USERFS_ROOT)/usr/include/uapi/armos/drm_virgl.h
+	cp ../include/uapi/armos/spawn.h \
+		$(USERFS_ROOT)/usr/include/uapi/armos/spawn.h
+	mkdir -p $(USERFS_ROOT)/usr/include/armos
+	cp include/armos/spawn.h \
+		$(USERFS_ROOT)/usr/include/armos/spawn.h
 	cp include/wayland-egl-core.h \
 		$(USERFS_ROOT)/usr/include/wayland-egl-core.h
 	cp include/wayland-egl-backend.h \

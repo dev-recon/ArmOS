@@ -121,11 +121,10 @@ same object and synchronization model.
 
 Startup profiling separates renderer readiness, first presentation and client
 launch. On the current static Mesa image the renderer and first frame complete
-in about half a second; cloning the Mesa-populated compositor address space for
-the initial desktop clients accounts for several additional seconds. A common
-direct-spawn process contract, usable by every userland service and independent
-of the graphics stack, is the planned correction. It will replace this costly
-`fork()`/`execve()` path rather than adding a Foot-specific launcher.
+in about half a second. The common `armos_spawnve` process contract now starts
+the desktop shell, Foot and shell-launched applications in fresh address spaces
+without cloning the Mesa-populated compositor. The contract is independent of
+the graphics stack and shared by ARM32 and ARM64.
 
 ### ArmUI And Desktop Applications
 

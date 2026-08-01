@@ -482,12 +482,13 @@ common DRM core and in the VirtIO backend.
    acquire-fence consumption and event-driven compositor render-fence waits
    are complete. The remaining work retains resources until scanout completion
    and emits the release fence from that transaction.
-   Startup profiling currently attributes the remaining initial desktop delay
-   to `fork()` after Mesa has populated the compositor address space, not to
-   renderer initialization or Foot. The follow-up process milestone is a
-   common direct-spawn contract which loads a child image without cloning the
-   compositor VM; it must remain independent of Wayland and of the selected
-   GPU backend.
+   Startup profiling attributed the remaining initial desktop delay to
+   `fork()` after Mesa had populated the compositor address space, not to
+   renderer initialization or Foot. The architecture-neutral `armos_spawnve`
+   contract now loads the shell and initial terminal into fresh address spaces
+   and publishes each child only after its ELF image, descriptors, credentials,
+   working directory, signals and stack are complete. It is common to ARM32 and
+   ARM64 and has no dependency on Wayland or the selected GPU backend.
 3. Port Raylib on the common EGL/OpenGL ES 2 path.
 4. Implement Raspberry Pi VC4 scanout management and V3D rendering as a
    platform backend behind the same common contracts.

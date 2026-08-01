@@ -187,6 +187,7 @@ RAW_SYSCALL sys_eventfd2, 337
 RAW_SYSCALL sys_timerfd_create, 338
 RAW_SYSCALL sys_timerfd_settime, 339
 RAW_SYSCALL sys_timerfd_gettime, 340
+RAW_SYSCALL5 sys_spawnve, 341
 
 .global __signal_return_trampoline
 .type __signal_return_trampoline, %function

@@ -35,6 +35,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <arm_os_abi.h>
+#include <armos/spawn.h>
 
 extern int sched_yield(void);
 extern ssize_t pread(int fd, void *buf, size_t count, off_t offset);
@@ -2603,6 +2604,30 @@ static void test_lifecycle_exec_fail_loop(void)
     expect(ok, "lifecycle repeated exec failure is reaped", ok);
 }
 
+static void test_direct_spawn(void)
+{
+    char *argv[] = { "true", NULL };
+    char *envp[] = { "PATH=/bin:/usr/bin", NULL };
+    armos_spawn_attributes_t attributes = {
+        .abi_version = ARMOS_SPAWN_ABI_VERSION,
+        .flags = ARMOS_SPAWN_SET_CWD,
+        .cwd = "/"
+    };
+    int status = -1;
+    pid_t pid;
+
+    pid = armos_spawnve("/bin/true", argv, envp, &attributes);
+    if (expect(pid > 0, "direct spawn publishes complete child", pid) == 0)
+        expect(waitpid(pid, &status, 0) == pid && status_exited(status, 0),
+               "direct spawn child exits and is reaped", status);
+
+    errno = 0;
+    pid = armos_spawnve("/bin/missing-spawn-target", argv, envp,
+                        &attributes);
+    expect(pid < 0 && errno == ENOENT,
+           "failed direct spawn leaves no child", errno);
+}
+
 static void test_lifecycle_wnohang_kill(void)
 {
     int status = -1;
@@ -2998,6 +3023,7 @@ int main(int argc, char **argv)
     test_cow_fork_stress();
     test_asid_churn();
     test_asid_live_saturation();
+    test_direct_spawn();
     test_lifecycle_exec_fail_loop();
     test_lifecycle_wnohang_kill();
     test_lifecycle_orphan_reaper();

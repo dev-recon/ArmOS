@@ -22,6 +22,11 @@ drained with a bounded budget and consecutive pointer motion is coalesced while
 preserving ordering around buttons and keys, so pointer traffic cannot starve
 client dispatch or presentation.
 
+The shell and terminal are created with the common `armos_spawnve` process
+contract. Their ELF images are loaded into fresh address spaces, avoiding a COW
+clone of the Mesa-populated compositor while retaining inherited descriptors,
+credentials, working-directory and close-on-exec semantics.
+
 ## Architecture
 
 The graphical session is split into three layers:

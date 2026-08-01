@@ -39,6 +39,7 @@
 #include <utime.h>
 #include <unistd.h>
 #include <armos/thread.h>
+#include <armos/spawn.h>
 #include <uapi/armos/file.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/shm.h>
@@ -198,6 +199,10 @@ extern long sys_futex(volatile uint32_t *address, int operation,
 extern long sys_set_tls(unsigned long tls_base);
 extern long sys_get_tls_info(armos_tls_info_t *info);
 extern long sys_execve(const char *pathname, char *const argv[], char *const envp[]);
+extern long sys_spawnve(const char *pathname, char *const argv[],
+                        char *const envp[],
+                        const armos_spawn_attributes_t *attributes,
+                        size_t attributes_size);
 extern long sys_waitpid(int pid, int *status, int options);
 extern long sys_wait4(int pid, int *status, int options, void *rusage);
 extern long sys_brk(unsigned long brk);
@@ -1546,6 +1551,20 @@ int _fork(void)
 int _execve(const char *pathname, char *const argv[], char *const envp[])
 {
     return ret_errno(sys_execve(pathname, argv, envp));
+}
+
+pid_t armos_spawnve(const char *pathname, char *const argv[],
+                    char *const envp[],
+                    const armos_spawn_attributes_t *attributes)
+{
+    long result = sys_spawnve(pathname, argv, envp, attributes,
+                              attributes ? sizeof(*attributes) : 0u);
+
+    if (result < 0) {
+        errno = (int)-result;
+        return (pid_t)-1;
+    }
+    return (pid_t)result;
 }
 
 int execv(const char *pathname, char *const argv[])

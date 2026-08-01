@@ -177,6 +177,7 @@ static syscall_func_t syscall_table[MAX_SYSCALLS] = {
     [__NR_resolve]   = (syscall_func_t)sys_resolve,
     [__NR_thread_exit] = (syscall_func_t)sys_thread_exit,
     [__NR_futex]       = (syscall_func_t)sys_futex,
+    [__NR_spawnve]     = (syscall_func_t)sys_spawnve,
 
 };
 
@@ -611,6 +612,230 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
 
     /* Cette fonction ne retourne JAMAIS */
     __builtin_unreachable();
+}
+
+/*
+ * Create a fresh process image without cloning the caller's address space.
+ * The child remains unpublished until every fallible preparation step has
+ * completed, so callers never observe a half-created process or zombie.
+ */
+int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
+                const armos_spawn_attributes_t* attributes,
+                size_t attributes_size)
+{
+    task_t *parent = task_current_local();
+    task_t *child = NULL;
+    armos_spawn_attributes_t attrs;
+    char *kernel_filename = NULL;
+    char **kernel_argv = NULL;
+    char **kernel_envp = NULL;
+    char *spawn_cwd = NULL;
+    inode_t *exe_inode = NULL;
+    inode_t *cwd_inode = NULL;
+    vm_space_t *new_vm = NULL;
+    exec_image_layout_t image_layout;
+    vaddr_t entry;
+    uid_t exec_uid;
+    gid_t exec_gid;
+    mode_t exec_mode;
+    uint32_t argc = 0;
+    uint32_t envpc = 0;
+    bool from_user;
+    int result;
+
+    if (!parent || parent->type != TASK_TYPE_PROCESS || !parent->process ||
+        !filename)
+        return -EINVAL;
+
+    from_user = arch_task_context_returns_to_user(&parent->context);
+    memset(&attrs, 0, sizeof(attrs));
+    attrs.abi_version = ARMOS_SPAWN_ABI_VERSION;
+    if (attributes) {
+        /* Accept a future structure tail while consuming the v1 prefix. */
+        if (attributes_size < sizeof(attrs))
+            return -EINVAL;
+        if (from_user) {
+            if (copy_from_user(&attrs, attributes, sizeof(attrs)) < 0)
+                return -EFAULT;
+        } else {
+            memcpy(&attrs, attributes, sizeof(attrs));
+        }
+        if (attrs.abi_version != ARMOS_SPAWN_ABI_VERSION ||
+            (attrs.flags & ~ARMOS_SPAWN_VALID_FLAGS))
+            return -EINVAL;
+    } else if (attributes_size != 0) {
+        return -EINVAL;
+    }
+
+    if ((attrs.flags & ARMOS_SPAWN_SET_UID) &&
+        parent->process->uid != 0 && attrs.uid != parent->process->uid)
+        return -EPERM;
+    if ((attrs.flags & ARMOS_SPAWN_SET_GID) &&
+        parent->process->uid != 0 && attrs.gid != parent->process->gid)
+        return -EPERM;
+
+    result = count_exec_vector(argv, from_user, &argc);
+    if (result < 0)
+        return result;
+    result = count_exec_vector(envp, from_user, &envpc);
+    if (result < 0)
+        return result;
+
+    kernel_filename = from_user ? copy_string_from_user(filename) :
+                                  strdup(filename);
+    if (!kernel_filename)
+        return -EFAULT;
+    kernel_argv = copy_exec_vector(argv, argc, from_user);
+    if (!kernel_argv) {
+        result = -ENOMEM;
+        goto fail;
+    }
+    kernel_envp = copy_exec_vector(envp, envpc, from_user);
+    if (!kernel_envp) {
+        result = -ENOMEM;
+        goto fail;
+    }
+
+    if (attrs.flags & ARMOS_SPAWN_SET_CWD) {
+        size_t cwd_length = 0;
+
+        while (cwd_length < sizeof(attrs.cwd) && attrs.cwd[cwd_length])
+            cwd_length++;
+        if (cwd_length == 0 || cwd_length == sizeof(attrs.cwd)) {
+            result = -EINVAL;
+            goto fail;
+        }
+        spawn_cwd = resolve_path(attrs.cwd);
+        if (!spawn_cwd) {
+            result = -ENOMEM;
+            goto fail;
+        }
+        path_canonicalize(spawn_cwd);
+        result = vfs_check_search_permission(spawn_cwd, true);
+        if (result < 0)
+            goto fail;
+        cwd_inode = path_lookup(spawn_cwd);
+        if (!cwd_inode) {
+            result = -ENOENT;
+            goto fail;
+        }
+        if (!S_ISDIR(cwd_inode->mode)) {
+            result = -ENOTDIR;
+            goto fail;
+        }
+    }
+
+    exe_inode = path_lookup(kernel_filename);
+    if (!exe_inode) {
+        result = -ENOENT;
+        goto fail;
+    }
+    if (!inode_permission(exe_inode, MAY_EXEC)) {
+        result = -EACCES;
+        goto fail;
+    }
+    exec_uid = exe_inode->uid;
+    exec_gid = exe_inode->gid;
+    exec_mode = exe_inode->mode;
+
+    new_vm = create_vm_space();
+    if (!new_vm) {
+        result = -ENOMEM;
+        goto fail;
+    }
+    if (setup_user_stack(new_vm, kernel_argv, kernel_envp) < 0) {
+        result = -ENOMEM;
+        goto fail;
+    }
+    memset(&image_layout, 0, sizeof(image_layout));
+    result = exec_load_image(exe_inode, new_vm, &entry, &image_layout);
+    if (result < 0) {
+        result = result == -ENOMEM ? -ENOMEM : -ENOEXEC;
+        goto fail;
+    }
+
+    child = task_create_copy(parent, true);
+    if (!child) {
+        kernel_lifecycle_stats.failed_forks++;
+        result = -ENOMEM;
+        goto fail;
+    }
+    child->process->vm = new_vm;
+    new_vm = NULL;
+    child->process->tls_image = image_layout.tls_image;
+    child->process->tls_file_size = (size_t)image_layout.tls_file_size;
+    child->process->tls_memory_size = (size_t)image_layout.tls_memory_size;
+    child->process->tls_alignment = (size_t)image_layout.tls_alignment;
+    if (attrs.flags & ARMOS_SPAWN_SET_UID)
+        child->process->uid = attrs.uid;
+    if (attrs.flags & ARMOS_SPAWN_SET_GID)
+        child->process->gid = attrs.gid;
+    if (attrs.flags & ARMOS_SPAWN_SET_CWD) {
+        strncpy(child->process->cwd, spawn_cwd, MAX_PATH - 1);
+        child->process->cwd[MAX_PATH - 1] = '\0';
+    }
+    if (exec_mode & S_ISUID)
+        child->process->uid = exec_uid;
+    if (exec_mode & S_ISGID)
+        child->process->gid = exec_gid;
+
+    memset(&child->context, 0, sizeof(child->context));
+    arch_task_context_init_user_entry(
+        &child->context, (uintptr_t)child->process->vm->pgdir,
+        child->process->vm->asid, (vaddr_t)(uintptr_t)child->stack_top,
+        entry, child->process->vm->stack_start);
+    arch_task_context_mark_first_run(&child->context);
+    rename_task_from_exec_path(child, kernel_filename);
+    snapshot_exec_metadata(child, kernel_filename, kernel_argv, kernel_envp);
+
+    copy_process_files(parent, child);
+    close_cloexec_files(child);
+    init_process_signals(child);
+    if (!child->process->signal_stack_base ||
+        !child->process->signal_stack_size) {
+        result = -ENOMEM;
+        goto fail;
+    }
+
+    /* Link and publish only after the complete child image is runnable. */
+    {
+        unsigned long child_flags;
+
+        spin_lock_irqsave(&task_lock, &child_flags);
+        child->process->parent = parent;
+        child->process->sibling_next = parent->process->children;
+        parent->process->children = child;
+        spin_unlock_irqrestore(&task_lock, child_flags);
+    }
+    add_to_ready_queue(child);
+    result = child->process->pid;
+
+    if (cwd_inode)
+        put_inode(cwd_inode);
+    if (exe_inode)
+        put_inode(exe_inode);
+    if (spawn_cwd)
+        kfree(spawn_cwd);
+    cleanup_exec_args(kernel_filename, kernel_argv, kernel_envp);
+    return result;
+
+fail:
+    if (child) {
+        close_all_process_files(child);
+        cleanup_process_signals(child);
+        /* The spawn child was never linked into its parent's child list. */
+        cleanup_failed_fork_child(NULL, child);
+    }
+    if (new_vm)
+        destroy_vm_space(new_vm);
+    if (cwd_inode)
+        put_inode(cwd_inode);
+    if (exe_inode)
+        put_inode(exe_inode);
+    if (spawn_cwd)
+        kfree(spawn_cwd);
+    cleanup_exec_args(kernel_filename, kernel_argv, kernel_envp);
+    return result;
 }
 
 
