@@ -71,7 +71,7 @@ if ! QEMU_VERSION_OUTPUT="$("$QEMU" --version 2>&1)"; then
 fi
 QEMU_DISPLAY="$(select_display)"
 SMP_CPUS="${SMP_CPUS:-${QEMU_SMP}}"
-QEMU_DATA_DIR="$(cd "$(dirname "$QEMU")/../share/qemu" 2>/dev/null && pwd || true)"
+QEMU_DATA_DIR="$(find_qemu_data_dir "$QEMU")"
 
 case "${QEMU_GPU_ACCEL}" in
     2d)

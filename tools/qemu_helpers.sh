@@ -30,6 +30,20 @@ select_arm_qemu() {
     fi
 }
 
+find_qemu_data_dir() {
+    local qemu_binary="${1:?QEMU binary is required}"
+    local resolved_binary
+    local candidate
+
+    resolved_binary="$(command -v "$qemu_binary" 2>/dev/null || true)"
+    [ -n "$resolved_binary" ] || return 0
+
+    candidate="$(cd "$(dirname "$resolved_binary")/../share/qemu" 2>/dev/null && pwd || true)"
+    if [ -n "$candidate" ] && [ -f "$candidate/efi-virtio.rom" ]; then
+        printf '%s\n' "$candidate"
+    fi
+}
+
 require_qemu_version() {
     local qemu_binary="${1:?QEMU binary is required}"
     local required="${QEMU_REQUIRED_VERSION:-}"

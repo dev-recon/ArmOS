@@ -16,6 +16,7 @@ ENABLE_NET=1
 . "$ROOT_DIR/tools/qemu_platform_env.sh"
 QEMU="$(select_arm_qemu "${1:-}" "$ROOT_DIR" "$TARGET_ARCH")"
 SMP_CPUS="${SMP_CPUS:-${QEMU_SMP}}"
+QEMU_DATA_DIR="$(find_qemu_data_dir "$QEMU")"
 
 NET_HOST_ADDR="${NET_HOST_ADDR:-127.0.0.1}"
 NET_HOST_PORT="${NET_HOST_PORT:-2323}"
@@ -77,6 +78,9 @@ if [ -n "${QEMU_KERNEL_LOADER_ADDR}" ]; then
 fi
 
 QEMU_ARGS=(-M "${QEMU_MACHINE}" -cpu "${QEMU_CPU}" -m "${QEMU_MEMORY}" -smp "${SMP_CPUS}")
+if [ -n "${QEMU_DATA_DIR}" ]; then
+    QEMU_ARGS+=(-L "${QEMU_DATA_DIR}")
+fi
 if [ "${QEMU_BLOCK_ENABLED}" != "0" ]; then
     case "${QEMU_BLOCK_IF}" in
         sd)
