@@ -21,6 +21,7 @@
 
 #include <kernel/arch_cache.h>
 #include <kernel/arch_page.h>
+#include <uapi/armos/limits.h>
 
 /* === TYPES DE BASE === */
 
@@ -105,8 +106,8 @@ typedef enum {
 /* Limites systeme */
 #define MAX_FILES       256
 #define MAX_ARGS        32
-#define MAX_PATH        256
-#define MAX_NAME        255
+#define MAX_PATH        ARMOS_RESOLVED_PATH_MAX
+#define MAX_NAME        ARMOS_NAME_MAX
 
 /* === CODES D'ERREUR === */
 

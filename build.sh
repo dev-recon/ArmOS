@@ -50,6 +50,8 @@ enable_complete_userland_build()
     BUILD_TCC=1
     BUILD_BSD=1
     BUILD_NCURSES=1
+    BUILD_LIBEDIT=1
+    BUILD_FREEBSD_SH=1
     BUILD_NANO=1
     BUILD_EPOLL_SHIM=1
     BUILD_PIXMAN=1
@@ -97,6 +99,8 @@ else
     BUILD_FBVIEW="${BUILD_FBVIEW:-0}"
 fi
 BUILD_NCURSES="${BUILD_NCURSES:-0}"
+BUILD_LIBEDIT="${BUILD_LIBEDIT:-0}"
+BUILD_FREEBSD_SH="${BUILD_FREEBSD_SH:-0}"
 BUILD_NANO="${BUILD_NANO:-0}"
 BUILD_EPOLL_SHIM="${BUILD_EPOLL_SHIM:-0}"
 BUILD_PIXMAN="${BUILD_PIXMAN:-0}"
@@ -207,6 +211,8 @@ cp "$ROOT_DIR/include/uapi/armos/drm.h" \
     "$NEWLIB_SYSROOT/include/uapi/armos/drm.h"
 cp "$ROOT_DIR/include/uapi/armos/drm_virgl.h" \
     "$NEWLIB_SYSROOT/include/uapi/armos/drm_virgl.h"
+cp "$ROOT_DIR/include/uapi/armos/limits.h" \
+    "$NEWLIB_SYSROOT/include/uapi/armos/limits.h"
 
 echo "=== Building userland incrementally ==="
 USERLAND_CONTRACT_STAMP="$TARGET_BUILD_ROOT/userland/.armos-build.contract"
@@ -556,6 +562,34 @@ if [ "$BUILD_NCURSES" = "1" ]; then
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
         build_cached_bundle ncurses ./tools/build_ncurses.sh
     rsync -a "$TARGET_BUNDLES/ncurses/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_LIBEDIT" = "1" ]; then
+    echo "=== Building libedit bundle ==="
+    if [ "$BUILD_NCURSES" != "1" ] &&
+       [ ! -f "$TARGET_USERFS/opt/ncurses/lib/libncurses.a" ]; then
+        echo "Error: libedit requires the target ncurses bundle" >&2
+        exit 1
+    fi
+    WORK_DIR="$TARGET_BUNDLES/libedit" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/userland/opt/freebsd-sh/src/contrib/libedit $ROOT_DIR/userland/opt/freebsd-sh/src/lib/libedit $ROOT_DIR/userland/opt/freebsd-sh/compat" \
+        build_cached_bundle libedit ./tools/build_libedit.sh ncurses
+    rsync -a "$TARGET_BUNDLES/libedit/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FREEBSD_SH" = "1" ]; then
+    echo "=== Building FreeBSD sh bundle ==="
+    if [ "$BUILD_LIBEDIT" != "1" ] &&
+       [ ! -f "$TARGET_USERFS/opt/libedit/lib/libedit.a" ]; then
+        echo "Error: full FreeBSD sh requires the target libedit bundle" >&2
+        exit 1
+    fi
+    WORK_DIR="$TARGET_BUNDLES/freebsd-sh" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" FREEBSD_SH_WITH_LIBEDIT=1 \
+        build_cached_bundle freebsd-sh ./tools/build_freebsd_sh.sh \
+            libedit ncurses
+    rsync -a "$TARGET_BUNDLES/freebsd-sh/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_NANO" = "1" ]; then

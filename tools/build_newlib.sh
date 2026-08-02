@@ -167,6 +167,8 @@ if [ ! -f "$OBJ_DIR/Makefile" ]; then
         --enable-newlib-multithread \
         --enable-newlib-retargetable-locking \
         --enable-newlib-reent-small \
+        --enable-newlib-io-long-long \
+        --enable-newlib-io-c99-formats \
         CFLAGS_FOR_TARGET="$TARGET_CFLAGS"
     )
 else

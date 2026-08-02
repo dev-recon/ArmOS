@@ -118,6 +118,8 @@ inode_t* get_root_inode(void);
 void put_inode(inode_t* inode);
 inode_t* path_lookup(const char* path);
 inode_t* path_lookup_ex(const char* path, bool follow_final_symlink);
+inode_t* path_lookup_resolved(const char* path, bool follow_final_symlink,
+                              char* resolved, size_t resolved_size);
 
 /* Kernel-internal streaming file access without a process descriptor table. */
 int vfs_kernel_file_open(const char* path, kernel_file_t* handle);

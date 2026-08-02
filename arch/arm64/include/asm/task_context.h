@@ -75,7 +75,7 @@ void arm64_task_context_switch(arm64_task_context_t *previous,
 void arm64_simd_context_capture(arm64_simd_context_t *context);
 int arm64_task_context_switch_address_space(
     arm64_task_context_t *previous,
-    const arm64_task_context_t *next);
+    arm64_task_context_t *next);
 void arm64_task_kernel_entry_trampoline(void) __attribute__((noreturn));
 void arm64_task_user_entry_trampoline(void) __attribute__((noreturn));
 

@@ -58,6 +58,7 @@ static int      ext2_inode_rmdir_op(inode_t* dir, const char* name);
 static int      ext2_inode_rename_op(inode_t* old_dir, const char* old_name,
                                      inode_t* new_dir, const char* new_name);
 static int      ext2_inode_readlink_op(inode_t* inode, char* buf, size_t bufsiz);
+static int      ext2_inode_create_op(inode_t* dir, const char* name, uint16_t mode);
 static int      ext2_truncate_inode_data(inode_t* inode, bool allow_dir);
 static int      ext2_truncate_inode_unlocked(inode_t* inode);
 static int      ext2_remove_dir_entry(inode_t* dir, const char* name);
@@ -94,7 +95,7 @@ file_operations_t ext2_dir_ops = {
 
 inode_operations_t ext2_inode_ops = {
     .lookup = ext2_inode_lookup_op,
-    .create = NULL,
+    .create = ext2_inode_create_op,
     .mkdir  = ext2_inode_mkdir_op,
     .unlink = ext2_inode_unlink_op,
     .rmdir  = ext2_inode_rmdir_op,
@@ -1166,6 +1167,7 @@ static uint8_t ext2_file_type_from_mode(mode_t mode)
     if (S_ISLNK(mode)) return EXT2_FT_SYMLINK;
     if (S_ISCHR(mode)) return EXT2_FT_CHRDEV;
     if (S_ISBLK(mode)) return EXT2_FT_BLKDEV;
+    if (S_ISFIFO(mode)) return EXT2_FT_FIFO;
     return EXT2_FT_REG_FILE;
 }
 
@@ -2168,15 +2170,21 @@ static inode_t* ext2_make_inode(uint32_t ino)
     if (S_ISDIR(disk.i_mode)) {
         inode->i_op = &ext2_inode_ops;
         inode->f_op = &ext2_dir_ops;
-    } else {
+    } else if (S_ISREG(disk.i_mode)) {
         inode->i_op = &ext2_inode_ops;
         inode->f_op = &ext2_file_ops;
+    } else {
+        inode->i_op = &ext2_inode_ops;
+        inode->f_op = NULL;
     }
     return inode;
 }
 
 static inode_t* ext2_create_file_unlocked(inode_t* parent, const char* name, mode_t mode)
 {
+    mode_t type;
+    uint8_t dir_type;
+
     if (!parent || !name) return NULL;
     if (!S_ISDIR(parent->mode)) return NULL;
 
@@ -2193,10 +2201,20 @@ static inode_t* ext2_create_file_unlocked(inode_t* parent, const char* name, mod
     if (ext2_alloc_inode(&ino) < 0)
         return NULL;
 
+    type = mode & S_IFMT;
+    if (type == 0)
+        type = S_IFREG;
+    if (type != S_IFREG && type != S_IFIFO &&
+        type != S_IFCHR && type != S_IFBLK) {
+        ext2_free_inode(ino);
+        return NULL;
+    }
+    dir_type = ext2_file_type_from_mode(type);
+
     uint32_t now = get_current_time();
     ext2_inode_t di;
     memset(&di, 0, sizeof(di));
-    di.i_mode = EXT2_S_IFREG | (mode & 0777);
+    di.i_mode = type | (mode & 07777);
     di.i_uid = current_uid();
     di.i_gid = current_gid();
     di.i_size = 0;
@@ -2211,12 +2229,26 @@ static inode_t* ext2_create_file_unlocked(inode_t* parent, const char* name, mod
         return NULL;
     }
 
-    if (ext2_add_dir_entry(parent, ino, name, EXT2_FT_REG_FILE) < 0) {
+    if (ext2_add_dir_entry(parent, ino, name, dir_type) < 0) {
         ext2_free_inode(ino);
         return NULL;
     }
 
     return ext2_make_inode(ino);
+}
+
+static int ext2_inode_create_op(inode_t* dir, const char* name, uint16_t mode)
+{
+    inode_t* inode;
+
+    ext2_op_acquire();
+    inode = ext2_create_file_unlocked(dir, name, mode);
+    ext2_op_release();
+
+    if (!inode)
+        return -EIO;
+    put_inode(inode);
+    return 0;
 }
 
 static int ext2_link_inode_unlocked(inode_t* parent, const char* name, inode_t* target)
@@ -3662,7 +3694,13 @@ static int ext2_dir_readdir_unlocked(file_t* file, dirent_t* dirent)
 
         /* Fill dirent */
         dirent->d_ino = de->inode;
-        if (de->file_type == EXT2_FT_DIR)
+        if (de->file_type == EXT2_FT_FIFO)
+            dirent->d_type = DT_FIFO;
+        else if (de->file_type == EXT2_FT_CHRDEV)
+            dirent->d_type = DT_CHR;
+        else if (de->file_type == EXT2_FT_BLKDEV)
+            dirent->d_type = DT_BLK;
+        else if (de->file_type == EXT2_FT_DIR)
             dirent->d_type = DT_DIR;
         else if (de->file_type == EXT2_FT_SYMLINK)
             dirent->d_type = DT_LNK;

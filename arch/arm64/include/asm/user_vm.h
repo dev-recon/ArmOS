@@ -69,7 +69,9 @@ const arm64_user_vm_t *arm64_user_vm_from_space(const vm_space_t *space);
 int arm64_user_vm_validate_identity(const arm64_user_vm_t *vm);
 int arm64_user_vm_rebind_space(arm64_user_vm_t *vm);
 int arm64_user_vm_activate_space(const vm_space_t *space);
-int arm64_user_vm_activate_identity(paddr_t table, uint32_t asid);
+int arm64_user_vm_activate_identity(paddr_t table, uint32_t asid,
+                                    uint32_t *active_asid);
+void arm64_user_vm_deactivate_cpu(void);
 
 int arm64_user_vm_init(arm64_user_vm_t *vm);
 int arm64_user_vm_map_new_page(arm64_user_vm_t *vm,
@@ -85,7 +87,7 @@ int arm64_user_vm_protect_page(arm64_user_vm_t *vm,
                                unsigned int flags);
 int arm64_user_vm_unmap_page(arm64_user_vm_t *vm,
                              vaddr_t virtual_address);
-int arm64_user_vm_activate(const arm64_user_vm_t *vm);
+int arm64_user_vm_activate(arm64_user_vm_t *vm);
 int arm64_user_vm_lookup(const arm64_user_vm_t *vm,
                          vaddr_t virtual_address,
                          paddr_t *physical_address,

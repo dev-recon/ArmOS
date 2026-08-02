@@ -50,6 +50,23 @@ The following families are already connected to the common kernel:
 | Time and accounting | `time`, `gettimeofday`, `clock_gettime`, `clock_getres`, `times`, `getrusage`, priorities and capability-aware `sysconf` |
 | Networking | Common IPv4, ICMP, DHCP, UDP, DNS and TCP sockets with active and passive connections |
 
+### FreeBSD `/bin/sh` integration increment
+
+The FreeBSD `sh` port extends the common POSIX surface rather than hiding
+missing behavior in shell-local compatibility code. The shared ARM32/AArch64
+path now includes a truthful 64 KiB `ARG_MAX`, multipage executable argument
+stacks, `WCONTINUED`, `SIGPIPE`, named FIFOs, event-driven pipe polling,
+`pathconf()`/`fpathconf()`, and realtime clock interpolation. Userland adds
+`execlp()`, `getconf`, `id`, `mkfifo`, `mktemp`, `tr`, and more complete file
+and text utilities.
+
+`/bin/sh` points to the pinned FreeBSD shell with reusable `libedit` support.
+Graphical user terminals select it through `SHELL=/bin/sh` and
+`ENV=/home/user/.shrc`; `/sbin/mash` remains the boot and recovery shell. The
+current imported corpus baseline is 511 passes out of 518 tests. The open-FIFO
+unlink lifetime issue remains a common VFS gap and is not considered delivered
+until namespace removal and final-object reclamation are both correct.
+
 ## Priority Axes
 
 ### P0 - ABI Truth And Core Primitives
@@ -247,7 +264,7 @@ receive dedicated syscalls:
 
 - `system`, `popen`, `posix_spawn` and the `exec*` family;
 - `sleep`, `usleep`, directory streams and pathname helpers;
-- `mkfifo`, `realpath`, `dirname`, `basename` and passwd-file lookup;
+- `realpath`, `dirname`, `basename` and passwd-file lookup;
 - static portions of `pathconf`, `fpathconf` and `confstr`;
 - most pthread synchronization operations once wait/wake and TLS exist;
 - an initial asynchronous-I/O implementation based on worker threads.

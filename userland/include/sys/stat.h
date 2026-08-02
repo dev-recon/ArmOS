@@ -24,5 +24,6 @@
 
 int lstat(const char *path, struct stat *buf);
 int mknod(const char *path, mode_t mode, unsigned long dev);
+int mkfifo(const char *path, mode_t mode);
 
 #endif /* ARMOS_SYS_STAT_H */

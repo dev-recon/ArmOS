@@ -146,13 +146,21 @@ int remap_user_page(pgdir_t pgdir, vaddr_t address, paddr_t physical,
     return map_user_page(pgdir, address, physical, flags, asid);
 }
 
-int arm64_user_vm_activate_identity(paddr_t table, uint32_t asid)
+int arm64_user_vm_activate_identity(paddr_t table, uint32_t asid,
+                                    uint32_t *active_asid)
 {
     arm64_user_vm_t *vm = backend_for_pgdir((pgdir_t)(uintptr_t)table);
+    int result;
 
-    if (!vm || vm->asid != asid)
+    if (!vm || !active_asid || asid == 0)
         return -1;
-    return arm64_user_vm_activate(vm);
+    /* A task context may still carry the previous generation after rollover. */
+    if (vm->asid != asid && (asid >> 8) == (vm->asid >> 8))
+        return -1;
+    result = arm64_user_vm_activate(vm);
+    if (result == 0)
+        *active_asid = vm->asid;
+    return result;
 }
 
 int unmap_user_page(pgdir_t pgdir, vaddr_t address, uint32_t asid)

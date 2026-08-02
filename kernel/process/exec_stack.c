@@ -23,6 +23,7 @@
 #include <kernel/memory.h>
 #include <kernel/string.h>
 #include <kernel/userspace.h>
+#include <uapi/armos/limits.h>
 
 static int string_vector_count(char **vector)
 {
@@ -54,7 +55,7 @@ void cleanup_exec_args(char *filename, char **argv, char **envp)
 }
 
 static int copy_stack_strings(char **strings, int count, uint8_t **cursor,
-                              uint8_t *page_base, vaddr_t user_page,
+                              uint8_t *buffer_base, vaddr_t user_base,
                               vaddr_t *addresses)
 {
     int index;
@@ -62,12 +63,12 @@ static int copy_stack_strings(char **strings, int count, uint8_t **cursor,
     for (index = count - 1; index >= 0; index--) {
         size_t length = strlen(strings[index]) + 1u;
 
-        if ((size_t)(*cursor - page_base) < length)
+        if ((size_t)(*cursor - buffer_base) < length)
             return -1;
         *cursor -= length;
         memcpy(*cursor, strings[index], length);
-        addresses[index] = user_page +
-            (vaddr_t)(uintptr_t)(*cursor - page_base);
+        addresses[index] = user_base +
+            (vaddr_t)(uintptr_t)(*cursor - buffer_base);
     }
     return 0;
 }
@@ -78,63 +79,68 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
     const size_t alignment = ARCH_TASK_STACK_ALIGNMENT;
     const vaddr_t stack_bottom =
         USER_STACK_TOP - USER_STACK_SIZE + PAGE_SIZE;
-    const vaddr_t stack_page = USER_STACK_TOP - PAGE_SIZE;
     vaddr_t *argv_addresses = NULL;
     vaddr_t *envp_addresses = NULL;
-    vaddr_t temporary;
-    uint8_t *page_base;
+    uint8_t *stack_image = NULL;
     uint8_t *cursor;
     uint8_t *vector_base;
     vaddr_t final_sp;
-    void *physical_page;
+    vaddr_t mapped_base;
     int argc = string_vector_count(argv);
     int envc = string_vector_count(envp);
+    size_t string_bytes = 0;
     size_t vector_bytes;
+    size_t required_bytes;
+    size_t mapped_bytes;
+    size_t page_offset;
     int index;
 
     if (!vm || create_vma(vm, stack_bottom, USER_STACK_SIZE - PAGE_SIZE,
                           VMA_READ | VMA_WRITE) == NULL)
-        return -1;
+        return -ENOMEM;
 
-    physical_page = allocate_page();
-    if (!physical_page)
-        return -1;
-    if (map_user_page(vm->pgdir, stack_page,
-                      (paddr_t)(uintptr_t)physical_page,
-                      VMA_READ | VMA_WRITE, vm->asid) != 0) {
-        free_page(physical_page);
-        return -1;
-    }
+    for (index = 0; index < argc; index++)
+        string_bytes += strlen(argv[index]) + 1u;
+    for (index = 0; index < envc; index++)
+        string_bytes += strlen(envp[index]) + 1u;
+    vector_bytes = (size_t)(1 + argc + 1 + envc + 1) * word_size;
+    if (string_bytes > ARMOS_ARG_MAX || vector_bytes > ARMOS_ARG_MAX ||
+        string_bytes + vector_bytes > ARMOS_ARG_MAX)
+        return -E2BIG;
 
-    temporary = map_temp_page((paddr_t)(uintptr_t)physical_page);
-    if (!temporary)
-        return -1;
-    page_base = (uint8_t *)(uintptr_t)temporary;
-    cursor = page_base + PAGE_SIZE;
+    required_bytes = string_bytes + vector_bytes + alignment - 1u;
+    mapped_bytes = (required_bytes + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+    if (mapped_bytes == 0 || mapped_bytes > USER_STACK_SIZE - PAGE_SIZE)
+        return -E2BIG;
+    mapped_base = USER_STACK_TOP - (vaddr_t)mapped_bytes;
+    stack_image = kmalloc(mapped_bytes);
+    if (!stack_image)
+        return -ENOMEM;
+    memset(stack_image, 0, mapped_bytes);
+    cursor = stack_image + mapped_bytes;
 
     if (argc > 0) {
         argv_addresses = kmalloc((size_t)argc * sizeof(vaddr_t));
         if (!argv_addresses)
-            goto failed;
+            goto no_memory;
     }
     if (envc > 0) {
         envp_addresses = kmalloc((size_t)envc * sizeof(vaddr_t));
         if (!envp_addresses)
-            goto failed;
+            goto no_memory;
     }
-    if (copy_stack_strings(argv, argc, &cursor, page_base, stack_page,
+    if (copy_stack_strings(argv, argc, &cursor, stack_image, mapped_base,
                            argv_addresses) != 0 ||
-        copy_stack_strings(envp, envc, &cursor, page_base, stack_page,
+        copy_stack_strings(envp, envc, &cursor, stack_image, mapped_base,
                            envp_addresses) != 0)
-        goto failed;
+        goto too_large;
 
-    vector_bytes = (size_t)(1 + argc + 1 + envc + 1) * word_size;
-    if ((size_t)(cursor - page_base) < vector_bytes)
-        goto failed;
+    if ((size_t)(cursor - stack_image) < vector_bytes)
+        goto too_large;
     cursor = (uint8_t *)((uintptr_t)(cursor - vector_bytes) &
                          ~(uintptr_t)(alignment - 1u));
-    if (cursor < page_base)
-        goto failed;
+    if (cursor < stack_image)
+        goto too_large;
     vector_base = cursor;
 
     *(vaddr_t *)(void *)cursor = (vaddr_t)argc;
@@ -147,18 +153,44 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
         *(vaddr_t *)(void *)cursor = envp_addresses[index];
     *(vaddr_t *)(void *)cursor = 0;
 
-    final_sp = stack_page + (vaddr_t)(vector_base - page_base);
+    final_sp = mapped_base + (vaddr_t)(vector_base - stack_image);
     vm->stack_start = final_sp;
 
-    unmap_temp_page((void *)(uintptr_t)temporary);
+    for (page_offset = 0; page_offset < mapped_bytes;
+         page_offset += PAGE_SIZE) {
+        void *physical_page = allocate_page();
+        vaddr_t temporary;
+
+        if (!physical_page)
+            goto no_memory;
+        if (map_user_page(vm->pgdir, mapped_base + (vaddr_t)page_offset,
+                          (paddr_t)(uintptr_t)physical_page,
+                          VMA_READ | VMA_WRITE, vm->asid) != 0) {
+            free_page(physical_page);
+            goto no_memory;
+        }
+        temporary = map_temp_page((paddr_t)(uintptr_t)physical_page);
+        if (!temporary)
+            goto no_memory;
+        memcpy((void *)(uintptr_t)temporary, stack_image + page_offset,
+               PAGE_SIZE);
+        unmap_temp_page((void *)(uintptr_t)temporary);
+    }
+
+    kfree(stack_image);
     kfree(argv_addresses);
     kfree(envp_addresses);
     return 0;
 
-failed:
-    unmap_temp_page((void *)(uintptr_t)temporary);
+too_large:
+    kfree(stack_image);
     kfree(argv_addresses);
     kfree(envp_addresses);
-    KERROR("setup_user_stack: arguments exceed the initial stack page\n");
-    return -1;
+    return -E2BIG;
+
+no_memory:
+    kfree(stack_image);
+    kfree(argv_addresses);
+    kfree(envp_addresses);
+    return -ENOMEM;
 }

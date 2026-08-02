@@ -1,0 +1,11 @@
+# ArmOS interactive FreeBSD sh configuration.
+
+PATH=/bin:/usr/bin:/opt/kilo/bin:/opt/nano/bin
+LANG=C.UTF-8
+TERM=${TERM:-armos}
+PS1='user$ '
+HISTSIZE=1000
+HISTFILE=${HOME}/.sh_history
+export PATH LANG TERM PS1 HISTSIZE HISTFILE
+
+set -o emacs

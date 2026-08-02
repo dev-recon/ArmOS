@@ -71,6 +71,7 @@ typedef struct {
 
 static arm64_asid_residency_t
     arm64_asid_residency[ARMOS_MAX_CPUS][ARM64_ASID_COUNT];
+static arm64_user_vm_t *arm64_asid_active_vm[ARMOS_MAX_CPUS];
 
 static void arm64_user_vm_publish_targeted_generation(arm64_user_vm_t *vm)
 {
@@ -140,6 +141,7 @@ static unsigned int arm64_asid_make(unsigned int generation,
 static unsigned int allocate_asid_locked(void)
 {
     unsigned int asid;
+    uint32_t cpu;
 
     for (asid = 1; asid < ARM64_ASID_COUNT; asid++) {
         if (!asid_is_allocated(asid)) {
@@ -159,10 +161,39 @@ static unsigned int allocate_asid_locked(void)
     tlb_shootdown_all();
     kernel_lifecycle_stats.asid_rollovers++;
 
-    asid = 1;
-    arm64_asid_bitmap[asid >> 3] |= (uint8_t)(1u << (asid & 7u));
-    arm64_asid_slot_generation[asid] = arm64_asid_generation;
-    return arm64_asid_make(arm64_asid_generation, asid);
+    /*
+     * A generation rollover invalidates every cached translation, but the
+     * address spaces executing on other CPUs keep using their hardware ASID
+     * immediately afterwards.  Reserve those slots in the new generation;
+     * inactive spaces will acquire a new slot lazily when next activated.
+     */
+    for (cpu = 0; cpu < ARMOS_MAX_CPUS; cpu++) {
+        arm64_user_vm_t *active = arm64_asid_active_vm[cpu];
+        unsigned int hardware_asid;
+
+        if (!active)
+            continue;
+        hardware_asid = arm64_asid_hw(active->asid);
+        if (hardware_asid == 0)
+            continue;
+        arm64_asid_bitmap[hardware_asid >> 3] |=
+            (uint8_t)(1u << (hardware_asid & 7u));
+        arm64_asid_slot_generation[hardware_asid] =
+            arm64_asid_generation;
+        active->asid = arm64_asid_make(arm64_asid_generation,
+                                      hardware_asid);
+        active->space.asid = active->asid;
+    }
+
+    for (asid = 1; asid < ARM64_ASID_COUNT; asid++) {
+        if (!asid_is_allocated(asid)) {
+            arm64_asid_bitmap[asid >> 3] |=
+                (uint8_t)(1u << (asid & 7u));
+            arm64_asid_slot_generation[asid] = arm64_asid_generation;
+            return arm64_asid_make(arm64_asid_generation, asid);
+        }
+    }
+    return 0;
 }
 
 static unsigned int allocate_asid(void)
@@ -829,10 +860,13 @@ int arm64_user_vm_unmap_page(arm64_user_vm_t *vm,
     return arm64_user_vm_validate_identity(vm);
 }
 
-int arm64_user_vm_activate(const arm64_user_vm_t *vm)
+int arm64_user_vm_activate(arm64_user_vm_t *vm)
 {
     arm64_asid_residency_t *residency;
+    unsigned long flags;
     uint32_t cpu;
+    unsigned int generation;
+    unsigned int refreshed_asid;
     int result;
 
     if (arm64_user_vm_validate_identity(vm) != 0)
@@ -841,13 +875,29 @@ int arm64_user_vm_activate(const arm64_user_vm_t *vm)
     cpu = smp_processor_id();
     if (cpu >= ARMOS_MAX_CPUS)
         return -2;
+
+    spin_lock_irqsave(&arm64_asid_lock, &flags);
+    generation = vm->asid >> 8;
+    if (generation != arm64_asid_generation) {
+        refreshed_asid = allocate_asid_locked();
+        if (refreshed_asid == 0) {
+            spin_unlock_irqrestore(&arm64_asid_lock, flags);
+            return -3;
+        }
+        vm->asid = refreshed_asid;
+        vm->space.asid = refreshed_asid;
+    }
+
     residency = &arm64_asid_residency[cpu][arm64_asid_hw(vm->asid)];
     if (residency->table == vm->l1 &&
         residency->generation == vm->tlb_generation) {
         result = arm64_mmu_switch_user_ttbr0_preserve(
             vm->l1, arm64_asid_hw(vm->asid));
-        if (result == 0)
+        if (result == 0) {
             tlb_preserve_count++;
+            arm64_asid_active_vm[cpu] = vm;
+        }
+        spin_unlock_irqrestore(&arm64_asid_lock, flags);
         return result;
     }
 
@@ -857,17 +907,31 @@ int arm64_user_vm_activate(const arm64_user_vm_t *vm)
         residency->table = vm->l1;
         residency->generation = vm->tlb_generation;
         tlb_flush_count++;
+        arm64_asid_active_vm[cpu] = vm;
     }
+    spin_unlock_irqrestore(&arm64_asid_lock, flags);
     return result;
 }
 
 int arm64_user_vm_activate_space(const vm_space_t *space)
 {
-    const arm64_user_vm_t *vm = arm64_user_vm_from_space(space);
+    arm64_user_vm_t *vm = (arm64_user_vm_t *)arm64_user_vm_from_space(space);
 
     if (!vm)
         return -1;
     return arm64_user_vm_activate(vm);
+}
+
+void arm64_user_vm_deactivate_cpu(void)
+{
+    unsigned long flags;
+    uint32_t cpu = smp_processor_id();
+
+    if (cpu >= ARMOS_MAX_CPUS)
+        return;
+    spin_lock_irqsave(&arm64_asid_lock, &flags);
+    arm64_asid_active_vm[cpu] = NULL;
+    spin_unlock_irqrestore(&arm64_asid_lock, flags);
 }
 
 uint64_t arm64_user_vm_tlb_flush_count(void)

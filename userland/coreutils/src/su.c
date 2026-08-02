@@ -23,6 +23,8 @@ int main(int argc, char **argv)
         "HOME=/root",
         "USER=root",
         "PWD=/root",
+        "SHELL=/bin/sh",
+        "ENV=/root/.shrc",
         "PS1=root# ",
         "MASH_PROTECT=1",
         NULL

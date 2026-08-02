@@ -363,15 +363,17 @@ void print_cpu_mode(void){
 
 }
 
-static int count_exec_vector(char* const vector[], bool from_user, uint32_t* count)
+static int count_exec_vector(char* const vector[], bool from_user,
+                             uint32_t* count)
 {
     uint32_t i;
+    const uint32_t maximum = ARMOS_ARG_MAX / sizeof(vaddr_t);
 
     *count = 0;
     if (!vector)
         return 0;
 
-    for (i = 0; i < 32; i++) {
+    for (i = 0; i < maximum; i++) {
         char* value;
 
         if (from_user) {
@@ -390,13 +392,60 @@ static int count_exec_vector(char* const vector[], bool from_user, uint32_t* cou
     return -E2BIG;
 }
 
-static char** copy_exec_vector(char* const vector[], uint32_t count, bool from_user)
+static char* copy_exec_string(const char* value, bool from_user,
+                              size_t maximum, int* error)
+{
+    size_t length;
+    char* copy;
+
+    if (!value || maximum == 0) {
+        *error = value ? -E2BIG : -EFAULT;
+        return NULL;
+    }
+    if (from_user) {
+        int user_length = strnlen_user(value, (int)maximum);
+
+        if (user_length < 0) {
+            *error = is_valid_user_ptr(value) ? -E2BIG : -EFAULT;
+            return NULL;
+        }
+        length = (size_t)user_length;
+    } else {
+        for (length = 0; length < maximum && value[length]; length++)
+            ;
+        if (length == maximum) {
+            *error = -E2BIG;
+            return NULL;
+        }
+    }
+
+    copy = kmalloc(length + 1u);
+    if (!copy) {
+        *error = -ENOMEM;
+        return NULL;
+    }
+    if (from_user) {
+        if (copy_from_user(copy, value, length + 1u) < 0) {
+            kfree(copy);
+            *error = -EFAULT;
+            return NULL;
+        }
+    } else {
+        memcpy(copy, value, length + 1u);
+    }
+    return copy;
+}
+
+static char** copy_exec_vector(char* const vector[], uint32_t count,
+                               bool from_user, size_t* payload, int* error)
 {
     char** copy = kmalloc((count + 1) * sizeof(char*));
     uint32_t i;
 
-    if (!copy)
+    if (!copy) {
+        *error = -ENOMEM;
         return NULL;
+    }
 
     memset(copy, 0, (count + 1) * sizeof(char*));
 
@@ -404,16 +453,21 @@ static char** copy_exec_vector(char* const vector[], uint32_t count, bool from_u
         char* value;
 
         if (from_user) {
-            if (copy_from_user(&value, &vector[i], sizeof(value)) < 0)
+            if (copy_from_user(&value, &vector[i], sizeof(value)) < 0) {
+                *error = -EFAULT;
                 goto fail;
-            copy[i] = copy_string_from_user(value);
+            }
+            copy[i] = copy_exec_string(value, true,
+                                       ARMOS_ARG_MAX - *payload, error);
         } else {
             value = vector[i];
-            copy[i] = value ? strdup(value) : NULL;
+            copy[i] = copy_exec_string(value, false,
+                                       ARMOS_ARG_MAX - *payload, error);
         }
 
         if (!copy[i])
             goto fail;
+        *payload += strlen(copy[i]) + 1u;
     }
 
     return copy;
@@ -442,6 +496,7 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     exec_image_layout_t image_layout;
     uint32_t argc = 0;
     uint32_t envpc = 0;
+    size_t exec_payload;
     int result;
     
     /* Verification processus - ADAPTe */
@@ -472,20 +527,27 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     if (result < 0)
         return result;
 
+    exec_payload = ((size_t)argc + (size_t)envpc + 3u) * sizeof(vaddr_t);
+    if (exec_payload >= ARMOS_ARG_MAX)
+        return -E2BIG;
+
     kernel_filename = from_user ? copy_string_from_user(filename) : strdup(filename);
     if (!kernel_filename)
         return -EFAULT;
 
-    kernel_argv = copy_exec_vector(argv, argc, from_user);
+    result = 0;
+    kernel_argv = copy_exec_vector(argv, argc, from_user, &exec_payload,
+                                   &result);
     if (!kernel_argv) {
         kfree(kernel_filename);
-        return -ENOMEM;
+        return result;
     }
 
-    kernel_envp = copy_exec_vector(envp, envpc, from_user);
+    kernel_envp = copy_exec_vector(envp, envpc, from_user, &exec_payload,
+                                   &result);
     if (!kernel_envp) {
         cleanup_exec_args(kernel_filename, kernel_argv, NULL);
-        return -ENOMEM;
+        return result;
     }
 
     /* Ouvrir le fichier executable */
@@ -497,6 +559,16 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     }
 
     if (!inode_permission(exe_inode, MAY_EXEC)) {
+        put_inode(exe_inode);
+        cleanup_exec_args(kernel_filename, kernel_argv, kernel_envp);
+        return -EACCES;
+    }
+    /*
+     * POSIX execve() only accepts regular files.  In particular, a directory
+     * may carry execute/search permission but is not an executable image and
+     * must fail with EACCES, not reach the ELF parser and become ENOEXEC.
+     */
+    if (!S_ISREG(exe_inode->mode)) {
         put_inode(exe_inode);
         cleanup_exec_args(kernel_filename, kernel_argv, kernel_envp);
         return -EACCES;
@@ -519,12 +591,13 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     }
     
     /* Configurer la pile utilisateur avec arguments */
-    if (setup_user_stack(new_vm, kernel_argv, kernel_envp) < 0) {
+    result = setup_user_stack(new_vm, kernel_argv, kernel_envp);
+    if (result < 0) {
         KERROR("sys_execve: Failed to setup user stack\n");
         destroy_vm_space(new_vm);
         put_inode(exe_inode);
         cleanup_exec_args(kernel_filename, kernel_argv, kernel_envp);
-        return -ENOMEM;
+        return result;
     }
 
     /* Load through the common VFS/VM path and active ELF ABI parser. */
@@ -565,7 +638,7 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
             (size_t)image_layout.tls_alignment;
         spin_unlock_irqrestore(&task_lock, vm_flags);
     }
-    init_process_signals(proc);
+    reset_process_signals_for_exec(proc);
 
     /* Reinitialiser le contexte CPU - ADAPTe a VOTRE STRUCTURE */
     memset(&proc->context, 0, sizeof(task_context_t));
@@ -640,6 +713,7 @@ int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
     mode_t exec_mode;
     uint32_t argc = 0;
     uint32_t envpc = 0;
+    size_t exec_payload;
     bool from_user;
     int result;
 
@@ -681,18 +755,23 @@ int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
     if (result < 0)
         return result;
 
+    exec_payload = ((size_t)argc + (size_t)envpc + 3u) * sizeof(vaddr_t);
+    if (exec_payload >= ARMOS_ARG_MAX)
+        return -E2BIG;
+
     kernel_filename = from_user ? copy_string_from_user(filename) :
                                   strdup(filename);
     if (!kernel_filename)
         return -EFAULT;
-    kernel_argv = copy_exec_vector(argv, argc, from_user);
+    result = 0;
+    kernel_argv = copy_exec_vector(argv, argc, from_user, &exec_payload,
+                                   &result);
     if (!kernel_argv) {
-        result = -ENOMEM;
         goto fail;
     }
-    kernel_envp = copy_exec_vector(envp, envpc, from_user);
+    kernel_envp = copy_exec_vector(envp, envpc, from_user, &exec_payload,
+                                   &result);
     if (!kernel_envp) {
-        result = -ENOMEM;
         goto fail;
     }
 
@@ -734,6 +813,10 @@ int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
         result = -EACCES;
         goto fail;
     }
+    if (!S_ISREG(exe_inode->mode)) {
+        result = -EACCES;
+        goto fail;
+    }
     exec_uid = exe_inode->uid;
     exec_gid = exe_inode->gid;
     exec_mode = exe_inode->mode;
@@ -743,8 +826,8 @@ int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
         result = -ENOMEM;
         goto fail;
     }
-    if (setup_user_stack(new_vm, kernel_argv, kernel_envp) < 0) {
-        result = -ENOMEM;
+    result = setup_user_stack(new_vm, kernel_argv, kernel_envp);
+    if (result < 0) {
         goto fail;
     }
     memset(&image_layout, 0, sizeof(image_layout));
@@ -895,7 +978,7 @@ int sys_fork(void)
     /* Copier les descripteurs de fichiers */
     copy_process_files(parent, child);
 
-    init_process_signals(child);
+    inherit_process_signals(parent, child);
 
     if( from_user )
     {
@@ -924,6 +1007,8 @@ int sys_fork(void)
 void sys_exit(int status)
 {
     task_t* proc = task_current_local();
+    unsigned long task_flags;
+    int irq_flags;
 
     if (!proc) {
         KERROR("sys_exit: No current task\n");
@@ -946,11 +1031,18 @@ void sys_exit(int status)
         return;
     }
 
-    int irq_flags = disable_interrupts_save();
-    //set_critical_section();
-    //KDEBUG("EXITING TASK %s - Status = %d, with state = %s\n", proc->name, status, task_state_string(proc->state));
+    /*
+     * Resource release may enter a filesystem backend and sleep.  The task
+     * must remain the published RUNNING task until every potentially
+     * blocking operation is complete.  Publishing TASK_ZOMBIE first allowed
+     * an ext2 close path to restore TASK_RUNNING and leave an unreapable,
+     * unowned process behind.
+     */
+    close_all_process_files(proc);
+    orphan_children(proc);
+    remove_from_ready_queue(proc);
 
-    unsigned long task_flags;
+    irq_flags = disable_interrupts_save();
     spin_lock_irqsave(&task_lock, &task_flags);
     /* CORRECTION: États cohérents avec sys_waitpid */
     if (proc->process->term_signal > 0) {
@@ -975,15 +1067,6 @@ void sys_exit(int status)
         kernel_lifecycle_stats.zombies_created++;
     }
     spin_unlock_irqrestore(&task_lock, task_flags);
-
-    /* Fermer tous les fichiers ouverts avant de reveiller le parent */
-    close_all_process_files(proc);
-
-    /* Retirer le processus zombie de la ready queue */
-    remove_from_ready_queue(proc);
-
-    /* Orpheliner tous les enfants vers init (PID 1) - ACCeS CORRECT */
-    orphan_children(proc);
 
     /*
      * Ne pas reactiver les IRQ avant d'avoir quitte la pile du zombie: le
@@ -1051,6 +1134,44 @@ static pid_t consume_stopped_child(task_t* parent, pid_t pid, int* status)
     return stopped_pid;
 }
 
+static task_t* find_continued_child_locked(task_t* parent, pid_t pid)
+{
+    task_t* child;
+
+    if (!parent || parent->type != TASK_TYPE_PROCESS || !parent->process)
+        return NULL;
+    child = parent->process->children;
+    while (child && child->process) {
+        int matches = (pid == -1) ||
+                      (pid > 0 && child->process->pid == pid) ||
+                      (pid == 0 && child->process->pgid == parent->process->pgid) ||
+                      (pid < -1 && child->process->pgid == -pid);
+
+        if (matches && child->process->continue_pending)
+            return child;
+        child = child->process->sibling_next;
+    }
+    return NULL;
+}
+
+static pid_t consume_continued_child(task_t* parent, pid_t pid, int* status)
+{
+    unsigned long flags;
+    task_t* child;
+    pid_t child_pid = 0;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    child = find_continued_child_locked(parent, pid);
+    if (child) {
+        child->process->continue_pending = 0;
+        if (status)
+            *status = 0xffff;
+        child_pid = child->process->pid;
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
+    return child_pid;
+}
+
 static bool waitpid_prepare_sleep(task_t* parent, pid_t pid, int options,
                                   int* status, pid_t* stopped_pid)
 {
@@ -1092,10 +1213,25 @@ static bool waitpid_prepare_sleep(task_t* parent, pid_t pid, int options,
         }
     }
 
+    if (options & WCONTINUED) {
+        task_t* continued = find_continued_child_locked(parent, pid);
+
+        if (continued) {
+            continued->process->continue_pending = 0;
+            if (status)
+                *status = 0xffff;
+            if (stopped_pid)
+                *stopped_pid = continued->process->pid;
+            spin_unlock_irqrestore(&task_lock, flags);
+            return false;
+        }
+    }
+
     if (has_pending_signals(parent)) {
         parent->process->waitpid_pid = 0;
         parent->process->waitpid_status = NULL;
         parent->process->waitpid_options = 0;
+        parent->process->waitpid_active = false;
         spin_unlock_irqrestore(&task_lock, flags);
         return false;
     }
@@ -1103,11 +1239,26 @@ static bool waitpid_prepare_sleep(task_t* parent, pid_t pid, int options,
     parent->process->waitpid_pid = pid;
     parent->process->waitpid_status = status;
     parent->process->waitpid_options = options;
+    parent->process->waitpid_active = true;
     parent->process->waitpid_iteration++;
     task_set_blocked_under_lock(parent);
 
     spin_unlock_irqrestore(&task_lock, flags);
     return true;
+}
+
+static void waitpid_clear_sleep(task_t* parent)
+{
+    unsigned long flags;
+
+    if (!parent || !parent->process)
+        return;
+    spin_lock_irqsave(&task_lock, &flags);
+    parent->process->waitpid_pid = 0;
+    parent->process->waitpid_status = NULL;
+    parent->process->waitpid_options = 0;
+    parent->process->waitpid_active = false;
+    spin_unlock_irqrestore(&task_lock, flags);
 }
 
 int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent)
@@ -1120,20 +1271,13 @@ int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent)
         return -EINVAL;
     }
 
-    if (options & ~(WNOHANG | WUNTRACED)) {
+    if (options & ~(WNOHANG | WUNTRACED | WCONTINUED)) {
         return -EINVAL;
     }
         
     //KDEBUG("ENTERING KERNEL WAITPID LOOP for %s...\n", parent->name);
 
     while (1) {
-        if (has_pending_signals(parent)) {
-            parent->process->waitpid_pid = 0;
-            parent->process->waitpid_status = NULL;
-            parent->process->waitpid_options = 0;
-            return -EINTR;
-        }
-
         /* Chercher un processus zombie - ACCeS CORRECT */
         zombie = find_zombie_child(parent, pid);
 
@@ -1163,13 +1307,32 @@ int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent)
             kernel_lifecycle_stats.zombies_reaped++;
             destroy_process(zombie);
 
+            waitpid_clear_sleep(parent);
+
             return child_pid;
+        }
+
+        /* A ready child wins over a simultaneously pending signal. */
+        if (has_pending_signals(parent)) {
+            waitpid_clear_sleep(parent);
+            return -EINTR;
         }
 
         if (options & WUNTRACED) {
             pid_t stopped_pid = consume_stopped_child(parent, pid, status);
-            if (stopped_pid > 0)
+            if (stopped_pid > 0) {
+                waitpid_clear_sleep(parent);
                 return stopped_pid;
+            }
+        }
+
+
+        if (options & WCONTINUED) {
+            pid_t continued_pid = consume_continued_child(parent, pid, status);
+            if (continued_pid > 0) {
+                waitpid_clear_sleep(parent);
+                return continued_pid;
+            }
         }
         
         //KDEBUG("NO ZOMBIE CHILD FOUND...\n");
@@ -1179,10 +1342,12 @@ int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent)
             if (!(options & WNOHANG)) {
                 KDEBUG("kernel_waitpid: No eligible children\n");
             }
+            waitpid_clear_sleep(parent);
             return -ECHILD;
         }
 
         if (options & WNOHANG) {
+            waitpid_clear_sleep(parent);
             return 0;
         }
         
@@ -1200,6 +1365,7 @@ int kernel_waitpid(pid_t pid, int* status, int options, task_t* parent)
 
         // Parent is temporarily restoring to kernel to not resuming too early to user
         yield(); 
+        waitpid_clear_sleep(parent);
 
         //KDEBUG("kernel_waitpid: Parent PID %u resumed\n", parent->process->pid);
     }

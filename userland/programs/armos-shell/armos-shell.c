@@ -42,8 +42,8 @@ static int shell_launch(const char *path, const char *name)
         "USER=user",
         "LOGNAME=user",
         "LANG=C.UTF-8",
-        "SHELL=/sbin/mash",
-        "MASH_PROTECT=1",
+        "SHELL=/bin/sh",
+        "ENV=/home/user/.shrc",
         "WAYLAND_DISPLAY=wayland-0",
         "XDG_RUNTIME_DIR=/tmp",
         NULL

@@ -164,12 +164,44 @@ static void print_tty(int tty)
         printf("?");
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     char *dirbuf;
     char statbuf[512];
     int fd;
     int n;
+    int selected_pid = -1;
+    int comm_only = 0;
+    int comm_header = 0;
+
+    for (int arg = 1; arg < argc; arg++) {
+        if (strcmp(argv[arg], "-p") == 0 && arg + 1 < argc) {
+            char *end = NULL;
+            long value = strtol(argv[++arg], &end, 10);
+
+            if (!end || *end || value <= 0 || value > 0x7fffffffL) {
+                fprintf(stderr, "ps: invalid process id\n");
+                return 1;
+            }
+            selected_pid = (int)value;
+        } else if (strcmp(argv[arg], "-o") == 0 && arg + 1 < argc) {
+            const char *format = argv[++arg];
+
+            if (strcmp(format, "comm=") == 0) {
+                comm_only = 1;
+                comm_header = 0;
+            } else if (strcmp(format, "comm") == 0) {
+                comm_only = 1;
+                comm_header = 1;
+            } else {
+                fprintf(stderr, "ps: unsupported format: %s\n", format);
+                return 1;
+            }
+        } else {
+            fprintf(stderr, "usage: ps [-p pid] [-o comm[=]]\n");
+            return 1;
+        }
+    }
 
     dirbuf = malloc(PROC_BUF_SIZE);
     if (!dirbuf) {
@@ -184,7 +216,12 @@ int main(void)
         return 1;
     }
 
-    printf("%5s %-8s %8s %s\n", "PID", "TTY", "TIME", "CMD");
+    if (comm_only) {
+        if (comm_header)
+            printf("COMMAND\n");
+    } else {
+        printf("%5s %-8s %8s %s\n", "PID", "TTY", "TIME", "CMD");
+    }
 
     while ((n = getdents(fd, dirbuf, PROC_BUF_SIZE)) > 0) {
         char *ptr = dirbuf;
@@ -205,6 +242,15 @@ int main(void)
                 sprintf(path, "/proc/%s/stat", e->d_name);
                 if (read_file(path, statbuf, sizeof(statbuf)) >= 0 &&
                     parse_proc_stat(statbuf, &pid, &tty, &runtime_ticks, name, sizeof(name)) == 0) {
+                    if (selected_pid > 0 && pid != selected_pid) {
+                        ptr += e->d_reclen;
+                        continue;
+                    }
+                    if (comm_only) {
+                        printf("%s\n", name);
+                        ptr += e->d_reclen;
+                        continue;
+                    }
                     format_time(runtime_ticks, timebuf, sizeof(timebuf));
                     printf("%5d ", pid);
                     print_tty(tty);

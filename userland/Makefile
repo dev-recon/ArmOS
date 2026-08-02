@@ -533,6 +533,8 @@ install: $(TARGETS)
 		rm -f $(USERFS_OPT)/$$name/bin/$$name; \
 		$(STRIP) --strip-all $(USERFS_BIN)/$$name; \
 	done
+	ln -sfn ../../bin/true $(USERFS_USR_BIN)/true
+	ln -sfn ../../bin/false $(USERFS_USR_BIN)/false
 	@for name in $(PROGRAMS); do \
 		rm -f $(USERFS_USR_BIN)/$$name; \
 		cp $(OUT_USR_BIN)/$$name $(USERFS_USR_BIN)/$$name; \

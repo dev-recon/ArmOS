@@ -350,6 +350,8 @@ typedef struct {
     uint32_t blocked;
     uint32_t in_handler;
     uint32_t return_override;
+    uint32_t suspend_saved_mask;
+    bool suspend_active;
     
     task_context_t saved_context;
 } signal_state_t;
@@ -370,6 +372,7 @@ typedef struct {
     int term_signal;
     int stop_signal;
     int stop_reported;
+    int continue_pending;
     uid_t uid, gid;
     mode_t umask;
     uint32_t rlimit_nofile_cur;
@@ -397,6 +400,7 @@ typedef struct {
     pid_t waitpid_pid;          /* PID attendu dans waitpid */
     int* waitpid_status;        /* Pointeur status dans waitpid */
     int waitpid_options;        /* Options waitpid */
+    bool waitpid_active;        /* Bloque actuellement dans waitpid */
     int waitpid_iteration;      /* Numero d'iteration dans waitpid */
     uint32_t waitpid_caller_lr; /* LR pour retourner apres waitpid */
 

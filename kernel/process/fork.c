@@ -399,6 +399,7 @@ void wakeup_parent_under_lock(task_t *proc)
      */
     parent = proc->process->parent;
     if (parent && parent->process &&
+        parent->process->waitpid_active &&
         parent->state == TASK_BLOCKED &&
         parent->process->state == (proc_state_t)PROC_BLOCKED) {
         pid_t wait_pid = parent->process->waitpid_pid;

@@ -40,6 +40,9 @@ The 0.7.4 release keeps the 0.7 common-kernel architecture and adds:
   polling for the `usbd` and `netd` kernel services;
 - deterministic boot ordering that admits secondary schedulers before PID 1
   can print the first framebuffer shell banner.
+- a pinned FreeBSD `/bin/sh` with target-isolated `libedit`, user/root startup
+  profiles, wildcard expansion, interactive job control, and a 511/518
+  imported-test baseline, while `/sbin/mash` remains the recovery shell.
 
 The next release should build on this baseline instead of introducing an
 architecture-private implementation of a common kernel policy.

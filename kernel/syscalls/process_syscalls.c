@@ -47,6 +47,8 @@
 #include <kernel/input.h>
 #include <kernel/pty.h>
 #include <kernel/event_timer.h>
+#include <kernel/pipe.h>
+#include <kernel/signal.h>
 
 #define PIPE_BUF_SIZE 4096
 
@@ -92,6 +94,10 @@ struct pipe_buffer {
     int writers;            /* Nombre d'écrivains */
     int closed_read;        /* Côté lecture fermé */
     int closed_write;       /* Côté écriture fermé */
+    bool named;
+    uint32_t reader_epoch;
+    uint32_t writer_epoch;
+    spinlock_t lock;
 };
 
 struct pipe_inode_info {
@@ -111,6 +117,14 @@ static file_operations_t pipe_write_fops = {
     .write = pipe_write,
     .close = pipe_close,
 };
+
+static file_operations_t pipe_rw_fops = {
+    .read = pipe_read,
+    .write = pipe_write,
+    .close = pipe_close,
+};
+
+static spinlock_t named_pipe_lock = SPINLOCK_INIT("named_pipe");
 
 extern char* resolve_path(const char* path);
 extern inode_operations_t ext2_inode_ops;
@@ -400,13 +414,177 @@ bool can_write(file_t* file) {
     return access_mode == O_WRONLY || access_mode == O_RDWR;
 }
 
+static struct pipe_buffer *pipe_buffer_create(bool named)
+{
+    struct pipe_buffer *buffer = kzalloc(sizeof(*buffer));
+
+    if (!buffer)
+        return NULL;
+    buffer->named = named;
+    buffer->closed_read = 1;
+    buffer->closed_write = 1;
+    init_spinlock_named(&buffer->lock,
+                        named ? "named_fifo_buffer" : "pipe_buffer");
+    return buffer;
+}
+
+static void named_pipe_release_inode(inode_t *inode)
+{
+    struct pipe_buffer *buffer;
+
+    if (!inode)
+        return;
+    buffer = inode->private_data;
+    inode->private_data = NULL;
+    inode->release_private = NULL;
+    if (buffer)
+        kfree(buffer);
+}
+
+static struct pipe_buffer *named_pipe_get_buffer(inode_t *inode)
+{
+    struct pipe_buffer *candidate;
+    struct pipe_buffer *buffer;
+    unsigned long flags;
+
+    candidate = pipe_buffer_create(true);
+    if (!candidate)
+        return NULL;
+
+    spin_lock_irqsave(&named_pipe_lock, &flags);
+    buffer = inode->private_data;
+    if (!buffer) {
+        inode->private_data = candidate;
+        inode->release_private = named_pipe_release_inode;
+        buffer = candidate;
+        candidate = NULL;
+    }
+    spin_unlock_irqrestore(&named_pipe_lock, flags);
+
+    kfree(candidate);
+    return buffer;
+}
+
+int pipe_open_named(inode_t* inode, file_t* file, int flags)
+{
+    struct pipe_inode_info *pipe;
+    struct pipe_buffer *buffer;
+    int access_mode = flags & O_ACCMODE;
+    bool opens_reader;
+    bool opens_writer;
+    uint32_t counterpart_epoch;
+
+    if (!inode || !file || !S_ISFIFO(inode->mode))
+        return -EINVAL;
+    if (access_mode != O_RDONLY && access_mode != O_WRONLY &&
+        access_mode != O_RDWR)
+        return -EINVAL;
+
+    pipe = kzalloc(sizeof(*pipe));
+    if (!pipe)
+        return -ENOMEM;
+    buffer = named_pipe_get_buffer(inode);
+    if (!buffer) {
+        kfree(pipe);
+        return -ENOMEM;
+    }
+    pipe->buffer = buffer;
+    opens_reader = access_mode == O_RDONLY || access_mode == O_RDWR;
+    opens_writer = access_mode == O_WRONLY || access_mode == O_RDWR;
+
+    for (;;) {
+        uint32_t generation = task_poll_generation();
+        unsigned long irq_flags;
+        bool connected;
+
+        spin_lock_irqsave(&buffer->lock, &irq_flags);
+        if (buffer->readers == 0 && buffer->writers == 0) {
+            buffer->read_pos = 0;
+            buffer->write_pos = 0;
+            buffer->count = 0;
+        }
+
+        if (opens_writer && !opens_reader &&
+            (flags & O_NONBLOCK) != 0 && buffer->readers == 0) {
+            spin_unlock_irqrestore(&buffer->lock, irq_flags);
+            kfree(pipe);
+            return -ENXIO;
+        }
+
+        counterpart_epoch = opens_reader ? buffer->writer_epoch :
+                                             buffer->reader_epoch;
+        if (opens_reader) {
+            buffer->readers++;
+            buffer->reader_epoch++;
+            buffer->closed_read = 0;
+        }
+        if (opens_writer) {
+            buffer->writers++;
+            buffer->writer_epoch++;
+            buffer->closed_write = 0;
+        }
+        connected = access_mode == O_RDWR ||
+                    (opens_reader ? buffer->writers > 0 :
+                                    buffer->readers > 0);
+        spin_unlock_irqrestore(&buffer->lock, irq_flags);
+        task_poll_notify_key(buffer);
+
+        if (connected || (flags & O_NONBLOCK) != 0)
+            break;
+
+        for (;;) {
+            int wait_result;
+
+            wait_result = pipe_wait_interruptible(buffer, generation);
+            if (wait_result < 0) {
+                spin_lock_irqsave(&buffer->lock, &irq_flags);
+                connected = opens_reader ?
+                    (buffer->writers > 0 ||
+                     buffer->writer_epoch != counterpart_epoch) :
+                    (buffer->readers > 0 ||
+                     buffer->reader_epoch != counterpart_epoch);
+                if (connected) {
+                    spin_unlock_irqrestore(&buffer->lock, irq_flags);
+                    break;
+                }
+                if (opens_reader && --buffer->readers == 0)
+                    buffer->closed_read = 1;
+                if (opens_writer && --buffer->writers == 0)
+                    buffer->closed_write = 1;
+                spin_unlock_irqrestore(&buffer->lock, irq_flags);
+                task_poll_notify_key(buffer);
+                kfree(pipe);
+                return wait_result;
+            }
+
+            generation = task_poll_generation();
+            spin_lock_irqsave(&buffer->lock, &irq_flags);
+            connected = opens_reader ?
+                (buffer->writers > 0 ||
+                 buffer->writer_epoch != counterpart_epoch) :
+                (buffer->readers > 0 ||
+                 buffer->reader_epoch != counterpart_epoch);
+            spin_unlock_irqrestore(&buffer->lock, irq_flags);
+            if (connected)
+                break;
+        }
+        break;
+    }
+
+    file->type = FILE_TYPE_PIPE;
+    file->private_data = pipe;
+    file->f_op = access_mode == O_RDONLY ? &pipe_read_fops :
+                 access_mode == O_WRONLY ? &pipe_write_fops : &pipe_rw_fops;
+    return 0;
+}
+
 /* Lecture depuis un pipe */
 ssize_t pipe_read(file_t* file, void* buf, size_t count) {
     struct pipe_inode_info *pipe = file->private_data;
     struct pipe_buffer *buffer = pipe->buffer;
     char *user_buf = (char*)buf;
     size_t bytes_read = 0;
-    uint32_t irq_flags;
+    unsigned long irq_flags;
 
     //KDEBUG("ENTERING READING FROM PIPE\n");
     //KDEBUG("file->flags = 0x%08X\n", file->flags);
@@ -419,11 +597,11 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
     while (1) {
         uint32_t generation = task_poll_generation();
 
-        irq_flags = disable_interrupts_save();
+        spin_lock_irqsave(&buffer->lock, &irq_flags);
 
         /* Si pas de données et plus d'écrivains -> EOF */
-        if (buffer->count == 0 && (buffer->writers == 0 || buffer->closed_write)) {
-            restore_interrupts(irq_flags);
+        if (buffer->count == 0 && buffer->writers == 0) {
+            spin_unlock_irqrestore(&buffer->lock, irq_flags);
             return 0;  /* EOF */
         }
 
@@ -435,7 +613,7 @@ ssize_t pipe_read(file_t* file, void* buf, size_t count) {
             bytes_read++;
         }
 
-        restore_interrupts(irq_flags);
+        spin_unlock_irqrestore(&buffer->lock, irq_flags);
 
         if (bytes_read > 0) {
             task_poll_notify_key(buffer);
@@ -456,7 +634,7 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
     struct pipe_buffer *buffer = pipe->buffer;
     const char *user_buf = (const char*)buf;
     size_t bytes_written = 0;
-    uint32_t irq_flags;
+    unsigned long irq_flags;
     
 
     /* Vérifier que c'est ouvert en écriture */
@@ -467,12 +645,22 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
     while (bytes_written < count) {
         uint32_t generation = task_poll_generation();
 
-        irq_flags = disable_interrupts_save();
+        spin_lock_irqsave(&buffer->lock, &irq_flags);
 
         /* Si pas de lecteurs -> SIGPIPE */
-        if (buffer->readers == 0 || buffer->closed_read) {
-            restore_interrupts(irq_flags);
-            return bytes_written > 0 ? (ssize_t)bytes_written : -EPIPE;
+        if (buffer->readers == 0) {
+            spin_unlock_irqrestore(&buffer->lock, irq_flags);
+            if (bytes_written > 0)
+                return (ssize_t)bytes_written;
+
+            /*
+             * POSIX requires a write to a pipe with no readers to generate
+             * SIGPIPE.  EPIPE remains observable when SIGPIPE is caught or
+             * ignored.  Signal delivery must happen after dropping the pipe
+             * lock because it can wake or terminate the current process.
+             */
+            (void)send_signal(task_current_local(), SIGPIPE);
+            return -EPIPE;
         }
 
         //KDEBUG("WRITING TO PIPE\n");
@@ -485,7 +673,7 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
             bytes_written++;
         }
 
-        restore_interrupts(irq_flags);
+        spin_unlock_irqrestore(&buffer->lock, irq_flags);
         if (bytes_written > 0)
             task_poll_notify_key(buffer);
 
@@ -506,12 +694,15 @@ ssize_t pipe_write(file_t* file, const void* buf, size_t count) {
 int pipe_close(file_t* file) {
     struct pipe_inode_info *pipe = file->private_data;
     struct pipe_buffer *buffer = pipe->buffer;
+    unsigned long irq_flags;
+    bool free_buffer;
     
     //KDEBUG("CLOSING PIPE\n");
 
     /* Déterminer si c'était un lecteur ou écrivain */
     int access_mode = file->flags & O_ACCMODE;
 
+    spin_lock_irqsave(&buffer->lock, &irq_flags);
     if (access_mode == O_RDONLY || access_mode == O_RDWR) {
         buffer->readers--;
         if (buffer->readers == 0) {
@@ -526,13 +717,13 @@ int pipe_close(file_t* file) {
         }
     }
     
+    free_buffer = !buffer->named && buffer->readers == 0 &&
+                  buffer->writers == 0;
+    spin_unlock_irqrestore(&buffer->lock, irq_flags);
     task_poll_notify_key(buffer);
 
-    /* Libérer si plus personne n'utilise le pipe */
-    if (buffer->readers == 0 && buffer->writers == 0) {
-        //KDEBUG("NO MORE USERS OF THIS PIPE. Freeing it.\n");
+    if (free_buffer)
         kfree(buffer);
-    }
     
     kfree(pipe);
     //KDEBUG("PIPE CLOSED\n");
@@ -558,7 +749,7 @@ int sys_pipe(int pipefd[2])
     }
 
     /* Créer le buffer du pipe */
-    buffer = kzalloc(sizeof(struct pipe_buffer));
+    buffer = pipe_buffer_create(false);
     if (!buffer) {
         return -ENOMEM;
     }
@@ -571,6 +762,8 @@ int sys_pipe(int pipefd[2])
     buffer->count = 0;
     buffer->closed_read = 0;
     buffer->closed_write = 0;
+    buffer->reader_epoch = 1;
+    buffer->writer_epoch = 1;
     
     /* Créer l'inode pipe */
     inode = create_inode();
@@ -1295,7 +1488,7 @@ int sys_sysconf(int name)
 {
     switch (name) {
     case ARMOS_SC_ARG_MAX:
-        return 65536;
+        return (int)ARMOS_ARG_MAX;
     case ARMOS_SC_CHILD_MAX:
         return MAX_PROCESSES;
     case ARMOS_SC_CLK_TCK:
@@ -2032,7 +2225,9 @@ int sys_chdir(const char* path)
 {
     char* kernel_path;
     char* abs_path;
+    char physical_path[MAX_PATH];
     inode_t* inode;
+    int result;
     task_t *task = task_current_local();
 
     if (!task || !task->process) return -EFAULT;
@@ -2040,12 +2235,10 @@ int sys_chdir(const char* path)
     kernel_path = copy_string_from_user(path);
     if (!kernel_path) return -EFAULT;
 
-    /* Résoudre en chemin absolu puis canonicaliser (. et .. compris) */
-    abs_path = resolve_path(kernel_path);
+    /* Preserve components so VFS follows symlinks before applying '..'. */
+    result = resolve_path_at_raw(ARMOS_AT_FDCWD, kernel_path, &abs_path);
     kfree(kernel_path);
-    if (!abs_path) return -ENOMEM;
-
-    path_canonicalize(abs_path);
+    if (result < 0) return result;
 
     int search_ret = vfs_check_search_permission(abs_path, true);
     if (search_ret < 0) {
@@ -2053,7 +2246,8 @@ int sys_chdir(const char* path)
         return search_ret;
     }
 
-    inode = path_lookup(abs_path);
+    inode = path_lookup_resolved(abs_path, true,
+                                 physical_path, sizeof(physical_path));
     if (!inode) {
         kfree(abs_path);
         return -ENOENT;
@@ -2065,7 +2259,7 @@ int sys_chdir(const char* path)
         return -ENOTDIR;
     }
 
-    strncpy(task->process->cwd, abs_path, MAX_PATH - 1);
+    strncpy(task->process->cwd, physical_path, MAX_PATH - 1);
     task->process->cwd[MAX_PATH - 1] = '\0';
 
     put_inode(inode);
@@ -3076,8 +3270,12 @@ int sys_sched_yield(void)
 static int clock_gettime_value(int clock_id, armos_timespec_t *value)
 {
     if (clock_id == ARMOS_CLOCK_REALTIME) {
-        value->sec = (int64_t)get_current_time();
-        value->nsec = 0;
+        uint64_t seconds;
+        uint32_t nanoseconds;
+
+        get_realtime(&seconds, &nanoseconds);
+        value->sec = (int64_t)seconds;
+        value->nsec = (int64_t)nanoseconds;
     } else if (clock_id == ARMOS_CLOCK_MONOTONIC) {
         uint32_t frequency = get_timer_frequency();
         uint32_t remainder;
@@ -3117,8 +3315,8 @@ int sys_clock_getres(int clock_id, armos_timespec_t *res)
     armos_timespec_t value;
 
     if (clock_id == ARMOS_CLOCK_REALTIME) {
-        value.sec = 1;
-        value.nsec = 0;
+        value.sec = 0;
+        value.nsec = 1000000000u / TIMER_FREQ;
     } else if (clock_id == ARMOS_CLOCK_MONOTONIC) {
         uint32_t frequency = get_timer_frequency();
 
