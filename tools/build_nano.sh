@@ -14,6 +14,7 @@ STRIP="${ARCH}strip"
 HOST_CC="${HOST_CC:-cc}"
 NANO_VERSION="${NANO_VERSION:-8.7}"
 NANO_PORT_REVISION="${NANO_PORT_REVISION:-2}"
+NANO_CONFIG_CACHE_REVISION="${NANO_CONFIG_CACHE_REVISION:-2}"
 NANO_URL="${NANO_URL:-https://www.nano-editor.org/dist/v8/nano-$NANO_VERSION.tar.xz}"
 
 WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/nano}"
@@ -142,6 +143,15 @@ gl_cv_glob_overflows_stack=no
 gl_cv_have_include_next=yes
 gt_cv_func_gettext_libc=no
 gt_cv_func_gettext_libintl=no
+# Gnulib's locale discovery probes execute conftest binaries even while
+# cross-compiling.  ArmOS ships no locale database yet and Nano is configured
+# without NLS, so cache the only truthful result instead of running target
+# executables on the build host.
+gt_cv_locale_en_utf8=none
+gt_cv_locale_fr=none
+gt_cv_locale_fr_utf8=none
+gt_cv_locale_ja=none
+gt_cv_locale_zh_CN=none
 am_cv_func_iconv=no
 CACHE
 
@@ -155,6 +165,7 @@ NANO_LIBS="$BUILD_DIR/armos_nano_compat.o $NCURSES_PREFIX/lib/libncurses.a $NEWL
 if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/Makefile" <<EOF
 bundle=nano
 source=$SOURCE_CONTRACT
+configure_cache_revision=$NANO_CONFIG_CACHE_REVISION
 target_arch=$TARGET_ARCH
 target_platform=$TARGET_PLATFORM
 target_triplet=$TARGET_TRIPLET
