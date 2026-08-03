@@ -75,12 +75,30 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 
+docker_command=(docker)
+if ! docker info >/dev/null 2>&1; then
+    if [ "$(uname -s)" = "Linux" ] && command -v sudo >/dev/null 2>&1; then
+        echo "=== Docker is not accessible as $(id -un); trying through sudo ==="
+        if sudo docker info >/dev/null; then
+            docker_command=(sudo docker)
+        else
+            echo "error: the Docker daemon is unavailable, even through sudo" >&2
+            echo "start Docker, or grant the current user access to its socket" >&2
+            exit 1
+        fi
+    else
+        echo "error: the Docker daemon is unavailable or access is denied" >&2
+        echo "start Docker and grant the current user access to its socket" >&2
+        exit 1
+    fi
+fi
+
 if [ "$BUILD_IMAGE" = "1" ] ||
-   ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+   ! "${docker_command[@]}" image inspect "$IMAGE" >/dev/null 2>&1; then
     if [ "$BUILD_IMAGE" != "1" ]; then
         echo "=== Container image $IMAGE not found; building it automatically ==="
     fi
-    docker build --pull \
+    "${docker_command[@]}" build --pull \
         --file "$ROOT_DIR/tools/container/Dockerfile" \
         --tag "$IMAGE" \
         "$ROOT_DIR"
@@ -108,4 +126,4 @@ else
     fi
 fi
 
-exec docker "${docker_args[@]}"
+exec "${docker_command[@]}" "${docker_args[@]}"

@@ -52,7 +52,9 @@ The shell launcher follows the same contract:
 
 The image is created automatically when absent. `--build-image` forces a
 refresh. On native Linux the launcher maps the host UID/GID into the container
-so generated files do not become root-owned.
+so generated files do not become root-owned. If the current user cannot access
+the Docker socket, the launcher transparently retries Docker through `sudo`;
+the container itself still runs with the invoking user's UID/GID.
 
 ## QEMU
 
