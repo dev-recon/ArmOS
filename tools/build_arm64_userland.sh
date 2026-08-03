@@ -38,6 +38,37 @@ REBUILD_NEWLIB=0
 CLEAN=0
 INSTALL=0
 
+is_aarch64_elf_output()
+{
+    local binary="$1"
+    local headers
+
+    # Capture the complete output before inspecting it.  With pipefail,
+    # "readelf | grep -q" is racy for large archives: grep exits after its
+    # first match and readelf can then fail with SIGPIPE.  Inspect every ELF
+    # header so a static archive containing even one foreign member is also
+    # rejected.
+    if ! headers="$(aarch64-elf-readelf -h "$binary" 2>/dev/null)"; then
+        return 1
+    fi
+
+    awk '
+        /^[[:space:]]*Class:/ {
+            classes++
+            if ($0 !~ /ELF64/)
+                bad = 1
+        }
+        /^[[:space:]]*Machine:/ {
+            machines++
+            if ($0 !~ /AArch64/)
+                bad = 1
+        }
+        END {
+            exit !(classes > 0 && classes == machines && bad == 0)
+        }
+    ' <<< "$headers"
+}
+
 usage()
 {
     cat <<'EOF'
@@ -166,8 +197,7 @@ while IFS= read -r binary; do
         echo "error: expected AArch64 userland output is missing: $binary" >&2
         exit 1
     }
-    if ! aarch64-elf-readelf -h "$binary" | grep -q 'Class:.*ELF64' ||
-       ! aarch64-elf-readelf -h "$binary" | grep -q 'Machine:.*AArch64'; then
+    if ! is_aarch64_elf_output "$binary"; then
         echo "error: expected AArch64 ELF64 output was not produced: $binary" >&2
         exit 1
     fi
@@ -197,8 +227,7 @@ if [ "$INSTALL" -eq 1 ]; then
         relative="${binary#"$OUT_DIR"/}"
         installed="$USERFS_DIR/$relative"
         if [ ! -f "$installed" ] ||
-           ! aarch64-elf-readelf -h "$installed" | grep -q 'Class:.*ELF64' ||
-           ! aarch64-elf-readelf -h "$installed" | grep -q 'Machine:.*AArch64'; then
+           ! is_aarch64_elf_output "$installed"; then
             echo "error: invalid installed AArch64 executable: $installed" >&2
             exit 1
         fi
