@@ -67,10 +67,12 @@ blitter, and rejects a library that still contains the latter.
 Rebuilding QEMU alone is insufficient because QEMU links virglrenderer as a
 host dynamic library.
 
-The QEMU configuration disables Nettle, SPICE, GTK and Cocoa intentionally.
-ArmOS VirGL uses one tested SDL/OpenGL path on every supported host; disabling
-Nettle also prevents incompatible host versions from being selected merely
-because they happen to be installed.
+The QEMU configuration starts from `--without-default-features`, then enables
+only system emulation, TCG, Pixman, internal libfdt, SDL, OpenGL, VirGL and
+libslirp. Cocoa is additionally retained on macOS for the non-VirGL 2D path;
+VirGL continues to use SDL/OpenGL. This explicit contract prevents unrelated
+host libraries from silently expanding or changing the build after packages
+are installed.
 
 ## Validation and execution
 

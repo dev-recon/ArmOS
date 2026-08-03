@@ -23,9 +23,11 @@ case "$container_arch" in
         ;;
 esac
 
-work_dir="$ROOT_DIR/build/host-tools/qemu/$host_id/qemu-$QEMU_VERSION"
-prefix="$work_dir/install"
-contract_file="$work_dir/.armos-container-qemu.contract"
+artifact_dir="$ROOT_DIR/build/host-tools/qemu/$host_id/qemu-$QEMU_VERSION"
+work_dir="${ARMOS_CONTAINER_QEMU_WORK_DIR:-/tmp/armos-qemu/$host_id/qemu-$QEMU_VERSION}"
+download_dir="${ARMOS_CONTAINER_QEMU_DOWNLOAD_DIR:-$ROOT_DIR/build/downloads}"
+prefix="$artifact_dir/install"
+contract_file="$artifact_dir/.armos-container-qemu.contract"
 qemu_arm="$prefix/bin/qemu-system-arm"
 qemu_arm64="$prefix/bin/qemu-system-aarch64"
 
@@ -59,7 +61,8 @@ if [ -f "$contract_file" ] &&
     echo "=== Container QEMU cache: reusing $prefix ==="
 else
     echo "=== Building container QEMU $QEMU_VERSION for $host_id ==="
-    WORK_DIR="$work_dir" PREFIX="$prefix" \
+    mkdir -p "$artifact_dir" "$download_dir"
+    WORK_DIR="$work_dir" DOWNLOAD_DIR="$download_dir" PREFIX="$prefix" \
         "$ROOT_DIR/tools/build_qemu_10_0_2.sh"
     printf '%s\n' "$contract" > "$contract_file"
 fi

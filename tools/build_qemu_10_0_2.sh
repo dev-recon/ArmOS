@@ -8,7 +8,7 @@ QEMU_VERSION="10.0.2"
 QEMU_URL="https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz"
 QEMU_SHA256="ef786f2398cb5184600f69aef4d5d691efd44576a3cff4126d38d4c6fec87759"
 WORK_DIR="${WORK_DIR:-$ROOT_DIR/build/qemu-$QEMU_VERSION}"
-DOWNLOAD_DIR="$WORK_DIR/download"
+DOWNLOAD_DIR="${DOWNLOAD_DIR:-$WORK_DIR/download}"
 ARCHIVE="$DOWNLOAD_DIR/qemu-$QEMU_VERSION.tar.xz"
 SOURCE_DIR="$WORK_DIR/src"
 BUILD_DIR="$WORK_DIR/build"
@@ -66,14 +66,17 @@ done
 QEMU_CONFIGURE_ARGS=(
     "--prefix=$PREFIX"
     --target-list=arm-softmmu,aarch64-softmmu
+    --without-default-features
+    --enable-system
+    --enable-tcg
+    --enable-pixman
+    --enable-fdt=internal
     --disable-docs
     --disable-werror
     --enable-sdl
     --enable-opengl
     --enable-virglrenderer
-    --disable-nettle
-    --disable-spice
-    --disable-spice-protocol
+    --enable-slirp
 )
 QEMU_REQUIRED_DISPLAY_BACKENDS=(sdl)
 if [ "$(uname -s)" = "Linux" ]; then

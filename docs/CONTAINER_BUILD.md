@@ -82,6 +82,12 @@ QEMU under `build/qemu-10.0.2/install`. Repeating the command validates and
 reuses the existing emulator unless its build script, patches or VirGL
 dependency contract changed.
 
+QEMU sources and objects are intentionally extracted in the container's Linux
+filesystem rather than the Docker Desktop bind mount. This avoids the severe
+small-file metadata penalty seen on macOS and Windows. The verified source
+archive remains cached under `build/downloads/`, while the installed emulator
+and its contract remain in `build/host-tools/qemu/`.
+
 The produced emulator is a Linux program. It is directly usable for automated
 tests inside the build container and from a matching Linux/WSL environment.
 Native graphical windows still require a native host QEMU because Docker
