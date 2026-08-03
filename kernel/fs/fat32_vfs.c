@@ -188,7 +188,6 @@ void fat32_free_cluster_chain(uint32_t start_cluster) {
     if (start_cluster < 2 ) return;
     
     uint32_t cluster = start_cluster;
-    uint32_t clusters_freed = 0;
     
     //KDEBUG("Freeing cluster chain starting at %u\n", start_cluster);
     
@@ -197,15 +196,12 @@ void fat32_free_cluster_chain(uint32_t start_cluster) {
         
         /* Libérer le cluster actuel */
         fat32_set_cluster_value(cluster, FAT32_FREE_CLUSTER);
-        clusters_freed++;
         
         //KDEBUG("Freed cluster %u\n", cluster);
         
         /* Passer au suivant */
         cluster = next_cluster;
     }
-    
-    //KDEBUG("Freed %u clusters total\n", clusters_freed);
 }
 
 static int fat32_inode_rename(inode_t* old_dir, const char* old_name,
