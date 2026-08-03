@@ -118,6 +118,10 @@ if [ "$BUILD_QEMU" = "1" ]; then
         echo "error: --qemu cannot be combined with $BUILD_OPTION" >&2
         exit 2
     fi
+    if [ "$(uname -s)" != "Linux" ]; then
+        echo "=== Note: --qemu produces a Linux QEMU for container/WSL testing ==="
+        echo "A native host graphics window requires tools/build_qemu_10_0_2.sh."
+    fi
     docker_args+=("$IMAGE" ./tools/container/build-qemu.sh)
 else
     docker_args+=("$IMAGE" ./build.sh)

@@ -9,11 +9,23 @@ select_arm_qemu() {
     local target_arch="${3:-arm32}"
     local qemu_name="qemu-system-arm"
     local pinned_qemu
+    local host_tools_qemu=""
+    local host_id=""
 
     if [ "$target_arch" = "arm64" ]; then
         qemu_name="qemu-system-aarch64"
     fi
     pinned_qemu="$root_dir/build/qemu-$QEMU_PINNED_VERSION/install/bin/$qemu_name"
+
+    if [ "$(uname -s)" = "Linux" ]; then
+        case "$(uname -m)" in
+            x86_64|amd64) host_id="linux-amd64" ;;
+            aarch64|arm64) host_id="linux-arm64" ;;
+        esac
+        if [ -n "$host_id" ]; then
+            host_tools_qemu="$root_dir/build/host-tools/qemu/$host_id/qemu-$QEMU_PINNED_VERSION/install/bin/$qemu_name"
+        fi
+    fi
 
     if [ -n "$explicit" ]; then
         printf '%s\n' "$explicit"
@@ -21,6 +33,8 @@ select_arm_qemu() {
         printf '%s\n' "$QEMU"
     elif [ -x "$pinned_qemu" ]; then
         printf '%s\n' "$pinned_qemu"
+    elif [ -n "$host_tools_qemu" ] && [ -x "$host_tools_qemu" ]; then
+        printf '%s\n' "$host_tools_qemu"
     elif [ -x "/opt/homebrew/bin/$qemu_name" ]; then
         printf '%s\n' "/opt/homebrew/bin/$qemu_name"
     elif [ -x "/usr/local/bin/$qemu_name" ]; then

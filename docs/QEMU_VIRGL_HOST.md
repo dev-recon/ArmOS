@@ -74,6 +74,11 @@ VirGL continues to use SDL/OpenGL. This explicit contract prevents unrelated
 host libraries from silently expanding or changing the build after packages
 are installed.
 
+On Linux, the boot scripts automatically select the matching pinned QEMU from
+`build/host-tools/qemu/linux-<architecture>/` when present. They also require
+SDL for VirGL instead of silently choosing GTK, whose OpenGL context is not
+reliable in every desktop or nested-virtualization environment.
+
 ## Validation and execution
 
 The build fails unless both installed system emulators report the SDL backend

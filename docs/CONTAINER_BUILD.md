@@ -90,10 +90,21 @@ and its contract remain in `build/host-tools/qemu/`.
 
 The produced emulator is a Linux program. It is directly usable for automated
 tests inside the build container and from a matching Linux/WSL environment.
+On Linux, `boot.sh` and `boot-graphics.sh` automatically prefer the matching
+copy under `build/host-tools/qemu/linux-<architecture>/` over a distribution
+QEMU. VirGL uses the tested SDL/OpenGL display path; GTK remains available only
+for the unaccelerated 2D path.
 Native graphical windows still require a native host QEMU because Docker
 Desktop does not provide a portable SDL/VirGL window transport on Windows and
 macOS. Build that native copy with `tools/build_qemu_10_0_2.sh`; both copies can
 coexist in the same checkout.
+
+On macOS, the complete native setup is:
+
+```sh
+./tools/bootstrap_qemu_10_0_2_host_deps.sh --install
+./tools/build_qemu_10_0_2.sh
+```
 
 ## Raspberry Pi SD cards
 

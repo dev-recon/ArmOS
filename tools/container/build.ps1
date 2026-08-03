@@ -61,6 +61,8 @@ if ($Qemu) {
     if ($Rebuild -or $Reconfigure) {
         throw "-Qemu cannot be combined with -Rebuild or -Reconfigure"
     }
+    Write-Host "Note: -Qemu produces a Linux QEMU for container/WSL testing."
+    Write-Host "A native Windows graphics window requires a native Windows QEMU."
     $ContainerCommand = @("./tools/container/build-qemu.sh")
 }
 

@@ -30,7 +30,12 @@ select_display() {
                 display_help="$("$QEMU" -display help 2>/dev/null || true)"
                 if ! printf '%s\n' "$display_help" | grep -qx sdl; then
                     echo "Error: VirGL on macOS requires QEMU's SDL display backend." >&2
-                    echo "Rebuild QEMU with SDL support, or use QEMU_GPU_ACCEL=2d." >&2
+                    echo "Selected QEMU: $(command -v "$QEMU")" >&2
+                    echo "The QEMU produced by tools/container/build.sh --qemu is a Linux binary." >&2
+                    echo "Build the native macOS copy with:" >&2
+                    echo "  ./tools/bootstrap_qemu_10_0_2_host_deps.sh --install" >&2
+                    echo "  ./tools/build_qemu_10_0_2.sh" >&2
+                    echo "Or use QEMU_GPU_ACCEL=2d." >&2
                     return 1
                 fi
                 printf '%s\n' "sdl,show-cursor=off"
@@ -40,7 +45,16 @@ select_display() {
             ;;
         Linux)
             display_help="$("$QEMU" -display help 2>/dev/null || true)"
-            if printf '%s\n' "$display_help" | grep -qx gtk; then
+            if [ "${QEMU_GPU_ACCEL:-2d}" = "virgl" ]; then
+                if ! printf '%s\n' "$display_help" | grep -qx sdl; then
+                    echo "Error: VirGL on Linux requires QEMU's SDL display backend." >&2
+                    echo "Selected QEMU: $(command -v "$QEMU")" >&2
+                    echo "Build the pinned QEMU with ./tools/container/build.sh --qemu," >&2
+                    echo "or use QEMU_GPU_ACCEL=2d." >&2
+                    return 1
+                fi
+                printf '%s\n' "sdl,show-cursor=off"
+            elif printf '%s\n' "$display_help" | grep -qx gtk; then
                 printf '%s\n' "gtk,show-cursor=off"
             elif printf '%s\n' "$display_help" | grep -qx sdl; then
                 printf '%s\n' "sdl,show-cursor=off"
@@ -158,6 +172,7 @@ fi
 echo "=== Booting existing ${QEMU_KERNEL_IMAGE} with virtio-gpu ==="
 echo "UART console stays on this terminal; graphics output opens in a QEMU window."
 echo "QEMU: $(printf '%s\n' "$QEMU_VERSION_OUTPUT" | head -n 1)"
+echo "QEMU binary: $(command -v "$QEMU")"
 echo "Platform: ${TARGET_ARCH}/${TARGET_PLATFORM}"
 echo "Machine: ${QEMU_MACHINE}, CPU: ${QEMU_CPU}"
 echo "Memory: ${QEMU_MEMORY}"
