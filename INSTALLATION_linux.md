@@ -43,6 +43,8 @@ sudo apt install -y \
   procps \
   curl \
   xz-utils \
+  bison \
+  flex \
   gcc-arm-none-eabi \
   binutils-arm-none-eabi \
   qemu-system-arm \
@@ -68,6 +70,8 @@ Tool purpose:
 - `dosfstools`: FAT image creation (`mkfs.fat`)
 - `e2fsprogs`: ext2 tools (`mke2fs`, `debugfs`, `e2fsck`)
 - `curl`, `xz-utils`: optional source package download/extraction helpers
+- `bison`, `flex`: host-side parser and lexer generators required by the
+  complete BSD userland and other imported source bundles
 - `ninja-build`, `pkg-config`, `python3-venv`, `libglib2.0-dev`,
   `libpixman-1-dev`: core host dependencies for the exact QEMU 10.0.2 build
 - `libgtk-3-dev`: GTK window backend used by `boot-graphics.sh` with the
@@ -118,7 +122,14 @@ Where the distribution does not package `aarch64-elf-gcc`, install the
 [Homebrew formula](https://formulae.brew.sh/formula/aarch64-elf-gcc):
 
 ```sh
-brew install aarch64-elf-gcc
+brew install aarch64-elf-gcc bison flex
+```
+
+When Bison comes from Homebrew, ensure its executable directory precedes an
+older distribution copy:
+
+```sh
+export PATH="$(brew --prefix bison)/bin:$PATH"
 ```
 
 ## 3. Clone The Repository
@@ -184,6 +195,8 @@ arm-none-eabi-ld --version
 arm-none-eabi-objcopy --version
 aarch64-elf-gcc --version        # required for ARM64 targets
 aarch64-elf-objcopy --version
+bison --version
+flex --version
 qemu-system-arm --version
 qemu-system-aarch64 --version
 mkfs.fat -V
@@ -405,6 +418,18 @@ Then verify:
 ```sh
 which arm-none-eabi-gcc
 ```
+
+### `bison` or `flex` not found
+
+Complete userland profiles generate parsers and lexers for imported tools on
+the host. Install both generators before restarting the incremental build:
+
+```sh
+sudo apt install bison flex
+```
+
+Already completed bundles remain cached; neither `make clean` nor
+`./build.sh --rebuild` is required.
 
 ### FAT tools not found
 

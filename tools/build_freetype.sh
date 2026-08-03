@@ -26,6 +26,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FREETYPE_VERSION="${FREETYPE_VERSION:-2.14.3}"
 FREETYPE_ARCHIVE="freetype-${FREETYPE_VERSION}.tar.xz"
 FREETYPE_URL="${FREETYPE_URL:-https://download.savannah.gnu.org/releases/freetype/$FREETYPE_ARCHIVE}"
+FREETYPE_MIRROR_URL="${FREETYPE_MIRROR_URL:-https://download-mirror.savannah.gnu.org/releases/freetype/$FREETYPE_ARCHIVE}"
+FREETYPE_FALLBACK_URL="${FREETYPE_FALLBACK_URL:-https://downloads.sourceforge.net/freetype/$FREETYPE_ARCHIVE}"
 FREETYPE_SHA256="${FREETYPE_SHA256:-36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f}"
 
 ARCH="${ARCH:-arm-none-eabi-}"
@@ -61,16 +63,47 @@ verify_archive()
         echo "error: checksum mismatch for $ARCHIVE_PATH" >&2
         echo "expected: $FREETYPE_SHA256" >&2
         echo "actual:   $actual" >&2
-        exit 1
+        return 1
     fi
+}
+
+download_archive()
+{
+    local partial="$ARCHIVE_PATH.part"
+    local url
+
+    rm -f "$partial"
+    for url in "$FREETYPE_URL" "$FREETYPE_MIRROR_URL" \
+               "$FREETYPE_FALLBACK_URL"; do
+        [ -n "$url" ] || continue
+        echo "=== Downloading $FREETYPE_ARCHIVE ==="
+        echo "Source: $url"
+        if curl -L --fail --retry 4 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 20 --output "$partial" "$url"; then
+            mv "$partial" "$ARCHIVE_PATH"
+            return 0
+        fi
+        rm -f "$partial"
+        echo "warning: FreeType source unavailable from $url; trying next mirror" >&2
+    done
+
+    echo "error: unable to download $FREETYPE_ARCHIVE from any configured mirror" >&2
+    return 1
 }
 
 if [ ! -f "$SRC_DIR/include/freetype/freetype.h" ]; then
     mkdir -p "$DOWNLOAD_DIR"
-    if [ ! -f "$ARCHIVE_PATH" ]; then
-        curl -L --fail --output "$ARCHIVE_PATH" "$FREETYPE_URL"
+    if [ -f "$ARCHIVE_PATH" ] && ! verify_archive; then
+        echo "warning: removing incomplete or invalid FreeType archive" >&2
+        rm -f "$ARCHIVE_PATH"
     fi
-    verify_archive
+    if [ ! -f "$ARCHIVE_PATH" ]; then
+        download_archive
+    fi
+    if ! verify_archive; then
+        rm -f "$ARCHIVE_PATH"
+        exit 1
+    fi
     rm -rf "$SOURCE_ROOT"
     mkdir -p "$SOURCE_ROOT"
     tar -xJf "$ARCHIVE_PATH" -C "$SOURCE_ROOT"

@@ -60,6 +60,7 @@ brew install dosfstools
 brew install e2fsprogs
 brew install curl
 brew install xz
+brew install bison flex
 brew install glib pixman ninja pkg-config
 ```
 
@@ -77,6 +78,8 @@ Tool purpose:
 - `e2fsprogs`: ext2 tools (`mke2fs`, `debugfs`, `e2fsck`)
 - `curl`: optional newlib source download when the local archive is absent
 - `xz`: archive support for some upstream source packages
+- `bison`, `flex`: host-side parser and lexer generators required by the
+  complete BSD userland and other imported source bundles
 - `glib`, `pixman`, `ninja`, `pkg-config`: host dependencies for the exact
   repo-local QEMU 10.0.2 build
 
@@ -91,6 +94,7 @@ directory. For an interactive shell, this is still useful:
 ```sh
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
 export PATH="/opt/homebrew/opt/e2fsprogs/sbin:$PATH"
+export PATH="/opt/homebrew/opt/bison/bin:$PATH"
 ```
 
 For Intel Homebrew:
@@ -98,6 +102,7 @@ For Intel Homebrew:
 ```sh
 export PATH="/usr/local/bin:/usr/local/sbin:$PATH"
 export PATH="/usr/local/opt/e2fsprogs/sbin:$PATH"
+export PATH="/usr/local/opt/bison/bin:$PATH"
 ```
 
 To make it permanent, add the relevant lines to `~/.zshrc`.
@@ -149,6 +154,8 @@ arm-none-eabi-ld --version
 arm-none-eabi-objcopy --version
 aarch64-elf-gcc --version
 aarch64-elf-objcopy --version
+bison --version
+flex --version
 qemu-system-arm --version
 qemu-system-aarch64 --version
 mkfs.fat -V
@@ -402,6 +409,17 @@ Install the cross compiler and reopen your shell:
 brew install arm-none-eabi-gcc
 which arm-none-eabi-gcc
 ```
+
+### `bison` or `flex` not found
+
+Install both host-side generators, then restart the same incremental build:
+
+```sh
+brew install bison flex
+export PATH="$(brew --prefix bison)/bin:$PATH"
+```
+
+No clean rebuild is required.
 
 ### `mke2fs` or `debugfs` not found
 
