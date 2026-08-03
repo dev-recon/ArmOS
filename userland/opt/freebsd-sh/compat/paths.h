@@ -3,9 +3,9 @@
 #define ARMOS_FREEBSD_SH_PATHS_H
 
 /*
- * Keep mash installed as ArmOS' recovery /bin/sh until the promotion gate is
- * met, but make the port's POSIX ENOEXEC fallback recurse through itself.
- * This is the path used for executable text files without a shebang.
+ * Keep the port's POSIX ENOEXEC fallback inside FreeBSD sh.  /bin/sh and
+ * /bin/freebsd-sh resolve to this executable; mash remains available through
+ * /sbin/mash as the recovery shell.
  */
 #define _PATH_BSHELL   "/bin/freebsd-sh"
 #define _PATH_CONSOLE  "/dev/tty0"

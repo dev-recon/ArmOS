@@ -106,7 +106,11 @@ int wcswidth(const wchar_t *, size_t);
 ssize_t getline(char **, size_t *, FILE *);
 int asprintf(char **, const char *, ...);
 
+typedef int (*armos_qsort_s_comparator_t)(const void *, const void *, void *);
+void armos_qsort_s(void *, size_t, size_t, armos_qsort_s_comparator_t,
+    void *);
+
 #define qsort_s(base, count, size, compare, context) \
-    qsort_r((base), (count), (size), (compare), (context))
+    armos_qsort_s((base), (count), (size), (compare), (context))
 
 #endif /* ARMOS_SH_COMPAT_H */

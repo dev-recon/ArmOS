@@ -3,7 +3,10 @@
 PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin:/opt/nano/bin
 LANG=C.UTF-8
 TERM=${TERM:-armos}
-PS1='root# '
+if test "$TERM" = foot; then
+	TERM=armos
+fi
+PS1="${USER:-root}@sh#> "
 HISTSIZE=1000
 HISTFILE=${HOME}/.sh_history
 export PATH LANG TERM PS1 HISTSIZE HISTFILE

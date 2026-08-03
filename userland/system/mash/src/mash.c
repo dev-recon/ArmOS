@@ -567,6 +567,9 @@ static void shell_set_default_env(const char *name, const char *value)
 }
 
 static void shell_init_env(char **envp) {
+    char default_prompt[96];
+    const char *user;
+
     script_frames[0].name = "mash";
     script_frames[0].argc = 0;
     shell_import_environ(envp);
@@ -574,7 +577,12 @@ static void shell_init_env(char **envp) {
     shell_set_default_env("HOME", "/home/user");
     shell_set_default_env("USER", "user");
     shell_set_default_env("PWD", "/");
-    shell_set_default_env("PS1", "mash$> ");
+    user = shell_getenv("USER");
+    if (!user || !*user)
+        user = "user";
+    snprintf(default_prompt, sizeof(default_prompt), "%s@mash%s> ", user,
+             geteuid() == 0 ? "#" : "$");
+    shell_set_default_env("PS1", default_prompt);
 }
 
 static char* trim_spaces(char* s) {
@@ -1518,7 +1526,7 @@ void shell_print_prompt(void) {
     char status_buf[16];
 
     if (!ps1)
-        ps1 = "mash$> ";
+        ps1 = "user@mash$> ";
 
     while (*ps1) {
         if (*ps1 == '\\' && ps1[1] == 'w') {

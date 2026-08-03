@@ -438,7 +438,9 @@ static void wl_server_client_dispatch_idle(void *data)
 
 static pid_t wl_server_launch_terminal(void)
 {
-    static char *const argv[] = {"foot", NULL};
+    static char *const argv[] = {
+        "foot", "-c", "/opt/foot/share/foot.ini", NULL
+    };
     static char *const envp[] = {
         "PATH=/sbin:/bin:/usr/bin",
         "HOME=/home/user",

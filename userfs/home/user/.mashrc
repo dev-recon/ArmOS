@@ -2,5 +2,9 @@
 export PATH=/bin:/usr/bin:/opt/kilo/bin:/opt/nano/bin
 export HOME=/home/user
 export USER=user
+export LOGNAME=user
+export LANG=C.UTF-8
 export TERM=armos
-export PS1="mash$> "
+export SHELL=/sbin/mash
+export ENV=/home/user/.shrc
+export PS1="user@mash$> "

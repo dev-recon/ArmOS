@@ -431,6 +431,17 @@ read_prepare(EditLine *el)
 	/* This is relatively cheap, and things go terribly wrong if
 	   we have the wrong size. */
 	el_resize(el);
+	/*
+	 * el_gets() may be restarted after an interrupted PTY read, notably
+	 * when a terminal emulator publishes its configured size with
+	 * TIOCSWINSZ.  In that case the previous prompt is still physically on
+	 * the current line.  Reposition before forgetting the display model so
+	 * the refreshed prompt replaces it instead of being appended to it.
+	 *
+	 * After a normal accepted line the terminal cursor is already at column
+	 * zero, making this a no-op for the usual command loop.
+	 */
+	terminal_move_to_char(el, 0);
 	re_clear_display(el);	/* reset the display stuff */
 	ch_reset(el);
 	re_refresh(el);		/* print the prompt */

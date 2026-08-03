@@ -535,6 +535,24 @@ int sys_execve(const char* filename, char* const argv[], char* const envp[])
     if (!kernel_filename)
         return -EFAULT;
 
+    /*
+     * execve(2) accepts relative paths.  Resolve them in the common syscall
+     * layer so every caller observes the process cwd contract; shells must
+     * not need to compensate by manufacturing absolute paths themselves.
+    */
+    {
+        char *resolved_filename = NULL;
+
+        result = resolve_path_at(ARMOS_AT_FDCWD, kernel_filename,
+                                 &resolved_filename);
+        if (result < 0) {
+            kfree(kernel_filename);
+            return result;
+        }
+        kfree(kernel_filename);
+        kernel_filename = resolved_filename;
+    }
+
     result = 0;
     kernel_argv = copy_exec_vector(argv, argc, from_user, &exec_payload,
                                    &result);
@@ -763,6 +781,18 @@ int sys_spawnve(const char* filename, char* const argv[], char* const envp[],
                                   strdup(filename);
     if (!kernel_filename)
         return -EFAULT;
+    {
+        char *resolved_filename = NULL;
+
+        result = resolve_path_at(ARMOS_AT_FDCWD, kernel_filename,
+                                 &resolved_filename);
+        if (result < 0) {
+            kfree(kernel_filename);
+            return result;
+        }
+        kfree(kernel_filename);
+        kernel_filename = resolved_filename;
+    }
     result = 0;
     kernel_argv = copy_exec_vector(argv, argc, from_user, &exec_payload,
                                    &result);

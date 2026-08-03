@@ -1182,6 +1182,26 @@ static uint32_t ext2_max_supported_file_blocks(void)
     return 12 + ptrs + ptrs * ptrs;
 }
 
+static uint32_t ext2_truncate_block_capacity(const ext2_inode_t* inode)
+{
+    uint32_t sectors = ext2_fs.sectors_per_block;
+    uint32_t capacity;
+    uint32_t maximum;
+
+    if (!inode || sectors == 0)
+        return 1;
+
+    /* i_blocks includes data and indirect blocks, in 512-byte sectors. */
+    capacity = inode->i_blocks / sectors;
+    if (inode->i_blocks % sectors)
+        capacity++;
+
+    maximum = ext2_max_supported_file_blocks() + 2 + ext2_ptrs_per_block();
+    if (capacity > maximum)
+        capacity = maximum;
+    return capacity != 0 ? capacity : 1;
+}
+
 static int ext2_alloc_block(uint32_t* out_block)
 {
     ext2_superblock_t sb;
@@ -2997,7 +3017,7 @@ static int ext2_truncate_inode_data(inode_t* inode, bool allow_dir)
         return -EFBIG; /* triple-indirect truncation is not implemented yet */
 
     uint32_t ptrs_per_block = ext2_ptrs_per_block();
-    uint32_t max_blocks = ext2_max_supported_file_blocks() + 2 + ptrs_per_block;
+    uint32_t max_blocks = ext2_truncate_block_capacity(&di);
     uint32_t* blocks = kmalloc(max_blocks * sizeof(uint32_t));
     if (!blocks) return -ENOMEM;
 
@@ -3208,7 +3228,7 @@ static int ext2_file_truncate_unlocked(file_t* file, off_t length)
 
     uint32_t ptrs_per_block = ext2_ptrs_per_block();
     uint32_t keep_blocks = (new_size + ext2_fs.block_size - 1) / ext2_fs.block_size;
-    uint32_t free_capacity = ext2_max_supported_file_blocks() + 2 + ptrs_per_block;
+    uint32_t free_capacity = ext2_truncate_block_capacity(di);
     uint32_t* blocks = kmalloc(free_capacity * sizeof(uint32_t));
     if (!blocks) return -ENOMEM;
 

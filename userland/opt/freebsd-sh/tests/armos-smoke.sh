@@ -42,6 +42,11 @@ read value <"$temporary"
 rm -f "$temporary"
 check test "$value" = redirection
 
+printf 'sourced_value=source-builtin\n' >"$temporary"
+source "$temporary"
+rm -f "$temporary"
+check test "$sourced_value" = source-builtin
+
 glob_root=/tmp/freebsd-sh-glob.$$
 mkdir -p "$glob_root/src" "$glob_root/dev"
 printf 'one\n' >"$glob_root/src/001-one.c"

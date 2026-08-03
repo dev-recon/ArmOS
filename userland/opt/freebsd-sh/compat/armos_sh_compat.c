@@ -37,6 +37,41 @@ const char *const sys_signame[] = {
 };
 const int sys_nsig = (int)(sizeof(sys_signame) / sizeof(sys_signame[0]));
 
+struct armos_qsort_s_context {
+    armos_qsort_s_comparator_t compare;
+    void *context;
+};
+
+/*
+ * Newlib exposes the BSD qsort_r ABI when FreeBSD visibility is enabled:
+ * the context precedes the comparator and is also its first argument.
+ * FreeBSD qsort_s instead places the context last.  Keep that ABI conversion
+ * here rather than encoding either convention in imported shell sources.
+ */
+extern void __bsd_qsort_r(void *, size_t, size_t, void *,
+    int (*)(void *, const void *, const void *));
+
+static int armos_qsort_s_compare(void *opaque, const void *left,
+    const void *right)
+{
+    struct armos_qsort_s_context *state = opaque;
+
+    return state->compare(left, right, state->context);
+}
+
+void armos_qsort_s(void *base, size_t count, size_t size,
+    armos_qsort_s_comparator_t compare, void *context)
+{
+    struct armos_qsort_s_context state = {
+        .compare = compare,
+        .context = context,
+    };
+
+    if (count < 2 || compare == NULL)
+        return;
+    __bsd_qsort_r(base, count, size, &state, armos_qsort_s_compare);
+}
+
 static void vmessage(int error_number, const char *format, va_list arguments)
 {
     if (format && *format) {

@@ -785,10 +785,25 @@ execution. Pathname wildcards such as `cp 001*.c ./dev` are expanded by this
 shell before `cp` is invoked; the file utilities intentionally do not contain a
 second, conflicting glob implementation.
 
-Graphical Foot sessions now receive `SHELL=/bin/sh` and
-`ENV=/home/user/.shrc`. The user and root startup files provide deterministic
-environment, prompt, history, and libedit editing configuration. UART and boot
-recovery deliberately continue to use `/sbin/mash`.
+Graphical Foot sessions and the recovery-console environment now export
+Mash exports `ENV=/home/user/.shrc` from `.mashrc`, so entering an interactive `/bin/sh` loads the same
+configuration on either display path. The user and root startup files provide
+deterministic environment, history, libedit editing configuration, and prompts
+of the form `user@sh$>` or `root@sh#>`. Recovery mash follows the same identity
+policy with `user@mash$>` and `root@mash#>`. UART and boot recovery deliberately
+continue to execute `/sbin/mash`.
+
+FreeBSD `sh` also exposes `source` as a compatibility alias for its standard
+`.` builtin. Both execute in the current shell, so sourced variables and
+functions remain visible. The standalone `/bin/clear` command gives `sh` and
+future shells the same terminal-clearing capability that mash already provides
+as a builtin.
+
+Foot advertises `TERM=armos`, matching the conservative terminfo fallback
+compiled into the target ncurses/libedit libraries. Startup files also
+normalize the former `TERM=foot` value for compatibility with older staged
+Foot binaries. This avoids silently entering libedit's dumb-terminal mode
+without claiming terminal capabilities the ArmOS console does not implement.
 
 ### Build and target isolation
 

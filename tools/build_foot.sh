@@ -231,7 +231,8 @@ done
 
 cp "$BUNDLE_BIN/foot" "$BUILD_DIR/foot.debug"
 "$STRIP" --strip-all "$BUNDLE_BIN/foot" || true
-cp "$FOOT_SOURCE/foot.ini" "$BUNDLE_PREFIX/share/foot.ini"
+cp "$ROOT_DIR/userland/opt/foot/foot-arm-os.ini" \
+    "$BUNDLE_PREFIX/share/foot.ini"
 cp "$FOOT_SOURCE/LICENSE" "$BUNDLE_PREFIX/LICENSE"
 
 echo

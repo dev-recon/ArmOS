@@ -75,6 +75,11 @@ echo "SMP: ${SMP_CPUS} CPU(s)"
 QEMU_KERNEL_ARGS=(-kernel "${QEMU_KERNEL_IMAGE}")
 if [ -n "${QEMU_KERNEL_LOADER_ADDR}" ]; then
     QEMU_KERNEL_ARGS=(-device "loader,file=${QEMU_KERNEL_IMAGE},addr=${QEMU_KERNEL_LOADER_ADDR},cpu-num=0")
+else
+    QEMU_BOOTARGS="$(qemu_console_bootargs)"
+    if [ -n "$QEMU_BOOTARGS" ]; then
+        QEMU_KERNEL_ARGS+=(-append "$QEMU_BOOTARGS")
+    fi
 fi
 
 QEMU_ARGS=(-M "${QEMU_MACHINE}" -cpu "${QEMU_CPU}" -m "${QEMU_MEMORY}" -smp "${SMP_CPUS}")

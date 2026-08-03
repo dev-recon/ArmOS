@@ -44,6 +44,22 @@ static int minimum(int left, int right)
     return left < right ? left : right;
 }
 
+static unsigned int strengthen_text_coverage(unsigned int coverage)
+{
+    unsigned int boost;
+
+    if (coverage == 0u || coverage >= 255u)
+        return coverage;
+
+    /*
+     * The atlas contains linear coverage, but ArmOS currently renders into an
+     * sRGB-like framebuffer without a gamma-correct blend stage. Give small
+     * grayscale glyphs modest stem darkening while preserving smooth edges.
+     */
+    boost = (coverage * (255u - coverage) + 255u) / 510u;
+    return minimum((int)(coverage + boost), 255);
+}
+
 static int point_in_clip(const struct clip_rect *clip, int x, int y)
 {
     return x >= clip->x0 && y >= clip->y0 &&
@@ -260,7 +276,8 @@ static void draw_text(const struct armui_nk_target *target,
                 blend_pixel(target, clip,
                             destination_x + x,
                             destination_y + y,
-                            text->foreground, alpha);
+                            text->foreground,
+                            strengthen_text_coverage(alpha));
             }
         }
         cursor_x += glyph.xadvance;

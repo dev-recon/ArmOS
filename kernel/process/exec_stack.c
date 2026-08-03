@@ -93,6 +93,7 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
     size_t required_bytes;
     size_t mapped_bytes;
     size_t page_offset;
+    size_t vector_offset;
     int index;
 
     if (!vm || create_vma(vm, stack_bottom, USER_STACK_SIZE - PAGE_SIZE,
@@ -137,10 +138,9 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
 
     if ((size_t)(cursor - stack_image) < vector_bytes)
         goto too_large;
-    cursor = (uint8_t *)((uintptr_t)(cursor - vector_bytes) &
-                         ~(uintptr_t)(alignment - 1u));
-    if (cursor < stack_image)
-        goto too_large;
+    vector_offset = (size_t)(cursor - stack_image) - vector_bytes;
+    vector_offset &= ~(alignment - 1u);
+    cursor = stack_image + vector_offset;
     vector_base = cursor;
 
     *(vaddr_t *)(void *)cursor = (vaddr_t)argc;
@@ -154,6 +154,8 @@ int setup_user_stack(vm_space_t *vm, char **argv, char **envp)
     *(vaddr_t *)(void *)cursor = 0;
 
     final_sp = mapped_base + (vaddr_t)(vector_base - stack_image);
+    if ((final_sp & (vaddr_t)(alignment - 1u)) != 0)
+        goto too_large;
     vm->stack_start = final_sp;
 
     for (page_offset = 0; page_offset < mapped_bytes;

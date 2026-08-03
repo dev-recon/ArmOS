@@ -805,7 +805,8 @@ static uint32_t wl_renderer_surface_frame_width(
 static void wl_renderer_title(struct wl_server_renderer *renderer,
                               const struct wl_server_surface *surface)
 {
-    const uint32_t glyph_width = 6u;
+    const uint32_t pixel_size = 2u;
+    const uint32_t glyph_width = 6u * pixel_size;
     uint32_t frame_width = wl_renderer_surface_frame_width(surface);
     uint32_t maximum = frame_width > 70u ?
         (frame_width - 70u) / glyph_width : 0u;
@@ -825,10 +826,16 @@ static void wl_renderer_title(struct wl_server_renderer *renderer,
 
             for (uint32_t column = 0u; column < 5u; column++) {
                 if (bits & (1u << (4u - column))) {
-                    wl_renderer_put_pixel(
-                        renderer, x + (int32_t)column,
-                        surface->y + 10 + (int32_t)row,
-                        0xff343438u);
+                    for (uint32_t dy = 0u; dy < pixel_size; dy++) {
+                        for (uint32_t dx = 0u; dx < pixel_size; dx++) {
+                            wl_renderer_put_pixel(
+                                renderer,
+                                x + (int32_t)(column * pixel_size + dx),
+                                surface->y + 7 +
+                                (int32_t)(row * pixel_size + dy),
+                                0xff101014u);
+                        }
+                    }
                 }
             }
         }

@@ -1110,6 +1110,7 @@ static void test_posix_compat_syscalls(void)
     pid_t child;
     int child_status;
     int chld_handler_installed;
+    int chld_gate[2] = { -1, -1 };
 
     unlink(path);
     unlink(rename_src);
@@ -1318,15 +1319,39 @@ static void test_posix_compat_syscalls(void)
     if (expect(chld_handler_installed,
                "SIGCHLD sigsuspend handler install", errno) == 0 &&
         expect(sigprocmask(SIG_BLOCK, &mask, &oldmask) == 0,
-               "SIGCHLD blocked before child scan", errno) == 0) {
+               "SIGCHLD blocked before child scan", errno) == 0 &&
+        expect(pipe(chld_gate) == 0,
+               "SIGCHLD sigsuspend synchronization pipe", errno) == 0) {
         child = fork();
-        if (child == 0)
+        if (child == 0) {
+            char token;
+
+            close(chld_gate[1]);
+            if (read(chld_gate[0], &token, 1) != 1)
+                _exit(125);
+            close(chld_gate[0]);
             _exit(35);
+        }
+        close(chld_gate[0]);
+        chld_gate[0] = -1;
         if (expect(child > 0, "SIGCHLD sigsuspend fork child", child) == 0) {
+            int suspend_errno;
+            int suspend_result;
+
             child_status = -1;
-            while (waitpid(child, &child_status, WNOHANG) == 0 &&
-                   compat_sigchld_value == 0)
-                (void)sigsuspend(&oldmask);
+            expect(waitpid(child, &child_status, WNOHANG) == 0,
+                   "SIGCHLD child remains live before sigsuspend",
+                   child_status);
+            expect(write(chld_gate[1], "x", 1) == 1,
+                   "SIGCHLD child release before sigsuspend", errno);
+            close(chld_gate[1]);
+            chld_gate[1] = -1;
+            errno = 0;
+            suspend_result = sigsuspend(&oldmask);
+            suspend_errno = errno;
+            expect(suspend_result == -1 && suspend_errno == EINTR,
+                   "sigsuspend returns EINTR after SIGCHLD",
+                   suspend_result == -1 ? suspend_errno : suspend_result);
             if (!WIFEXITED(child_status))
                 (void)waitpid(child, &child_status, 0);
             expect(compat_sigchld_value == SIGCHLD,
@@ -1334,9 +1359,16 @@ static void test_posix_compat_syscalls(void)
                    compat_sigchld_value);
             expect(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 35,
                    "SIGCHLD sigsuspend child status", child_status);
+        } else {
+            close(chld_gate[1]);
+            chld_gate[1] = -1;
         }
         (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
     }
+    if (chld_gate[0] >= 0)
+        close(chld_gate[0]);
+    if (chld_gate[1] >= 0)
+        close(chld_gate[1]);
     if (chld_handler_installed)
         (void)sigaction(SIGCHLD, &old_chld_action, NULL);
 

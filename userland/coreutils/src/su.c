@@ -22,10 +22,12 @@ int main(int argc, char **argv)
         "PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin",
         "HOME=/root",
         "USER=root",
+        "LOGNAME=root",
         "PWD=/root",
-        "SHELL=/bin/sh",
-        "ENV=/root/.shrc",
-        "PS1=root# ",
+        "LANG=C.UTF-8",
+        "TERM=armos",
+        "SHELL=/sbin/mash",
+        "PS1=root@mash#> ",
         "MASH_PROTECT=1",
         NULL
     };

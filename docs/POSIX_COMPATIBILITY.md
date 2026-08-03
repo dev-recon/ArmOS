@@ -61,9 +61,13 @@ stacks, `WCONTINUED`, `SIGPIPE`, named FIFOs, event-driven pipe polling,
 and text utilities.
 
 `/bin/sh` points to the pinned FreeBSD shell with reusable `libedit` support.
-Graphical user terminals select it through `SHELL=/bin/sh` and
-`ENV=/home/user/.shrc`; `/sbin/mash` remains the boot and recovery shell. The
-current imported corpus baseline is 511 passes out of 518 tests. The open-FIFO
+Graphical user terminals select it through `SHELL=/bin/sh`. Mash loads
+`$HOME/.mashrc`; that file exports `ENV=$HOME/.shrc`, allowing an interactive
+`sh` entered from mash to load the same configuration. Prompts identify both
+the session user and active shell. `source` is available as an alias of `.`,
+and `/bin/clear` supplies shell-independent terminal clearing. `/sbin/mash`
+remains the boot and recovery shell. The current imported corpus baseline is
+511 passes out of 518 tests. The open-FIFO
 unlink lifetime issue remains a common VFS gap and is not considered delivered
 until namespace removal and final-object reclamation are both correct.
 

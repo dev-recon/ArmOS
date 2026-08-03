@@ -13,5 +13,10 @@ default configuration are installed as:
 /opt/foot/share/foot.ini
 ```
 
+The compositor launches Foot with this file explicitly. ArmOS uses a
+16-pixel Meslo profile, an opaque high-contrast palette and strongly hinted
+grayscale rendering so the result remains readable on both progressive and
+interlaced displays.
+
 The build is isolated below `build/<arch>/<platform>/bundles/foot`; ARM32 and
 ARM64 objects and executables are never shared.

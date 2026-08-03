@@ -486,6 +486,14 @@ ttytest
 kilo /home/user/hello.c
 ```
 
+On QEMU console boots, `boot.sh`, `boot-net.sh`, and `boot-graphics.sh` measure
+the host terminal and pass `tty0` rows and columns through the QEMU device-tree
+boot arguments. The QEMU platform layer initializes the generic TTY winsize,
+so applications continue to use `TIOCGWINSZ`; no QEMU knowledge is exposed to
+Nano or ncurses. `ARMOS_TTY_ROWS` and `ARMOS_TTY_COLS` can override the measured
+values for automation. This is an initial-geometry handoff: resizing the host
+terminal after boot is not transported by a byte-stream UART.
+
 Use Ctrl-C, Ctrl-Z, arrows, backspace, and tab completion after returning to the
 shell.
 

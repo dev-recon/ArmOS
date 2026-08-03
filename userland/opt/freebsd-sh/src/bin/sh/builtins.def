@@ -53,7 +53,7 @@ bindcmd		bind
 breakcmd	-s break -s continue
 cdcmd		cd chdir
 commandcmd -n	command
-dotcmd		-s .
+dotcmd		-s . source
 echocmd -n	echo
 evalcmd		-s eval
 execcmd		-s exec
