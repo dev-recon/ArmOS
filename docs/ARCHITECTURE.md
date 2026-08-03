@@ -360,7 +360,7 @@ the address space. A QEMU-only success is insufficient for changing these
 rules; Raspberry Pi 3 hardware stress remains the coherency reference.
 
 Release validation includes mixed `kload`, `memstress`, `systest`, `vfstest`,
-`mmaptest`, `top`, TTY, procfs, native compilation and shutdown runs. Live
+`mmaptest`, `mtop`, TTY, procfs, native compilation and shutdown runs. Live
 task, zombie, kernel-stack and physical-page counters must return to baseline
 after the workload.
 
@@ -505,7 +505,7 @@ Contributor rules:
    and debt scoring at selection time.
 3. Test fairness with concurrent CPU-bound jobs plus sleeping or I/O-heavy jobs,
    not only with a single busy process.
-4. Watch `/proc/sched`, `top`, and `lps` together: `debt_selections` should rise
+4. Watch `/proc/sched`, `mtop`, and `lps` together: `debt_selections` should rise
    under CPU contention, and sleeping/ready work should still make progress.
 
 ### Blocking In Kernel
@@ -638,7 +638,7 @@ Current graphical-console features:
 
 - framebuffer text output through `tty1`;
 - Spleen bitmap font by default;
-- ANSI color handling sufficient for `ls`, `top`, and `kilo`;
+- ANSI color handling sufficient for `ls`, `mtop`, and `kilo`;
 - vertical-bar cursor with blinking driven by a kernel `displayd` task;
 - simple scrollback history;
 - VirtIO input keyboard routing into `tty1`;
@@ -992,6 +992,11 @@ The default runtime layout is:
 /opt/<tool>/bin    imported external tools
 /legacy            archived legacy userland
 ```
+
+The common scheduler publishes its fixed-point 1, 5 and 15 minute
+runnable-task averages through `/proc/loadavg`.  The metric is maintained in
+architecture- and platform-independent scheduler code; monitoring tools only
+consume this shared ABI and do not derive private load values.
 
 Ext2 is the primary filesystem. FAT32 remains useful for compatibility and
 testing, but it is not expected to mirror the full root filesystem.

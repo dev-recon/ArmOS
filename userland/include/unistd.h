@@ -19,5 +19,6 @@
 #include_next <unistd.h>
 
 int pipe2(int pipefd[2], int flags);
+int execlp(const char *file, const char *arg0, ...);
 
 #endif /* ARMOS_UNISTD_H */

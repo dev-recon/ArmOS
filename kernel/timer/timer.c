@@ -46,6 +46,9 @@ static bool timer_software_initialized = false;
 static uint64_t timer_next_compare[ARMOS_MAX_CPUS];
 
 static volatile bool in_critical_section_cpu[ARMOS_MAX_CPUS];
+static uint32_t realtime_epoch_seconds;
+static uint32_t realtime_epoch_ticks;
+static bool realtime_clock_initialized;
 
 static uint32_t timer_interval_from_frequency(uint32_t timer_freq)
 {
@@ -260,6 +263,16 @@ void init_timer(void)
     }
 
     KINFO("[TIMER] Timer frequency: %u Hz\n", timer_freq);
+
+    /*
+     * Anchor CLOCK_REALTIME once, then advance it with the common scheduler
+     * clock.  Reading a seconds-only platform RTC for every call made
+     * CLOCK_REALTIME jump in one-second steps and broke POSIX timed I/O.
+     * Hardware access remains behind arch_platform; interpolation is common.
+     */
+    realtime_epoch_seconds = get_current_time();
+    realtime_epoch_ticks = get_system_ticks();
+    realtime_clock_initialized = true;
     
     /* 2. Calculer l'interval pour TIMER_FREQ Hz */
     uint32_t interval = timer_interval_from_frequency(timer_freq);
@@ -307,8 +320,11 @@ void timer_irq_handler(void)
     /* 4. Per-CPU accounting, plus one global wall-clock on the boot CPU. */
     if (cpu_id < ARMOS_MAX_CPUS)
         timer_cpu_ticks[cpu_id] += elapsed_ticks;
-    if (smp_is_boot_cpu())
+    if (smp_is_boot_cpu()) {
         system_ticks += elapsed_ticks;
+        if (process_system_ready)
+            scheduler_loadavg_tick(elapsed_ticks);
+    }
 
     if (cpu_id < ARMOS_MAX_CPUS) {
         uint64_t frequency = get_timer_frequency();
@@ -481,6 +497,24 @@ void timer_cpu_accounting_read(uint32_t cpu_id, timer_cpu_accounting_t* accounti
 uint32_t get_time_ms(void)
 {
     return (get_system_ticks() * 1000) / TIMER_FREQ;
+}
+
+void get_realtime(uint64_t *seconds, uint32_t *nanoseconds)
+{
+    uint32_t elapsed_ticks;
+
+    if (!seconds || !nanoseconds)
+        return;
+    if (!realtime_clock_initialized) {
+        *seconds = get_current_time();
+        *nanoseconds = 0;
+        return;
+    }
+
+    elapsed_ticks = get_system_ticks() - realtime_epoch_ticks;
+    *seconds = (uint64_t)realtime_epoch_seconds + elapsed_ticks / TIMER_FREQ;
+    *nanoseconds = (elapsed_ticks % TIMER_FREQ) *
+                   (1000000000u / TIMER_FREQ);
 }
 
 /* Fonction de debug pour verifier l'etat du timer */

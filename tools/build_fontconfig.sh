@@ -213,6 +213,17 @@ cat > "$BUNDLE_ROOT/etc/fonts/fonts.conf" <<'EOF'
     <family>monospace</family>
     <prefer><family>MesloLGS NF</family></prefer>
   </alias>
+  <!--
+    ArmOS currently reports no reliable LCD subpixel order. Prefer strongly
+    hinted grayscale glyphs: this remains sharp on QEMU, progressive HDMI and
+    interlaced displays without introducing RGB fringes.
+  -->
+  <match target="font">
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintfull</const></edit>
+    <edit name="rgba" mode="assign"><const>none</const></edit>
+  </match>
 </fontconfig>
 EOF
 cp "$SRC_DIR/fonts.dtd" "$BUNDLE_ROOT/etc/fonts/"

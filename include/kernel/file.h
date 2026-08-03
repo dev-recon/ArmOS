@@ -179,6 +179,7 @@ bool file_is_tty(file_t* file);
 
 char* resolve_path(const char* path);
 int   resolve_path_at(int dirfd, const char* path, char** resolved);
+int   resolve_path_at_raw(int dirfd, const char* path, char** resolved);
 int   vfs_check_search_permission(const char* path, bool include_final);
 void  path_canonicalize(char* path);
 char* get_current_working_directory(void);

@@ -38,7 +38,7 @@ static int parse_octal_mode(const char *s, mode_t *out)
         s++;
     }
 
-    if (digits < 3 || digits > 4)
+    if (digits < 1 || digits > 4)
         return -1;
 
     *out = (mode_t)value;

@@ -438,15 +438,17 @@ static void wl_server_client_dispatch_idle(void *data)
 
 static pid_t wl_server_launch_terminal(void)
 {
-    static char *const argv[] = {"foot", NULL};
+    static char *const argv[] = {
+        "foot", "-c", "/opt/foot/share/foot.ini", NULL
+    };
     static char *const envp[] = {
         "PATH=/sbin:/bin:/usr/bin",
         "HOME=/home/user",
         "USER=user",
         "LOGNAME=user",
         "LANG=C.UTF-8",
-        "SHELL=/sbin/mash",
-        "MASH_PROTECT=1",
+        "SHELL=/bin/sh",
+        "ENV=/home/user/.shrc",
         "WAYLAND_DISPLAY=wayland-0",
         "XDG_RUNTIME_DIR=/tmp",
         NULL
@@ -473,6 +475,8 @@ static pid_t wl_server_launch_shell(uint32_t token)
         "USER=root",
         "LOGNAME=root",
         "LANG=C.UTF-8",
+        "SHELL=/bin/sh",
+        "ENV=/root/.shrc",
         "WAYLAND_DISPLAY=wayland-0",
         "XDG_RUNTIME_DIR=/tmp",
         token_environment,

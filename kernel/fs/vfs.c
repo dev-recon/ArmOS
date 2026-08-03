@@ -642,29 +642,51 @@ void put_inode(inode_t* inode)
     }
 }
 
-static void vfs_append_component(char* path, size_t path_size, const char* component)
+static bool vfs_append_component(char* path, size_t path_size, const char* component)
 {
     size_t len;
+    size_t available;
+    int written;
 
-    if (!path || !component || path_size == 0) return;
+    if (!path || !component || path_size == 0) return false;
 
     len = strlen(path);
+    if (len >= path_size) return false;
+    available = path_size - len;
     if (len == 0) {
-        snprintf(path, (int)path_size, "/%s", component);
+        written = snprintf(path, (int)path_size, "/%s", component);
     } else if (strcmp(path, "/") == 0) {
-        snprintf(path + 1, (int)path_size - 1, "%s", component);
+        written = snprintf(path + 1, (int)path_size - 1, "%s", component);
+        available = path_size - 1u;
     } else {
-        snprintf(path + len, (int)path_size - (int)len, "/%s", component);
+        written = snprintf(path + len, (int)available, "/%s", component);
     }
+    return written >= 0 && (size_t)written < available;
 }
 
-static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink, int depth)
+static void vfs_remove_last_component(char* path)
+{
+    char* slash;
+
+    if (!path || path[0] == '\0' || strcmp(path, "/") == 0)
+        return;
+    slash = strrchr(path, '/');
+    if (!slash || slash == path) {
+        strcpy(path, "/");
+        return;
+    }
+    *slash = '\0';
+}
+
+static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink,
+                                     int depth, char* resolved,
+                                     size_t resolved_size)
 {
     inode_t* current;
     char*    path_copy;
     char*    token;
     char*    saveptr;
-    char     current_path[256];
+    char     current_path[MAX_PATH];
 
     if (!path || path[0] != '/') return NULL;
     if (depth > MAX_SYMLINK_DEPTH) return NULL;
@@ -672,7 +694,11 @@ static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink
     current = root_inode;
     vfs_get_inode_ref(current);
 
-    if (strcmp(path, "/") == 0) return current;
+    if (strcmp(path, "/") == 0) {
+        if (resolved && resolved_size > 1u)
+            strcpy(resolved, "/");
+        return current;
+    }
 
     path_copy = strdup(path);
     if (!path_copy) { put_inode(current); return NULL; }
@@ -684,7 +710,7 @@ static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink
     while (token && current) {
         char* next_token;
         bool is_final;
-        char parent_path[256];
+        char parent_path[MAX_PATH];
 
         if (!S_ISDIR(current->mode)) {
             put_inode(current);
@@ -694,6 +720,27 @@ static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink
 
         next_token = strtok_r(NULL, "/", &saveptr);
         is_final = (next_token == NULL);
+
+        if (strcmp(token, ".") == 0) {
+            token = next_token;
+            continue;
+        }
+        if (strcmp(token, "..") == 0) {
+            inode_t* parent;
+
+            vfs_remove_last_component(current_path);
+            put_inode(current);
+            parent = path_lookup_internal(current_path[0] ? current_path : "/",
+                                          true, depth, NULL, 0u);
+            if (!parent) {
+                current = NULL;
+                break;
+            }
+            current = parent;
+            token = next_token;
+            continue;
+        }
+
         if (current_path[0] == '\0')
             strcpy(parent_path, "/");
         else
@@ -701,7 +748,11 @@ static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink
         parent_path[sizeof(parent_path) - 1] = '\0';
 
         /* Build accumulated path and allow purely virtual mount points. */
-        vfs_append_component(current_path, sizeof(current_path), token);
+        if (!vfs_append_component(current_path, sizeof(current_path), token)) {
+            put_inode(current);
+            current = NULL;
+            break;
+        }
 
         for (int i = 0; i < mount_count; i++) {
             if (strcmp(current_path, mount_table[i].path) == 0) {
@@ -719,10 +770,11 @@ static inode_t* path_lookup_internal(const char* path, bool follow_final_symlink
 mounted_component:
         if (current) {
             if (S_ISLNK(current->mode) && (!is_final || follow_final_symlink)) {
-                char target[256];
-                char remaining[256];
-                char new_path[512];
+                char target[MAX_PATH];
+                char remaining[MAX_PATH];
+                char new_path[MAX_PATH];
                 int ret;
+                int written;
 
                 if (!current->i_op || !current->i_op->readlink) {
                     put_inode(current);
@@ -740,23 +792,34 @@ mounted_component:
 
                 remaining[0] = '\0';
                 while (next_token) {
-                    vfs_append_component(remaining, sizeof(remaining), next_token);
+                    if (!vfs_append_component(remaining, sizeof(remaining), next_token)) {
+                        put_inode(current);
+                        kfree(path_copy);
+                        return NULL;
+                    }
                     next_token = strtok_r(NULL, "/", &saveptr);
                 }
 
                 if (target[0] == '/') {
-                    snprintf(new_path, (int)sizeof(new_path), "%s%s", target, remaining);
+                    written = snprintf(new_path, (int)sizeof(new_path), "%s%s",
+                                       target, remaining);
                 } else if (strcmp(parent_path, "/") == 0) {
-                    snprintf(new_path, (int)sizeof(new_path), "/%s%s", target, remaining);
+                    written = snprintf(new_path, (int)sizeof(new_path), "/%s%s",
+                                       target, remaining);
                 } else {
-                    snprintf(new_path, (int)sizeof(new_path), "%s/%s%s",
-                             parent_path, target, remaining);
+                    written = snprintf(new_path, (int)sizeof(new_path), "%s/%s%s",
+                                       parent_path, target, remaining);
                 }
-                path_canonicalize(new_path);
+                if (written < 0 || written >= (int)sizeof(new_path)) {
+                    put_inode(current);
+                    kfree(path_copy);
+                    return NULL;
+                }
 
                 put_inode(current);
                 kfree(path_copy);
-                return path_lookup_internal(new_path, follow_final_symlink, depth + 1);
+                return path_lookup_internal(new_path, follow_final_symlink,
+                                            depth + 1, resolved, resolved_size);
             }
         }
 
@@ -764,12 +827,30 @@ mounted_component:
     }
 
     kfree(path_copy);
+    if (current && resolved) {
+        const char* final_path = current_path[0] ? current_path : "/";
+        if (strlen(final_path) + 1u > resolved_size) {
+            put_inode(current);
+            return NULL;
+        }
+        strcpy(resolved, final_path);
+    }
     return current;
 }
 
 inode_t* path_lookup_ex(const char* path, bool follow_final_symlink)
 {
-    return path_lookup_internal(path, follow_final_symlink, 0);
+    return path_lookup_internal(path, follow_final_symlink, 0, NULL, 0u);
+}
+
+inode_t* path_lookup_resolved(const char* path, bool follow_final_symlink,
+                              char* resolved, size_t resolved_size)
+{
+    if (!resolved || resolved_size == 0u)
+        return NULL;
+    resolved[0] = '\0';
+    return path_lookup_internal(path, follow_final_symlink, 0,
+                                resolved, resolved_size);
 }
 
 inode_t* path_lookup(const char* path)

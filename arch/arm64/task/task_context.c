@@ -24,7 +24,7 @@
 
 int arm64_task_context_switch_address_space(
     arm64_task_context_t *previous,
-    const arm64_task_context_t *next)
+    arm64_task_context_t *next)
 {
     int result;
 
@@ -36,9 +36,12 @@ int arm64_task_context_switch_address_space(
             return -2;
         result = next->asid == 0 ?
             arm64_mmu_switch_ttbr0(next->ttbr0) :
-            arm64_user_vm_activate_identity(next->ttbr0, next->asid);
+            arm64_user_vm_activate_identity(next->ttbr0, next->asid,
+                                            &next->asid);
         if (result != 0)
             return -3;
+    } else {
+        arm64_user_vm_deactivate_cpu();
     }
 
     arm64_task_context_switch(previous, next);

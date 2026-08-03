@@ -21,7 +21,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define FOOT_DEFAULT_TERM "foot"
+#define FOOT_DEFAULT_TERM "armos"
 
 /*
  * Foot normally prefers memfd_create() and otherwise falls back to a

@@ -41,6 +41,7 @@
 #include <armos/thread.h>
 #include <armos/spawn.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/limits.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/shm.h>
 #include <uapi/armos/signal.h>
@@ -59,7 +60,7 @@
 #endif
 
 #ifndef PATH_MAX
-#define PATH_MAX 1024
+#define PATH_MAX ARMOS_PATH_MAX
 #endif
 
 #ifndef CLOCK_MONOTONIC
@@ -820,6 +821,9 @@ static int signal_flags_os_to_newlib(int flags)
 
 static int wait_status_os_to_newlib(int status)
 {
+    if (status == 0xffff)
+        return status;
+
     if ((status & 0xff) == 0x7f) {
         int sig = signal_os_to_newlib((status >> 8) & 0xff);
         return 0x7f | ((sig & 0xff) << 8);
@@ -1665,6 +1669,43 @@ int execvp(const char *file, char *const argv[])
     return -1;
 }
 
+int execlp(const char *file, const char *arg0, ...)
+{
+    va_list ap;
+    const char *arg;
+    char **argv;
+    size_t argc = 0;
+    size_t index;
+    int result;
+
+    va_start(ap, arg0);
+    for (arg = arg0; arg; arg = va_arg(ap, const char *))
+        argc++;
+    va_end(ap);
+
+    if (argc > (SIZE_MAX / sizeof(*argv)) - 1) {
+        errno = E2BIG;
+        return -1;
+    }
+
+    argv = malloc((argc + 1) * sizeof(*argv));
+    if (!argv)
+        return -1;
+
+    va_start(ap, arg0);
+    arg = arg0;
+    for (index = 0; index < argc; index++) {
+        argv[index] = (char *)arg;
+        arg = va_arg(ap, const char *);
+    }
+    va_end(ap);
+    argv[argc] = NULL;
+
+    result = execvp(file, argv);
+    free(argv);
+    return result;
+}
+
 int _wait(int *status)
 {
     long ret = sys_waitpid(-1, status, 0);
@@ -2025,6 +2066,23 @@ long fpathconf(int fd, int name)
         errno = EINVAL;
         return -1;
     }
+}
+
+long pathconf(const char *path, int name)
+{
+    int fd;
+    long result;
+
+    if (!path) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    result = fpathconf(fd, name);
+    close(fd);
+    return result;
 }
 
 int ioctl(int fd, unsigned long request, ...)
@@ -3090,6 +3148,11 @@ int utimes(const char *pathname, const struct timeval times[2])
 int mknod(const char *pathname, mode_t mode, unsigned long dev)
 {
     return ret_errno(sys_mknod(pathname, (int)mode, dev));
+}
+
+int mkfifo(const char *pathname, mode_t mode)
+{
+    return mknod(pathname, S_IFIFO | (mode & 07777), 0);
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds,

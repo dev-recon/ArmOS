@@ -73,6 +73,14 @@ static volatile uint32_t idle_fallback_count[ARMOS_MAX_CPUS];
 static volatile uint32_t secondary_scheduler_done_mask;
 static volatile uint32_t secondary_scheduler_warned_mask;
 
+#define SCHED_LOADAVG_INTERVAL_TICKS (5u * TIMER_FREQ)
+#define SCHED_LOADAVG_EXP_1MIN       1884u
+#define SCHED_LOADAVG_EXP_5MIN       2014u
+#define SCHED_LOADAVG_EXP_15MIN      2037u
+
+static volatile uint32_t scheduler_loadavg[3];
+static uint32_t scheduler_loadavg_elapsed;
+
 //static spinlock_t task_lock = {0};
 
 static uint32_t task_reserve_task_id(void)
@@ -234,7 +242,12 @@ static void runqueue_rebuild_locked(task_t* exclude);
 static bool runqueue_validate_locked(const char* caller);
 static bool scheduler_has_ready_work(void);
 void task_make_ready_under_lock(task_t* task);
-static void scheduler_mark_running_locked(task_t* task);
+static bool scheduler_claim_ready_locked(task_t* task);
+static bool scheduler_mark_running_locked(task_t* task);
+static bool scheduler_commit_next_for_switch(task_t* current,
+                                             task_t* next_task);
+static void scheduler_rollback_uncommitted_next(task_t* current,
+                                                task_t* next_task);
 static void add_task_to_list_locked(task_t* task);
 void add_task_to_list(task_t* task);
 void remove_task_from_list(task_t* task);
@@ -450,6 +463,63 @@ void scheduler_get_stats(scheduler_stats_t* stats)
     }
 
     spin_unlock_irqrestore(&task_lock, flags);
+}
+
+static uint32_t scheduler_runnable_snapshot(void)
+{
+    uint32_t runnable = __atomic_load_n(&ready_queue.nr_running,
+                                       __ATOMIC_RELAXED);
+    uint32_t cpus = smp_online_cpu_count();
+
+    if (cpus > ARMOS_MAX_CPUS)
+        cpus = ARMOS_MAX_CPUS;
+    for (uint32_t cpu = 0; cpu < cpus; cpu++) {
+        task_t* current = task_current_on_cpu(cpu);
+
+        if (current && !task_is_idle_task(current) &&
+            current->state == TASK_RUNNING)
+            runnable++;
+    }
+    return runnable;
+}
+
+static uint32_t scheduler_loadavg_step(uint32_t old_value,
+                                       uint32_t runnable,
+                                       uint32_t exponential)
+{
+    uint64_t accumulated = (uint64_t)old_value * exponential;
+
+    accumulated += (uint64_t)runnable * SCHED_LOADAVG_SCALE *
+                   (SCHED_LOADAVG_SCALE - exponential);
+    accumulated += SCHED_LOADAVG_SCALE / 2u;
+    return (uint32_t)(accumulated / SCHED_LOADAVG_SCALE);
+}
+
+void scheduler_loadavg_tick(uint32_t elapsed_ticks)
+{
+    scheduler_loadavg_elapsed += elapsed_ticks;
+    while (scheduler_loadavg_elapsed >= SCHED_LOADAVG_INTERVAL_TICKS) {
+        uint32_t runnable = scheduler_runnable_snapshot();
+
+        scheduler_loadavg_elapsed -= SCHED_LOADAVG_INTERVAL_TICKS;
+        scheduler_loadavg[0] = scheduler_loadavg_step(scheduler_loadavg[0],
+            runnable, SCHED_LOADAVG_EXP_1MIN);
+        scheduler_loadavg[1] = scheduler_loadavg_step(scheduler_loadavg[1],
+            runnable, SCHED_LOADAVG_EXP_5MIN);
+        scheduler_loadavg[2] = scheduler_loadavg_step(scheduler_loadavg[2],
+            runnable, SCHED_LOADAVG_EXP_15MIN);
+    }
+}
+
+void scheduler_get_loadavg(uint32_t averages[3], uint32_t* runnable)
+{
+    if (averages) {
+        for (uint32_t index = 0; index < 3; index++)
+            averages[index] = __atomic_load_n(&scheduler_loadavg[index],
+                                              __ATOMIC_RELAXED);
+    }
+    if (runnable)
+        *runnable = scheduler_runnable_snapshot();
 }
 
 void debug_context_switch_entry(void);
@@ -839,6 +909,14 @@ void task_make_ready_under_lock(task_t* task)
         return;
 
     /*
+     * A READY task with a CPU owner has been removed from the runqueue and is
+     * reserved for that CPU's pending context switch.  A second wakeup must
+     * not enqueue it again while that handoff is being validated.
+     */
+    if (task->state == TASK_READY && task->running_cpu != TASK_CPU_NONE)
+        return;
+
+    /*
      * SMP handoff invariant:
      * a running task owns exactly one kernel stack. When the current CPU yields,
      * the task is queued as READY before __task_switch() saves the final SVC
@@ -846,7 +924,9 @@ void task_make_ready_under_lock(task_t* task)
      * next task's stack and calls task_context_save_complete(). Other CPUs must
      * not be allowed to run it during that handoff window.
      */
-    if (task->state == TASK_RUNNING && task->running_cpu != cpu) {
+    if (task->state == TASK_RUNNING &&
+        task->running_cpu != TASK_CPU_NONE &&
+        task->running_cpu != cpu) {
         kernel_lifecycle_stats.ready_queue_refused++;
         sched_trace_record(SCHED_TRACE_READY_REFUSE_REMOTE_RUNNING, task);
         return;
@@ -1199,6 +1279,7 @@ task_t* task_create_copy(task_t* parent, bool from_user)
             child->process->term_signal = 0;
             child->process->stop_signal = 0;
             child->process->stop_reported = 0;
+            child->process->continue_pending = 0;
             child->process->uid = parent->process->uid;
             child->process->gid = parent->process->gid;
             child->process->umask = parent->process->umask;
@@ -1233,6 +1314,7 @@ task_t* task_create_copy(task_t* parent, bool from_user)
             child->process->waitpid_pid = 0;
             child->process->waitpid_status = NULL;
             child->process->waitpid_options = 0;
+            child->process->waitpid_active = false;
             child->process->waitpid_iteration = 0;
             child->process->waitpid_caller_lr = 0;
 
@@ -1788,6 +1870,7 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
         task->process->term_signal = 0;
         task->process->stop_signal = 0;
         task->process->stop_reported = 0;
+        task->process->continue_pending = 0;
         task->process->uid = 0;
         task->process->gid = 0;
         task->process->umask = 022;
@@ -1832,6 +1915,7 @@ task_t* task_create_process(const char* name, void (*entry)(void* arg),
         task->process->waitpid_pid = 0;
         task->process->waitpid_status = NULL;
         task->process->waitpid_options = 0;
+        task->process->waitpid_active = false;
         task->process->waitpid_iteration = 0;
         task->process->waitpid_caller_lr = 0;
         strcpy(task->process->cwd, "/");    // Setting Current Working Directory
@@ -2466,15 +2550,27 @@ void switch_to_idle(void){
     unsigned long flags;
     task_t *current = task_current_local();
     task_t *next_task = schedule_next_task();
+    task_t *claimed_task = next_task;
     task_t *local_idle = task_idle_on_cpu(smp_processor_id());
     uint32_t cpu = smp_processor_id();
+    bool committed = false;
 
     if (!next_task ||
         next_task == current ||
         next_task->state == TASK_ZOMBIE ||
-        next_task->state == TASK_TERMINATED) {
+        next_task->state == TASK_TERMINATED ||
+        !task_stack_metadata_valid(next_task)) {
         next_task = local_idle ? local_idle : idle_task;
     }
+
+    /*
+     * schedule_next_task() returns a provisionally claimed task.  A dying
+     * task may race with another CPU changing that candidate's lifecycle
+     * state before this no-return switch commits it.  Never leave such a
+     * claim marked RUNNING while falling back to the local idle task.
+     */
+    if (claimed_task != next_task)
+        scheduler_rollback_uncommitted_next(current, claimed_task);
 
     spin_lock_irqsave(&task_lock, &flags);
     if (current &&
@@ -2482,11 +2578,22 @@ void switch_to_idle(void){
         current->running_cpu == cpu) {
         current->running_cpu = TASK_CPU_NONE;
     }
-    scheduler_mark_running_locked(next_task);
+    if (task_header_plausible(next_task) &&
+        next_task->state != TASK_ZOMBIE &&
+        next_task->state != TASK_TERMINATED &&
+        (next_task->running_cpu == TASK_CPU_NONE ||
+         next_task->running_cpu == cpu)) {
+        committed = scheduler_mark_running_locked(next_task) &&
+                    task_current_publish(cpu, next_task) == 0;
+    }
     spin_unlock_irqrestore(&task_lock, flags);
 
-    if (task_current_publish(cpu, next_task) != 0)
-        panic("Failed to publish initial scheduler task");
+    if (!committed) {
+        scheduler_rollback_uncommitted_next(current, claimed_task);
+        next_task = local_idle ? local_idle : idle_task;
+        if (!scheduler_commit_next_for_switch(current, next_task))
+            panic("Failed to publish initial scheduler task");
+    }
 
     /*
      * Ne pas sauvegarder une tache morte et ne jamais modifier manuellement
@@ -2507,7 +2614,10 @@ void task_start_secondary_scheduler(uint32_t cpu_id)
         panic("SMP secondary scheduler without idle task");
 
     spin_lock_irqsave(&task_lock, &flags);
-    scheduler_mark_running_locked(local_idle);
+    if (!scheduler_mark_running_locked(local_idle)) {
+        spin_unlock_irqrestore(&task_lock, flags);
+        panic("Failed to commit secondary idle task");
+    }
     spin_unlock_irqrestore(&task_lock, flags);
 
     if (task_current_publish(cpu_id, local_idle) != 0)
@@ -2721,12 +2831,9 @@ static void scheduler_scan_waiters(task_t* current)
     for (uint32_t i = 0; i < zombie_wake_count; i++) {
         task_t* zombie = zombie_wake_tasks[i];
         task_t* parent = zombie && zombie->process ? zombie->process->parent : NULL;
-        bool parent_waiting = parent && parent->process &&
-            parent->state == TASK_BLOCKED &&
-            parent->process->state == (proc_state_t)PROC_BLOCKED;
 
         wakeup_parent(zombie);
-        if (!parent_waiting && parent && parent->process) {
+        if (parent && parent->process) {
             sig_handler_t handler = parent->process->signals.actions[SIGCHLD].sa_handler;
             if (handler != SIG_DFL && handler != SIG_IGN)
                 send_signal(parent, SIGCHLD);
@@ -2834,15 +2941,28 @@ static bool scheduler_entry_allowed(const char* caller, task_t* requested)
     return true;
 }
 
-static void scheduler_mark_running_locked(task_t* task)
+static bool scheduler_mark_running_locked(task_t* task)
 {
     uint32_t cpu = smp_processor_id();
 
     if (!task)
-        return;
+        return false;
 
     if (task->state == TASK_RUNNING && task->running_cpu == cpu)
-        return;
+        return true;
+
+    /*
+     * TASK_RUNNING is the scheduler commit state, not a generic wake-up
+     * state.  In particular, never resurrect a task whose lifecycle has
+     * already reached ZOMBIE or TERMINATED while committing a switch.
+     */
+    if ((task->state != TASK_READY &&
+         !(task_is_idle_task(task) && task->state == TASK_BLOCKED)) ||
+        (task->running_cpu != TASK_CPU_NONE && task->running_cpu != cpu)) {
+        kernel_lifecycle_stats.scheduler_refused++;
+        sched_trace_record(SCHED_TRACE_REFUSE_INVALID_TASK, task);
+        return false;
+    }
 
     runqueue_remove_locked(task);
     task->state = TASK_RUNNING;
@@ -2851,6 +2971,26 @@ static void scheduler_mark_running_locked(task_t* task)
     if (task->type == TASK_TYPE_PROCESS && task->process)
         task->process->state = (proc_state_t)PROC_RUNNING;
     task->switch_count++;
+    return true;
+}
+
+/*
+ * Reserve a runnable task without claiming that it is already executing.
+ * TASK_RUNNING is an observable lifecycle state and therefore belongs to the
+ * commit point, where current_tasks[cpu] is published under the same lock.
+ */
+static bool scheduler_claim_ready_locked(task_t* task)
+{
+    uint32_t cpu = smp_processor_id();
+
+    if (!task || task->state != TASK_READY ||
+        task->running_cpu != TASK_CPU_NONE)
+        return false;
+
+    runqueue_remove_locked(task);
+    task->running_cpu = cpu;
+    task->last_cpu = cpu;
+    return true;
 }
 
 static bool scheduler_validate_switch(task_t* old_task,
@@ -2905,6 +3045,32 @@ static void scheduler_restore_current_if_needed(task_t* current)
     spin_unlock_irqrestore(&task_lock, flags);
 }
 
+/*
+ * schedule_next_task() reserves a READY task by removing it from the runqueue
+ * and assigning it to this CPU.  The task remains READY until publication.
+ * A rejected switch must put the selected task back exactly once.
+ */
+static void scheduler_rollback_uncommitted_next(task_t* current,
+                                                task_t* next_task)
+{
+    unsigned long flags;
+    uint32_t cpu = smp_processor_id();
+
+    if (!next_task || next_task == current || task_is_idle_task(next_task))
+        return;
+
+    spin_lock_irqsave(&task_lock, &flags);
+    if (task_header_plausible(next_task) &&
+        (next_task->state == TASK_READY ||
+         next_task->state == TASK_RUNNING) &&
+        next_task->running_cpu == cpu &&
+        task_current_on_cpu(cpu) != next_task) {
+        next_task->running_cpu = TASK_CPU_NONE;
+        task_make_ready_under_lock(next_task);
+    }
+    spin_unlock_irqrestore(&task_lock, flags);
+}
+
 static void scheduler_prepare_current_for_switch(task_t* current)
 {
     unsigned long flags;
@@ -2915,32 +3081,45 @@ static void scheduler_prepare_current_for_switch(task_t* current)
     spin_unlock_irqrestore(&task_lock, flags);
 }
 
-static void scheduler_prepare_next_for_switch(task_t* next_task)
+static bool scheduler_commit_next_for_switch(task_t* current,
+                                             task_t* next_task)
 {
     unsigned long flags;
+    uint32_t cpu = smp_processor_id();
+    bool committed = false;
 
     spin_lock_irqsave(&task_lock, &flags);
-    scheduler_mark_running_locked(next_task);
+    if (current && current != next_task &&
+        (current->state == TASK_ZOMBIE ||
+         current->state == TASK_TERMINATED) &&
+        current->running_cpu == cpu)
+        current->running_cpu = TASK_CPU_NONE;
+    if (task_header_plausible(next_task) &&
+        next_task->state != TASK_ZOMBIE &&
+        next_task->state != TASK_TERMINATED &&
+        (next_task->running_cpu == TASK_CPU_NONE ||
+         next_task->running_cpu == cpu)) {
+        committed = scheduler_mark_running_locked(next_task) &&
+                    task_current_publish(cpu, next_task) == 0;
+    }
     spin_unlock_irqrestore(&task_lock, flags);
+    return committed;
 }
 
-static void scheduler_switch_to(task_t* next_task,
+static bool scheduler_switch_to(task_t* next_task,
                                 uint32_t irq_flags,
                                 bool save_current_context,
                                 task_t* current)
 {
-    uint32_t cpu = smp_processor_id();
-
-    scheduler_prepare_next_for_switch(next_task);
+    if (!scheduler_commit_next_for_switch(current, next_task))
+        return false;
     unset_critical_section();
-
-    if (task_current_publish(cpu, next_task) != 0)
-        panic("Failed to publish scheduler task");
 
     __task_switch(save_current_context ? &current->context : NULL,
                   &next_task->context);
 
     restore_interrupts(irq_flags);
+    return true;
 }
 
 void schedule(void)
@@ -2978,13 +3157,20 @@ void schedule(void)
     if (!scheduler_validate_switch(save_current_context ? current : NULL,
                                    next_task,
                                    current_sp)) {
+        scheduler_rollback_uncommitted_next(current, next_task);
         if (save_current_context)
             scheduler_restore_current_if_needed(current);
         scheduler_finish_no_switch(irq_flags);
         return;
     }
 
-    scheduler_switch_to(next_task, irq_flags, save_current_context, current);
+    if (!scheduler_switch_to(next_task, irq_flags,
+                             save_current_context, current)) {
+        scheduler_rollback_uncommitted_next(current, next_task);
+        if (save_current_context)
+            scheduler_restore_current_if_needed(current);
+        scheduler_finish_no_switch(irq_flags);
+    }
 
 }
 
@@ -3020,13 +3206,20 @@ void schedule_to(task_t *next_task)
     if (!scheduler_validate_switch(save_current_context ? current : NULL,
                                    next_task,
                                    current_sp)) {
+        scheduler_rollback_uncommitted_next(current, next_task);
         if (save_current_context)
             scheduler_restore_current_if_needed(current);
         scheduler_finish_no_switch(irq_flags);
         return;
     }
 
-    scheduler_switch_to(next_task, irq_flags, save_current_context, current);
+    if (!scheduler_switch_to(next_task, irq_flags,
+                             save_current_context, current)) {
+        scheduler_rollback_uncommitted_next(current, next_task);
+        if (save_current_context)
+            scheduler_restore_current_if_needed(current);
+        scheduler_finish_no_switch(irq_flags);
+    }
 
 }
 
@@ -3271,9 +3464,14 @@ restart_scan:
             sched_last_pick_debt = best_debt;
             sched_last_pick_waited_ticks = best_waited;
             sched_last_scan_tasks = candidate_scan_count;
-            scheduler_mark_running_locked(task);
-            spin_unlock_irqrestore(&task_lock, flags);
-            return task;
+            if (scheduler_claim_ready_locked(task)) {
+                spin_unlock_irqrestore(&task_lock, flags);
+                return task;
+            }
+            kernel_lifecycle_stats.scheduler_refused++;
+            sched_trace_record(SCHED_TRACE_REFUSE_INVALID_TASK, task);
+            scanned++;
+            goto restart_scan;
         }
 
         /*
@@ -3296,7 +3494,10 @@ restart_scan:
     task = task_idle_on_cpu(smp_processor_id());
     if (!task)
         task = idle_task;
-    scheduler_mark_running_locked(task);
+    if (!scheduler_mark_running_locked(task)) {
+        spin_unlock_irqrestore(&task_lock, flags);
+        panic("Scheduler could not commit local idle task");
+    }
     spin_unlock_irqrestore(&task_lock, flags);
     return task;
 }
@@ -3546,12 +3747,32 @@ static proc_state_t task_state_to_proc_state(task_state_t state)
 void task_set_state(task_t* task, task_state_t state)
 {
     unsigned long flags;
+    uint32_t cpu;
 
     if (!task) return;
+
+    cpu = smp_processor_id();
     
     spin_lock_irqsave(&task_lock, &flags);
     if (state == TASK_READY) {
         task_make_ready_under_lock(task);
+        spin_unlock_irqrestore(&task_lock, flags);
+        return;
+    }
+
+    /*
+     * TASK_RUNNING is not a wake-up request.  It describes the task whose
+     * identity is already published for this CPU and whose kernel stack is
+     * executing now.  Keeping that invariant here prevents filesystem, TTY
+     * or input fast paths from manufacturing an unowned RUNNING task.
+     */
+    if (state == TASK_RUNNING &&
+        (task->state == TASK_ZOMBIE ||
+         task->state == TASK_TERMINATED ||
+         task_current_on_cpu(cpu) != task ||
+         (task->running_cpu != TASK_CPU_NONE && task->running_cpu != cpu))) {
+        kernel_lifecycle_stats.scheduler_refused++;
+        sched_trace_record(SCHED_TRACE_REFUSE_INVALID_TASK, task);
         spin_unlock_irqrestore(&task_lock, flags);
         return;
     }
@@ -3571,7 +3792,7 @@ void task_set_state(task_t* task, task_state_t state)
     scheduler_clear_nonrunnable_debt_locked(task, state);
     task->state = state;
     if (state == TASK_RUNNING) {
-        task->running_cpu = smp_processor_id();
+        task->running_cpu = cpu;
         task->last_cpu = task->running_cpu;
     }
     /*

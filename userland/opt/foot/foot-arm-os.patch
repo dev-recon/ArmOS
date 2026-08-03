@@ -122,6 +122,26 @@
      /* Seal file - we no longer allow any kind of resizing */
      /* TODO: wayland mmaps(PROT_WRITE), for some unknown reason, hence we cannot use F_SEAL_FUTURE_WRITE */
      if (fcntl(pool_fd, F_ADD_SEALS,
+--- a/slave.c
++++ b/slave.c
+@@ -169,6 +169,16 @@ slave_exec(int ptmx, char *argv[], int err_fd, bool login_shell,
+         goto err;
+     }
+-
++
++    /*
++     * The terminal emulator owns login-session construction.  After
++     * acquiring the controlling PTY, publish the new session leader's
++     * process group as foreground before an interactive shell performs its
++     * POSIX job-control handshake; otherwise a strict shell stops itself
++     * with SIGTTIN while waiting to become foreground.
++     */
++    if (tcsetpgrp(pts, getpgrp()) < 0)
++        goto err;
++
+ #ifdef IUTF8
+     {
+         struct termios flags;
 --- a/commands.h
 +++ b/commands.h
 @@ -4,3 +4,4 @@

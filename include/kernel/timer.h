@@ -63,6 +63,7 @@ void timer_accounting_irq_enter(bool interrupted_user);
 void timer_accounting_irq_exit(void);
 void timer_cpu_accounting_read(uint32_t cpu_id, timer_cpu_accounting_t* accounting);
 uint32_t get_time_ms(void);
+void get_realtime(uint64_t *seconds, uint32_t *nanoseconds);
 
 void set_critical_section(void);
 void unset_critical_section(void);

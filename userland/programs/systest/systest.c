@@ -35,6 +35,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <arm_os_abi.h>
+#include <armos/limits.h>
 #include <armos/spawn.h>
 
 extern int sched_yield(void);
@@ -67,6 +68,7 @@ static volatile int cow_shared_value = 11;
 static volatile int sleep_signal_seen = 0;
 static volatile int winch_signal_seen = 0;
 static volatile int compat_signal_seen = 0;
+static volatile sig_atomic_t pipe_signal_seen = 0;
 static volatile sig_atomic_t compat_sigchld_value = 0;
 static struct sysinfo_response sysinfo_scratch;
 static char systest_tmp_root[64];
@@ -142,6 +144,12 @@ static void systest_compat_signal_handler(int sig)
 {
     (void)sig;
     compat_signal_seen++;
+}
+
+static void systest_pipe_signal_handler(int sig)
+{
+    if (sig == SIGPIPE)
+        pipe_signal_seen = 1;
 }
 
 static void systest_sigchld_handler(int sig)
@@ -624,6 +632,70 @@ static void test_pipe_dup2(void)
 
     n = read_file(tmp_path("dup2.txt"), buf, sizeof(buf));
     expect(n == 8 && strcmp(buf, "dup2-ok\n") == 0, "dup2 redirected write", n);
+
+    if (expect(pipe(pipefd) == 0, "broken pipe create", errno) == 0) {
+        void (*old_handler)(int);
+
+        old_handler = signal(SIGPIPE, systest_pipe_signal_handler);
+        pipe_signal_seen = 0;
+        close(pipefd[0]);
+        errno = 0;
+        expect(write(pipefd[1], "x", 1) < 0 && errno == EPIPE,
+               "broken pipe returns EPIPE", errno);
+        expect(pipe_signal_seen == 1,
+               "broken pipe delivers SIGPIPE", pipe_signal_seen);
+        close(pipefd[1]);
+        signal(SIGPIPE, old_handler);
+    }
+}
+
+static void test_named_fifo(void)
+{
+    const char *path = tmp_path("named-fifo");
+    struct stat st;
+    struct pollfd pfd;
+    char buffer[8] = {0};
+    int reader;
+    int writer;
+
+    unlink(path);
+    if (expect(mkfifo(path, 0600) == 0, "mkfifo creates FIFO", errno) < 0)
+        return;
+    if (expect(stat(path, &st) == 0 && S_ISFIFO(st.st_mode),
+               "stat reports FIFO type", errno) < 0) {
+        unlink(path);
+        return;
+    }
+
+    errno = 0;
+    writer = open(path, O_WRONLY | O_NONBLOCK);
+    expect(writer < 0 && errno == ENXIO,
+           "nonblocking FIFO writer requires reader", errno);
+
+    reader = open(path, O_RDONLY | O_NONBLOCK);
+    if (expect(reader >= 0, "open nonblocking FIFO reader", errno) < 0) {
+        unlink(path);
+        return;
+    }
+    errno = 0;
+    expect(lseek(reader, 0, SEEK_SET) < 0 && errno == ESPIPE,
+           "FIFO rejects lseek", errno);
+
+    writer = open(path, O_WRONLY | O_NONBLOCK);
+    if (expect(writer >= 0, "open FIFO writer with reader", errno) == 0) {
+        expect(write(writer, "fifo", 4) == 4, "write named FIFO", errno);
+        pfd.fd = reader;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        expect(poll(&pfd, 1, 100) == 1 && (pfd.revents & POLLIN) != 0,
+               "poll reports named FIFO data", pfd.revents);
+        expect(read(reader, buffer, sizeof(buffer)) == 4 &&
+               memcmp(buffer, "fifo", 4) == 0,
+               "read named FIFO data", errno);
+        close(writer);
+    }
+    close(reader);
+    expect(unlink(path) == 0, "unlink named FIFO", errno);
 }
 
 static void test_fd_access_modes(void)
@@ -1024,6 +1096,8 @@ static void test_posix_compat_syscalls(void)
     struct rusage usage;
     struct flock fl;
     struct utsname uts;
+    struct sigaction chld_action;
+    struct sigaction old_chld_action;
     sigset_t mask;
     sigset_t oldmask;
     sigset_t pending;
@@ -1035,6 +1109,8 @@ static void test_posix_compat_syscalls(void)
     FILE *compat_fp;
     pid_t child;
     int child_status;
+    int chld_handler_installed;
+    int chld_gate[2] = { -1, -1 };
 
     unlink(path);
     unlink(rename_src);
@@ -1224,6 +1300,77 @@ static void test_posix_compat_syscalls(void)
                compat_sigchld_value);
     }
     signal(SIGCHLD, SIG_DFL);
+
+    /*
+     * POSIX shells avoid the waitpid scan/sleep race by blocking SIGCHLD,
+     * polling with WNOHANG, then atomically unblocking in sigsuspend().
+     * A child exit must wake this path even though the parent is blocked in
+     * a syscall other than waitpid().
+     */
+    memset(&chld_action, 0, sizeof(chld_action));
+    memset(&old_chld_action, 0, sizeof(old_chld_action));
+    chld_action.sa_handler = systest_sigchld_handler;
+    sigemptyset(&chld_action.sa_mask);
+    compat_sigchld_value = 0;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    chld_handler_installed =
+        sigaction(SIGCHLD, &chld_action, &old_chld_action) == 0;
+    if (expect(chld_handler_installed,
+               "SIGCHLD sigsuspend handler install", errno) == 0 &&
+        expect(sigprocmask(SIG_BLOCK, &mask, &oldmask) == 0,
+               "SIGCHLD blocked before child scan", errno) == 0 &&
+        expect(pipe(chld_gate) == 0,
+               "SIGCHLD sigsuspend synchronization pipe", errno) == 0) {
+        child = fork();
+        if (child == 0) {
+            char token;
+
+            close(chld_gate[1]);
+            if (read(chld_gate[0], &token, 1) != 1)
+                _exit(125);
+            close(chld_gate[0]);
+            _exit(35);
+        }
+        close(chld_gate[0]);
+        chld_gate[0] = -1;
+        if (expect(child > 0, "SIGCHLD sigsuspend fork child", child) == 0) {
+            int suspend_errno;
+            int suspend_result;
+
+            child_status = -1;
+            expect(waitpid(child, &child_status, WNOHANG) == 0,
+                   "SIGCHLD child remains live before sigsuspend",
+                   child_status);
+            expect(write(chld_gate[1], "x", 1) == 1,
+                   "SIGCHLD child release before sigsuspend", errno);
+            close(chld_gate[1]);
+            chld_gate[1] = -1;
+            errno = 0;
+            suspend_result = sigsuspend(&oldmask);
+            suspend_errno = errno;
+            expect(suspend_result == -1 && suspend_errno == EINTR,
+                   "sigsuspend returns EINTR after SIGCHLD",
+                   suspend_result == -1 ? suspend_errno : suspend_result);
+            if (!WIFEXITED(child_status))
+                (void)waitpid(child, &child_status, 0);
+            expect(compat_sigchld_value == SIGCHLD,
+                   "SIGCHLD wakes sigsuspend waiter",
+                   compat_sigchld_value);
+            expect(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 35,
+                   "SIGCHLD sigsuspend child status", child_status);
+        } else {
+            close(chld_gate[1]);
+            chld_gate[1] = -1;
+        }
+        (void)sigprocmask(SIG_SETMASK, &oldmask, NULL);
+    }
+    if (chld_gate[0] >= 0)
+        close(chld_gate[0]);
+    if (chld_gate[1] >= 0)
+        close(chld_gate[1]);
+    if (chld_handler_installed)
+        (void)sigaction(SIGCHLD, &old_chld_action, NULL);
 
     if (!stdin_is_foreground_tty()) {
         skip("tty ioctl/termios mutation (not foreground job)");
@@ -1705,6 +1852,11 @@ static void test_waitpid_wuntraced_continue(void)
            "waitpid stopped status encodes SIGSTOP", status);
 
     expect(kill(pid, SIGCONT) == 0, "kill SIGCONT stopped child", pid);
+    waited = waitpid(pid, &status, WCONTINUED);
+    expect(waited == pid, "waitpid WCONTINUED reports resumed child", waited);
+    expect(WIFCONTINUED(status), "waitpid continued status is canonical", status);
+    waited = waitpid(pid, &status, WCONTINUED | WNOHANG);
+    expect(waited == 0, "waitpid WCONTINUED is one-shot", waited);
     expect(kill(pid, SIGKILL) == 0, "kill SIGKILL continued child", pid);
     waited = waitpid(pid, &status, 0);
     expect(waited == pid, "waitpid reaps continued killed child", waited);
@@ -1865,8 +2017,24 @@ static void test_posix_clocks_and_capabilities(void)
                "clock_nanosleep accepts past deadline", 0);
     }
 
-    expect(clock_gettime(CLOCK_REALTIME, &after) == 0 &&
-           timespec_is_valid(&after), "clock_gettime realtime", errno);
+    if (expect(clock_getres(CLOCK_REALTIME, &resolution) == 0 &&
+               timespec_is_valid(&resolution) &&
+               resolution.tv_sec == 0 && resolution.tv_nsec > 0 &&
+               resolution.tv_nsec <= 1000000L,
+               "clock_getres realtime reports millisecond resolution",
+               errno) == 0 &&
+        expect(clock_gettime(CLOCK_REALTIME, &before) == 0 &&
+               timespec_is_valid(&before),
+               "clock_gettime realtime", errno) == 0) {
+        delay.tv_sec = 0;
+        delay.tv_nsec = 20000000L;
+        expect(nanosleep(&delay, NULL) == 0,
+               "nanosleep advances realtime", errno);
+        expect(clock_gettime(CLOCK_REALTIME, &after) == 0 &&
+               timespec_is_valid(&after) &&
+               timespec_after(&after, &before),
+               "realtime clock advances below one second", errno);
+    }
 
     errno = 0;
     expect(clock_gettime((clockid_t)999, &after) < 0 && errno == EINVAL,
@@ -2604,6 +2772,44 @@ static void test_lifecycle_exec_fail_loop(void)
     expect(ok, "lifecycle repeated exec failure is reaped", ok);
 }
 
+static void test_lifecycle_exec_redirect_loop(void)
+{
+    enum { ITERS = 96 };
+    char output_path[160];
+    int ok = 1;
+
+    snprintf(output_path, sizeof(output_path), "%s/exec-loop.out",
+             systest_tmp_root);
+
+    for (int i = 0; i < ITERS; i++) {
+        int status = -1;
+        int pid = fork();
+
+        if (pid == 0) {
+            char *argv[] = { "true", NULL };
+            char *envp[] = { "PATH=/bin:/usr/bin", NULL };
+            int fd = open(output_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+            if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 ||
+                dup2(fd, STDERR_FILENO) < 0)
+                _exit(122);
+            if (fd > STDERR_FILENO)
+                close(fd);
+            execve("/bin/true", argv, envp);
+            _exit(123);
+        }
+
+        if (pid <= 0 || waitpid(pid, &status, 0) != pid ||
+            !status_exited(status, 0)) {
+            ok = 0;
+            break;
+        }
+    }
+
+    unlink(output_path);
+    expect(ok, "lifecycle repeated redirected exec is scheduled", ok);
+}
+
 static void test_direct_spawn(void)
 {
     char *argv[] = { "true", NULL };
@@ -2626,6 +2832,47 @@ static void test_direct_spawn(void)
                         &attributes);
     expect(pid < 0 && errno == ENOENT,
            "failed direct spawn leaves no child", errno);
+}
+
+static void test_exec_argument_limit(void)
+{
+    const char *arg0 = "true";
+    const size_t vector_bytes = 5u * sizeof(char *);
+    const size_t exact_length = ARG_MAX - vector_bytes - strlen(arg0) - 2u;
+    char *large = malloc(exact_length + 2u);
+    char *argv[] = { (char *)arg0, large, NULL };
+    char *envp[] = { NULL };
+    int status = -1;
+    pid_t pid;
+
+    if (expect(large != NULL, "allocate ARG_MAX exec payload", errno) < 0)
+        return;
+    memset(large, 'x', exact_length + 1u);
+    large[exact_length] = '\0';
+
+    pid = fork();
+    if (pid == 0) {
+        execve("/bin/true", argv, envp);
+        _exit(120);
+    }
+    if (expect(pid > 0, "fork exact ARG_MAX exec", pid) == 0) {
+        expect(waitpid(pid, &status, 0) == pid && status_exited(status, 0),
+               "exec accepts exact ARG_MAX payload", status);
+    }
+
+    large[exact_length] = 'y';
+    large[exact_length + 1u] = '\0';
+    pid = fork();
+    if (pid == 0) {
+        execve("/bin/true", argv, envp);
+        _exit(errno == E2BIG ? 0 : 121);
+    }
+    if (expect(pid > 0, "fork oversized ARG_MAX exec", pid) == 0) {
+        expect(waitpid(pid, &status, 0) == pid && status_exited(status, 0),
+               "exec rejects payload above ARG_MAX with E2BIG", status);
+    }
+
+    free(large);
 }
 
 static void test_lifecycle_wnohang_kill(void)
@@ -2994,6 +3241,7 @@ int main(int argc, char **argv)
     test_access_umask();
     test_open_permission_enforcement();
     test_pipe_dup2();
+    test_named_fifo();
     test_fd_access_modes();
     test_stat_syscalls();
     test_statvfs_syscalls();
@@ -3024,7 +3272,9 @@ int main(int argc, char **argv)
     test_asid_churn();
     test_asid_live_saturation();
     test_direct_spawn();
+    test_exec_argument_limit();
     test_lifecycle_exec_fail_loop();
+    test_lifecycle_exec_redirect_loop();
     test_lifecycle_wnohang_kill();
     test_lifecycle_orphan_reaper();
 

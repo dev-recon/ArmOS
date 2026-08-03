@@ -34,6 +34,12 @@
 #endif
 #undef WIFSTOPPED
 #define WIFSTOPPED(status) ((((status) & 0xff) == 0x7f) && WSTOPSIG(status) != 0)
+#ifndef WCONTINUED
+#define WCONTINUED 8
+#endif
+#ifndef WIFCONTINUED
+#define WIFCONTINUED(status) ((status) == 0xffff)
+#endif
 
 struct proc_info {
     unsigned tid;

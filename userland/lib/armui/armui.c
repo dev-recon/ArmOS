@@ -62,6 +62,10 @@ struct armui_context *armui_create(void)
     nk_font_atlas_init_default(&context->atlas);
     nk_font_atlas_begin(&context->atlas);
     font_config.range = glyph_ranges;
+    /* Small UI text is clearer when glyph origins stay on whole pixels. */
+    font_config.pixel_snap = 1;
+    font_config.oversample_h = 1;
+    font_config.oversample_v = 1;
     context->font = nk_font_atlas_add_from_file(
         &context->atlas,
         "/usr/share/fonts/armos/MesloLGS-NF-Regular.ttf",
@@ -84,6 +88,8 @@ struct armui_context *armui_create(void)
     nk_font_atlas_end(&context->atlas, nk_handle_id(1), NULL);
     if (!nk_init_default(&context->ui, &context->font->handle))
         goto failed;
+    /* Do not inherit Nuklear's low-contrast gray default theme. */
+    armui_set_contrast(context, 0);
     return context;
 
 failed:

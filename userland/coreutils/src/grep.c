@@ -22,13 +22,14 @@ typedef struct grep_options {
     int invert;
     int count_only;
     int quiet;
+    int whole_line;
     int always_filename;
     int never_filename;
 } grep_options_t;
 
 static void usage(void)
 {
-    printf("usage: grep [-n] [-i] [-v] [-c] [-q] [-H] [-h] PATTERN [FILE...]\n");
+    printf("usage: grep [-n] [-i] [-v] [-c] [-q] [-x] [-H] [-h] PATTERN [FILE...]\n");
 }
 
 static char lower_ascii(char c)
@@ -45,12 +46,23 @@ static int char_equal(char a, char b, int ignore_case)
     return a == b;
 }
 
-static int contains_literal(const char* line, const char* pattern, int ignore_case)
+static int contains_literal(const char* line, const char* pattern,
+                            int ignore_case, int whole_line)
 {
     size_t line_len = strlen(line);
     size_t pattern_len = strlen(pattern);
     size_t i;
     size_t j;
+
+    if (whole_line) {
+        if (pattern_len != line_len)
+            return 0;
+        for (i = 0; i < line_len; i++) {
+            if (!char_equal(line[i], pattern[i], ignore_case))
+                return 0;
+        }
+        return 1;
+    }
 
     if (pattern_len == 0)
         return 1;
@@ -151,7 +163,8 @@ static int grep_fd(int fd, const char* name, const char* pattern,
 
         (void)length;
         line_no++;
-        matched = contains_literal(line, pattern, opts->ignore_case);
+        matched = contains_literal(line, pattern, opts->ignore_case,
+                                   opts->whole_line);
         if (opts->invert)
             matched = !matched;
 
@@ -239,6 +252,9 @@ static int parse_options(int argc, char** argv, grep_options_t* opts)
                 break;
             case 'q':
                 opts->quiet = 1;
+                break;
+            case 'x':
+                opts->whole_line = 1;
                 break;
             case 'H':
                 opts->always_filename = 1;

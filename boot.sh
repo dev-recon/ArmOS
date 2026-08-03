@@ -20,6 +20,7 @@ fi
 
 QEMU="$(select_arm_qemu "${1:-}" "$ROOT_DIR" "$TARGET_ARCH")"
 SMP_CPUS="${SMP_CPUS:-${QEMU_SMP}}"
+QEMU_DATA_DIR="$(find_qemu_data_dir "$QEMU")"
 
 if [ ! -f "${QEMU_KERNEL_IMAGE}" ]; then
     echo "Error: kernel image not found: ${QEMU_KERNEL_IMAGE}"
@@ -63,9 +64,17 @@ echo "SMP: ${SMP_CPUS} CPU(s)"
 QEMU_KERNEL_ARGS=(-kernel "${QEMU_KERNEL_IMAGE}")
 if [ -n "${QEMU_KERNEL_LOADER_ADDR}" ]; then
     QEMU_KERNEL_ARGS=(-device "loader,file=${QEMU_KERNEL_IMAGE},addr=${QEMU_KERNEL_LOADER_ADDR},cpu-num=0")
+else
+    QEMU_BOOTARGS="$(qemu_console_bootargs)"
+    if [ -n "$QEMU_BOOTARGS" ]; then
+        QEMU_KERNEL_ARGS+=(-append "$QEMU_BOOTARGS")
+    fi
 fi
 
 QEMU_ARGS=(-M "${QEMU_MACHINE}" -cpu "${QEMU_CPU}" -m "${QEMU_MEMORY}" -smp "${SMP_CPUS}")
+if [ -n "${QEMU_DATA_DIR}" ]; then
+    QEMU_ARGS+=(-L "${QEMU_DATA_DIR}")
+fi
 if [ "${QEMU_BLOCK_ENABLED}" != "0" ]; then
     case "${QEMU_BLOCK_IF}" in
         sd)

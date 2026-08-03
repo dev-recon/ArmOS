@@ -33,17 +33,20 @@ struct armos_shell {
     struct armos_service_snapshot snapshot;
 };
 
-static int shell_launch(const char *path, const char *name)
+static int shell_launch(const char *path, const char *name,
+                        const char *option, const char *argument)
 {
-    char *const argv[] = {(char *)name, NULL};
+    char *const argv[] = {
+        (char *)name, (char *)option, (char *)argument, NULL
+    };
     char *const envp[] = {
         "PATH=/sbin:/bin:/usr/bin",
         "HOME=/home/user",
         "USER=user",
         "LOGNAME=user",
         "LANG=C.UTF-8",
-        "SHELL=/sbin/mash",
-        "MASH_PROTECT=1",
+        "SHELL=/bin/sh",
+        "ENV=/home/user/.shrc",
         "WAYLAND_DISPLAY=wayland-0",
         "XDG_RUNTIME_DIR=/tmp",
         NULL
@@ -72,17 +75,20 @@ static unsigned int shell_frame(
 
     (void)application;
     (void)time_ms;
+    armui_set_contrast(ui, 1);
     if (armui_panel_begin(
             ui, "armos-system-bar", 0.0f, 0.0f,
-            (float)target->width, (float)target->height, 0, 1)) {
+            (float)target->width, (float)target->height, 0, 0)) {
         armui_row(ui, (float)target->height - 4.0f, 4);
         armui_label(ui, "ArmOS", ARMUI_ALIGN_LEFT);
         if (armui_button_label(ui, "Terminal"))
-            (void)shell_launch("/usr/bin/foot", "foot");
+            (void)shell_launch(
+                "/usr/bin/foot", "foot", "-c",
+                "/opt/foot/share/foot.ini");
         if (armui_button_label(ui, "Reglages"))
             (void)shell_launch(
                 "/usr/bin/armos-control-center",
-                "armos-control-center");
+                "armos-control-center", NULL, NULL);
         snprintf(status, sizeof(status), "%uM libres  %s",
                  shell->snapshot.memory_free_kb / 1024u,
                  shell->snapshot.network_available ?

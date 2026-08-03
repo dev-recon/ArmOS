@@ -71,7 +71,7 @@ if ! QEMU_VERSION_OUTPUT="$("$QEMU" --version 2>&1)"; then
 fi
 QEMU_DISPLAY="$(select_display)"
 SMP_CPUS="${SMP_CPUS:-${QEMU_SMP}}"
-QEMU_DATA_DIR="$(cd "$(dirname "$QEMU")/../share/qemu" 2>/dev/null && pwd || true)"
+QEMU_DATA_DIR="$(find_qemu_data_dir "$QEMU")"
 
 case "${QEMU_GPU_ACCEL}" in
     2d)
@@ -186,6 +186,11 @@ echo "SMP: ${SMP_CPUS} CPU(s)"
 QEMU_KERNEL_ARGS=(-kernel "${QEMU_KERNEL_IMAGE}")
 if [ -n "${QEMU_KERNEL_LOADER_ADDR}" ]; then
     QEMU_KERNEL_ARGS=(-device "loader,file=${QEMU_KERNEL_IMAGE},addr=${QEMU_KERNEL_LOADER_ADDR},cpu-num=0")
+else
+    QEMU_BOOTARGS="$(qemu_console_bootargs)"
+    if [ -n "$QEMU_BOOTARGS" ]; then
+        QEMU_KERNEL_ARGS+=(-append "$QEMU_BOOTARGS")
+    fi
 fi
 
 QEMU_ARGS=(-M "${QEMU_MACHINE}" -cpu "${QEMU_CPU}" -m "${QEMU_MEMORY}" -smp "${SMP_CPUS}")

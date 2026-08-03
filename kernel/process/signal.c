@@ -214,38 +214,10 @@ static vaddr_t allocate_signal_stack_address(size_t size)
 /**
  * Initialise les signaux pour un processus - CORRIGe
  */
-void init_process_signals(task_t* proc)
+static void allocate_process_signal_stack(task_t *proc)
 {
-    signal_state_t* sig;
     vma_t *signal_vma;
-    int i;
-    
-    if (!proc || proc->type != TASK_TYPE_PROCESS || !proc->process) {
-        KERROR("[SIGNAL] Invalid process\n");
-        KERROR("[SIGNAL]: NULL PROC\n");
-        return;
-    }
-    
-    /* ACCeS CORRECT a la structure process via l'union */
-    if (!proc->process->vm) {
-        KERROR("[SIGNAL] No VM space\n");
-        return;
-    }
 
-    sig = &proc->process->signals;
-    
-    /* Initialiser les handlers par defaut */
-    for (i = 0; i < MAX_SIGNALS; i++) {
-        sig->actions[i].sa_handler = SIG_DFL;
-        sig->actions[i].sa_mask = 0;
-        sig->actions[i].sa_flags = 0;
-    }
-    
-    sig->pending = 0;
-    sig->blocked = 0;
-    sig->in_handler = 0;
-    sig->return_override = 0;
-    
     /* Allouer l'adresse de la signal stack - ACCeS CORRECT */
     proc->process->signal_stack_size = DEFAULT_SIGNAL_STACK_SIZE;
     proc->process->signal_stack_base = allocate_signal_stack_address(proc->process->signal_stack_size);
@@ -344,6 +316,99 @@ void init_process_signals(task_t* proc)
     //      proc->process->signal_stack_base, 
     //      proc->process->signal_stack_base + proc->process->signal_stack_size,
     //      proc->process->signal_stack_size / 1024);
+}
+
+void init_process_signals(task_t* proc)
+{
+    signal_state_t* sig;
+    int i;
+
+    if (!proc || proc->type != TASK_TYPE_PROCESS || !proc->process) {
+        KERROR("[SIGNAL] Invalid process\n");
+        KERROR("[SIGNAL]: NULL PROC\n");
+        return;
+    }
+
+    if (!proc->process->vm) {
+        KERROR("[SIGNAL] No VM space\n");
+        return;
+    }
+
+    sig = &proc->process->signals;
+    for (i = 0; i < MAX_SIGNALS; i++) {
+        sig->actions[i].sa_handler = SIG_DFL;
+        sig->actions[i].sa_mask = 0;
+        sig->actions[i].sa_flags = 0;
+        sig->actions[i].sa_restorer = NULL;
+    }
+
+    sig->pending = 0;
+    sig->blocked = 0;
+    sig->in_handler = 0;
+    sig->return_override = 0;
+    sig->suspend_saved_mask = 0;
+    sig->suspend_active = false;
+    allocate_process_signal_stack(proc);
+}
+
+void inherit_process_signals(task_t* parent, task_t* child)
+{
+    signal_state_t* source;
+    signal_state_t* target;
+
+    if (!parent || !parent->process || !child || !child->process)
+        return;
+
+    /* Allocate a private signal stack first, then inherit POSIX dispositions. */
+    init_process_signals(child);
+    if (!child->process->signal_stack_base ||
+        !child->process->signal_stack_size)
+        return;
+
+    source = &parent->process->signals;
+    target = &child->process->signals;
+    memcpy(target->actions, source->actions, sizeof(target->actions));
+    target->blocked = source->blocked;
+    target->pending = 0;
+    target->in_handler = 0;
+    target->return_override = 0;
+    target->suspend_saved_mask = 0;
+    target->suspend_active = false;
+}
+
+void reset_process_signals_for_exec(task_t* proc)
+{
+    int sig;
+
+    if (!proc || !proc->process)
+        return;
+
+    /*
+     * POSIX exec semantics:
+     * - pending signals and the signal mask survive exec;
+     * - ignored dispositions survive exec;
+     * - caught dispositions return to their defaults.
+     *
+     * Do not reinitialize the complete signal state here: another CPU may
+     * queue a signal while exec is installing its new address space.
+     */
+    for (sig = 1; sig < MAX_SIGNALS; sig++) {
+        sigaction_t *action = &proc->process->signals.actions[sig];
+
+        if (action->sa_handler != SIG_IGN) {
+            action->sa_handler = SIG_DFL;
+            action->sa_mask = 0;
+            action->sa_flags = 0;
+            action->sa_restorer = NULL;
+        }
+    }
+    proc->process->signals.blocked = signal_sanitize_block_mask(
+        proc->process->signals.blocked);
+    proc->process->signals.in_handler = 0;
+    proc->process->signals.return_override = 0;
+    proc->process->signals.suspend_saved_mask = 0;
+    proc->process->signals.suspend_active = false;
+    allocate_process_signal_stack(proc);
 }
 
 
@@ -618,7 +683,17 @@ static bool setup_signal_handler(task_t* proc, int sig, sigaction_t* action)
     
     sig_state = &proc->process->signals;
     
-    old_blocked = sig_state->blocked;
+    /*
+     * sigsuspend() installs a temporary mask until a caught signal has
+     * entered its handler.  The signal frame must restore the mask that was
+     * active before sigsuspend(), not that temporary mask.
+     */
+    if (sig_state->suspend_active) {
+        old_blocked = sig_state->suspend_saved_mask;
+        sig_state->suspend_active = false;
+    } else {
+        old_blocked = sig_state->blocked;
+    }
     signal_sp = proc->process->signal_stack_base + proc->process->signal_stack_size - 16;
 
     if (!setup_signal_frame(proc, sig, action, signal_sp, old_blocked)) {
@@ -890,6 +965,8 @@ int sys_sigsuspend(const sigset_t* mask)
 
     sig_state = &proc->process->signals;
     old_mask = sig_state->blocked;
+    sig_state->suspend_saved_mask = old_mask;
+    sig_state->suspend_active = true;
     sig_state->blocked = signal_sanitize_block_mask(new_mask);
 
     while (!has_pending_signals(proc)) {
@@ -899,8 +976,11 @@ int sys_sigsuspend(const sigset_t* mask)
             return -EINVAL;
     }
 
-    sig_state = &proc->process->signals;
-    sig_state->blocked = old_mask;
+    /*
+     * Keep the temporary mask installed through syscall return so the common
+     * signal-return path can construct the handler frame. setup_signal_handler
+     * records old_mask in that frame and sigreturn restores it atomically.
+     */
     return -EINTR;
 }
 
@@ -1061,6 +1141,7 @@ static void stop_process(task_t* proc, int sig)
     spin_lock_irqsave(&task_lock, &flags);
     proc->process->stop_signal = sig;
     proc->process->stop_reported = 0;
+    proc->process->continue_pending = 0;
     task_set_stopped_under_lock(proc);
     wakeup_parent_under_lock(proc);
     spin_unlock_irqrestore(&task_lock, flags);
@@ -1081,6 +1162,8 @@ static void continue_process(task_t* proc)
         task_make_ready_under_lock(proc);
         proc->process->stop_signal = 0;
         proc->process->stop_reported = 0;
+        proc->process->continue_pending = 1;
+        wakeup_parent_under_lock(proc);
         continued = true;
     }
     spin_unlock_irqrestore(&task_lock, flags);

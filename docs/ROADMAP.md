@@ -36,10 +36,16 @@ The 0.7.4 release keeps the 0.7 common-kernel architecture and adds:
 - runtime Wi-Fi scans, regulatory-country policy, root-managed per-SSID
   profiles, known-network selection at boot, and nonfatal startup without
   credentials;
-- separate user, kernel, IRQ and idle accounting in `top`, plus adaptive idle
+- separate user, kernel, IRQ and idle accounting in `mtop`, plus adaptive idle
   polling for the `usbd` and `netd` kernel services;
 - deterministic boot ordering that admits secondary schedulers before PID 1
   can print the first framebuffer shell banner.
+- a pinned FreeBSD `/bin/sh` with target-isolated `libedit`, user/root startup
+  profiles, wildcard expansion, interactive job control, and a 511/518
+  imported-test baseline, while `/sbin/mash` remains the recovery shell.
+- the historical process monitor renamed to `mtop`, with the pinned FreeBSD
+  `top` frontend imported separately and an ArmOS `/proc` backend contract
+  prepared under `userland/opt/freebsd-top`.
 
 The next release should build on this baseline instead of introducing an
 architecture-private implementation of a common kernel policy.
@@ -410,7 +416,7 @@ Status: early but usable.
 Immediate goals:
 - Keep `TERM=armos` honest: terminfo should declare only ANSI capabilities that
   the console backend really implements.
-- Use `cursestest`, `nano`, `kilo`, `top`, and `ttytest --interactive-*` as the
+- Use `cursestest`, `nano`, `kilo`, `mtop`, and `ttytest --interactive-*` as the
   terminal UI regression set.
 - Keep ncurses/nano optional until build time and runtime behavior are boring.
 - Preserve the platform console mapping before every graphical or

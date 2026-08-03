@@ -22,9 +22,12 @@
 
 #include <kernel/display.h>
 #include <kernel/disk_layout.h>
+#include <kernel/fdt.h>
 #include <kernel/kprintf.h>
 #include <kernel/keyboard.h>
+#include <kernel/memory.h>
 #include <kernel/platform_devices.h>
+#include <kernel/string.h>
 #include <kernel/tty.h>
 #include <kernel/uart.h>
 #include <kernel/virtio_block.h>
@@ -49,11 +52,73 @@ static const display_backend_ops_t qemu_display_backend = {
     .set_mode = NULL,
 };
 
+static bool qemu_bootarg_u16(const char *bootargs, uint32_t length,
+                             const char *key, uint16_t *value)
+{
+    uint32_t key_length = (uint32_t)strlen(key);
+
+    if (!bootargs || !key || !value)
+        return false;
+
+    for (uint32_t offset = 0; offset + key_length < length; offset++) {
+        uint32_t cursor;
+        uint32_t parsed = 0;
+
+        if (offset != 0 && bootargs[offset - 1] != ' ')
+            continue;
+        if (strncmp(bootargs + offset, key, key_length) != 0)
+            continue;
+
+        cursor = offset + key_length;
+        if (cursor >= length || bootargs[cursor] < '0' ||
+            bootargs[cursor] > '9')
+            return false;
+
+        while (cursor < length && bootargs[cursor] >= '0' &&
+               bootargs[cursor] <= '9') {
+            parsed = parsed * 10u + (uint32_t)(bootargs[cursor] - '0');
+            if (parsed > 65535u)
+                return false;
+            cursor++;
+        }
+        if (cursor < length && bootargs[cursor] != ' ' &&
+            bootargs[cursor] != '\0')
+            return false;
+        if (parsed == 0)
+            return false;
+
+        *value = (uint16_t)parsed;
+        return true;
+    }
+    return false;
+}
+
+static void qemu_console_apply_boot_geometry(void)
+{
+    void *dtb = (void *)(uintptr_t)dtb_address;
+    void *chosen;
+    const char *bootargs;
+    uint32_t length = 0;
+    uint16_t rows;
+    uint16_t cols;
+
+    if (!fdt_check_header(dtb))
+        return;
+    chosen = fdt_find_node_by_name(dtb, "chosen");
+    bootargs = (const char *)fdt_get_property(dtb, chosen, "bootargs", &length);
+    if (!qemu_bootarg_u16(bootargs, length, "armos.tty0.rows=", &rows) ||
+        !qemu_bootarg_u16(bootargs, length, "armos.tty0.cols=", &cols))
+        return;
+
+    (void)tty_set_winsize_for_id(TTY_CONSOLE_ID, rows, cols, 0, 0);
+}
+
 void platform_console_early_init(void)
 {
     uart_init();
     uart_attach_tty_backend_to(TTY_CONSOLE_ID);
     tty_set_kernel_console(TTY_CONSOLE_ID, false);
+    qemu_console_apply_boot_geometry();
 }
 
 void platform_console_enable_rx(void)

@@ -206,6 +206,7 @@ Optional userland components:
 ```text
 BUILD_NEWLIB=yes
 BUILD_ALL_USERLAND=no
+BUILD_FREEBSD_TOP=no
 BUILD_TCC=yes
 BUILD_BSD=no
 BUILD_NCURSES=no
@@ -228,6 +229,10 @@ BUILD_FBVIEW=no
 `BUILD_NANO=yes` requires either `BUILD_NCURSES=yes` or an ncurses bundle
 already installed in `userfs`. The bundle remains under `/opt/nano`, with
 `/usr/bin/nano` created as a relative symlink during userfs staging.
+`BUILD_FREEBSD_TOP=yes` cross-builds the pinned FreeBSD frontend with the
+architecture-neutral ArmOS `/proc` backend and installs it as `/usr/bin/top`.
+It requires ncurses. The historical built-in monitor remains available as
+`/bin/mtop` for diagnostics and comparison.
 `BUILD_EPOLL_SHIM=yes` installs the common
 poll-backed epoll compatibility library and its regression test for ports such
 as Foot. `BUILD_UTF8PROC=yes` installs the Unicode normalization and grapheme

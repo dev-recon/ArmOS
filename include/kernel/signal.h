@@ -76,6 +76,8 @@ typedef enum {
 
 /* Signal functions */
 void init_process_signals(task_t* proc);
+void inherit_process_signals(task_t* parent, task_t* child);
+void reset_process_signals_for_exec(task_t* proc);
 int send_signal(task_t* target, int sig);
 signal_check_result_t check_pending_signals(void);
 int signal_consume_user_return_override(void);

@@ -30,6 +30,20 @@ select_arm_qemu() {
     fi
 }
 
+find_qemu_data_dir() {
+    local qemu_binary="${1:?QEMU binary is required}"
+    local resolved_binary
+    local candidate
+
+    resolved_binary="$(command -v "$qemu_binary" 2>/dev/null || true)"
+    [ -n "$resolved_binary" ] || return 0
+
+    candidate="$(cd "$(dirname "$resolved_binary")/../share/qemu" 2>/dev/null && pwd || true)"
+    if [ -n "$candidate" ] && [ -f "$candidate/efi-virtio.rom" ]; then
+        printf '%s\n' "$candidate"
+    fi
+}
+
 require_qemu_version() {
     local qemu_binary="${1:?QEMU binary is required}"
     local required="${QEMU_REQUIRED_VERSION:-}"
@@ -44,4 +58,41 @@ require_qemu_version() {
         echo "Run ./tools/build_qemu_10_0_2.sh or unset QEMU_REQUIRED_VERSION." >&2
         return 1
     fi
+}
+
+# Measure the terminal which owns QEMU's stdio UART.  A PL011 UART transports
+# bytes only, so the guest cannot discover this geometry by itself.  QEMU's
+# direct-kernel boot path can, however, carry it in /chosen/bootargs.
+qemu_host_tty_geometry() {
+    local measured=""
+    local rows="${ARMOS_TTY_ROWS:-}"
+    local cols="${ARMOS_TTY_COLS:-}"
+
+    if [ -z "$rows" ] || [ -z "$cols" ]; then
+        if [ -r /dev/tty ]; then
+            measured="$(stty size </dev/tty 2>/dev/null || true)"
+            if [ -n "$measured" ]; then
+                read -r rows cols <<<"$measured"
+            fi
+        fi
+    fi
+
+    if ! [[ "$rows" =~ ^[0-9]+$ && "$cols" =~ ^[0-9]+$ ]] ||
+       [ "$rows" -lt 2 ] || [ "$rows" -gt 1000 ] ||
+       [ "$cols" -lt 2 ] || [ "$cols" -gt 1000 ]; then
+        return 1
+    fi
+
+    QEMU_HOST_TTY_ROWS="$rows"
+    QEMU_HOST_TTY_COLS="$cols"
+    return 0
+}
+
+qemu_console_bootargs() {
+    local args="${QEMU_KERNEL_CMDLINE:-}"
+
+    if qemu_host_tty_geometry; then
+        args="${args:+$args }armos.tty0.rows=$QEMU_HOST_TTY_ROWS armos.tty0.cols=$QEMU_HOST_TTY_COLS"
+    fi
+    printf '%s\n' "$args"
 }

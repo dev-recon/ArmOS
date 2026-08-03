@@ -30,9 +30,11 @@ static char *const init_envp[] = {
     "PATH=/bin:/usr/bin:/opt/kilo/bin:/opt/nano/bin",
     "HOME=/home/user",
     "USER=user",
+    "LOGNAME=user",
     "LANG=C.UTF-8",
+    "TERM=armos",
     "SHELL=/sbin/mash",
-    "PS1=mash$> ",
+    "PS1=user@mash$> ",
     NULL
 };
 

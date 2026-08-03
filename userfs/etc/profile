@@ -1,0 +1,10 @@
+# ArmOS system profile for POSIX-compatible login shells.
+
+PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin:/opt/nano/bin
+LANG=C.UTF-8
+TERM=${TERM:-armos}
+export PATH LANG TERM
+
+# FreeBSD sh reads ENV for interactive non-login shells.
+ENV=${HOME}/.shrc
+export ENV

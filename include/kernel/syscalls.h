@@ -25,6 +25,7 @@
 #include <kernel/signal.h>  /* Pour sig_handler_t et sigaction_t */
 #include <kernel/dirent.h>
 #include <uapi/armos/file.h>
+#include <uapi/armos/limits.h>
 #include <uapi/armos/futex.h>
 #include <uapi/armos/resource.h>
 #include <uapi/armos/spawn.h>
@@ -376,6 +377,7 @@ int sys_poll(struct pollfd_kernel* fds, uint32_t nfds, int timeout_ms);
 /* Process syscalls */
 #define WNOHANG    1
 #define WUNTRACED  2
+#define WCONTINUED 8
 
 int sys_fork(void);
 int sys_clone(const armos_clone_args_t* args, size_t args_size);

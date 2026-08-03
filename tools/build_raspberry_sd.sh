@@ -461,7 +461,7 @@ case "$PUSH_MODE" in
 
         echo "=== Boot partition update only ==="
         echo "note: kernel/firmware will be updated, but the SD root filesystem will not."
-        echo "note: userland changes such as a rebuilt top require --mode raw."
+        echo "note: userland changes such as a rebuilt mtop require --mode raw."
 
         if [ "$INSTALL_FIRMWARE" = "1" ]; then
             [ -d "$RASPI_FIRMWARE_DIR" ] || die "firmware directory not found: $RASPI_FIRMWARE_DIR"

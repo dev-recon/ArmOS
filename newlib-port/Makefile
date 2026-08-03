@@ -43,6 +43,10 @@ OBJECTS := $(BUILD_DIR)/crt0_newlib.o \
 
 all: check-newlib $(OBJECTS)
 
+# Compiler flags are part of the runtime ABI (notably the AArch64 TLS model).
+# Rebuild cached runtime objects whenever this recipe changes.
+$(OBJECTS): Makefile
+
 check-newlib:
 	@if [ -z "$(NEWLIB_SYSROOT)" ] || [ ! -f "$(NEWLIB_INCLUDE)/stdio.h" ] || [ ! -f "$(NEWLIB_LIBC)" ]; then \
 		echo "Error: newlib sysroot not found or incomplete."; \

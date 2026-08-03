@@ -173,7 +173,7 @@ void process_release_init(void)
 }
 
 /**
- * Fonction principale du processus init - adaptee a votre structure
+ * Fonction principale du processus init
  */
 void init_process_main(void* arg)
 {
@@ -185,9 +185,11 @@ void init_process_main(void* arg)
         "PATH=/sbin:/bin:/usr/bin:/opt/kilo/bin",
         "HOME=/home/user",
         "USER=user",
+        "LOGNAME=user",
         "LANG=C.UTF-8",
+        "TERM=armos",
         "SHELL=/sbin/mash",
-        "PS1=mash$> ",
+        "PS1=user@mash$> ",
         NULL
     };
     int result;
@@ -223,31 +225,22 @@ void init_process_main(void* arg)
 
     while (1) {
         bool has_children = (init_process->process->children != NULL);
-        
+
         if (has_children) {
-            /* Attendre n'importe quel enfant */
             int status;
             pid_t child_pid = kernel_waitpid(-1, &status, 0, init_process);
-            
-            if (child_pid > 0) {
+
+            if (child_pid > 0)
                 reaped_count++;
-                //KDEBUG("[INIT] Reaped orphan child PID=%d (status=%d) [total=%d]\n",
-                //       child_pid, status, reaped_count);
-            }
         } else {
-            /* PAS D'ENFANTS : Ne pas faire waitpid */
-            //KDEBUG("[INIT] No children, sleeping...\n");
-            task_sleep_ms(1000);  /* Dormir au lieu de waitpid */
+            task_sleep_ms(1000);
         }
-        
-        /* Status periodique */
+
         static int status_counter = 0;
         if (++status_counter % 500 == 0) {
-            //KINFO("[INIT] Status: %d children reaped, system running\n", reaped_count);
-            //list_all_processes();
+            (void)reaped_count;
         }
         
-        /* Pause courte */
         task_sleep_ms(200);
         yield();
     }

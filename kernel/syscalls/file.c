@@ -37,9 +37,13 @@
 #include <kernel/input.h>
 #include <kernel/drm.h>
 #include <kernel/pty.h>
+#include <kernel/pipe.h>
 
 #define SYSCALL_IO_BOUNCE_SIZE     (64u * 1024u)
 #define SYSCALL_IO_BOUNCE_MIN_SIZE (4u * 1024u)
+#define STANDARD_INPUT_FD          0
+#define STANDARD_OUTPUT_FD         1
+#define STANDARD_ERROR_FD          2
 
 
 /* Forward declarations de toutes les fonctions statiques */
@@ -55,6 +59,35 @@ extern file_operations_t ext2_file_ops;
 extern inode_operations_t ext2_inode_ops;
 
 static spinlock_t file_ref_lock = SPINLOCK_INIT("file_ref");
+
+static int standard_stream_fd_from_path(const char *path)
+{
+    if (strcmp(path, "/dev/stdin") == 0)
+        return STANDARD_INPUT_FD;
+    if (strcmp(path, "/dev/stdout") == 0)
+        return STANDARD_OUTPUT_FD;
+    if (strcmp(path, "/dev/stderr") == 0)
+        return STANDARD_ERROR_FD;
+    return -1;
+}
+
+static int open_standard_stream_alias(task_t *task, int source_fd, int flags)
+{
+    file_t *file;
+    int fd;
+
+    if (flags & O_DIRECTORY)
+        return -ENOTDIR;
+
+    file = vfs_get_file_from_fd(task, source_fd);
+    if (!file)
+        return -EBADF;
+
+    fd = vfs_install_file(task, file, (uint32_t)(flags & O_CLOEXEC));
+    if (fd < 0)
+        close_file(file);
+    return fd;
+}
 
 bool inode_permission(inode_t* inode, int mask) {
     /* Root peut tout faire */
@@ -448,8 +481,18 @@ static int install_open_file(task_t *task, inode_t *inode, int flags,
     file->inode = inode;
     file->flags = flags & ~O_CLOEXEC;
     file->offset = flags & O_APPEND ? inode->size : 0;
-    file->f_op = inode->f_op;
+    /* close_file() balances this reference on every setup failure below. */
     vfs_inode_opened(inode);
+    if (S_ISFIFO(inode->mode)) {
+        int result = pipe_open_named(inode, file, flags);
+
+        if (result < 0) {
+            close_file(file);
+            return result;
+        }
+    } else {
+        file->f_op = inode->f_op;
+    }
     strncpy(file->name, opened_name, sizeof(file->name) - 1u);
     file->name[sizeof(file->name) - 1u] = '\0';
     strncpy(file->path, opened_path, sizeof(file->path) - 1u);
@@ -691,7 +734,7 @@ int kernel_open(char* kernel_path, int flags, mode_t mode)
         return -ENOTDIR;
     }
 
-    if (opened_existing &&
+    if (opened_existing && S_ISREG(inode->mode) &&
         (flags & O_TRUNC) && ((flags & O_ACCMODE) != O_RDONLY)) {
         int truncate_result;
 
@@ -743,7 +786,16 @@ int kernel_open(char* kernel_path, int flags, mode_t mode)
         file->offset = 0;
     }
 
-    file->f_op = inode->f_op;
+    if (S_ISFIFO(inode->mode)) {
+        int result = pipe_open_named(inode, file, flags);
+
+        if (result < 0) {
+            close_file(file);
+            return result;
+        }
+    } else {
+        file->f_op = inode->f_op;
+    }
     strncpy(file->path, opened_path, sizeof(file->path) - 1u);
     file->path[sizeof(file->path) - 1u] = '\0';
 
@@ -812,7 +864,8 @@ void path_canonicalize(char *path) {
     *out = '\0';
 }
 
-int resolve_path_at(int dirfd, const char* path, char** resolved)
+static int resolve_path_at_internal(int dirfd, const char* path,
+                                    char** resolved, bool canonicalize)
 {
     task_t *task = task_current_local();
     const char *base;
@@ -835,7 +888,8 @@ int resolve_path_at(int dirfd, const char* path, char** resolved)
         full_path = strdup(path);
         if (!full_path)
             return -ENOMEM;
-        path_canonicalize(full_path);
+        if (canonicalize)
+            path_canonicalize(full_path);
         *resolved = full_path;
         return 0;
     }
@@ -870,9 +924,20 @@ int resolve_path_at(int dirfd, const char* path, char** resolved)
     if (add_slash)
         strcat(full_path, "/");
     strcat(full_path, path);
-    path_canonicalize(full_path);
+    if (canonicalize)
+        path_canonicalize(full_path);
     *resolved = full_path;
     return 0;
+}
+
+int resolve_path_at(int dirfd, const char* path, char** resolved)
+{
+    return resolve_path_at_internal(dirfd, path, resolved, true);
+}
+
+int resolve_path_at_raw(int dirfd, const char* path, char** resolved)
+{
+    return resolve_path_at_internal(dirfd, path, resolved, false);
 }
 
 char* resolve_path(const char* path)
@@ -998,6 +1063,7 @@ static int sys_open_resolved(task_t *task, char *full_path,
 
     int fd;
     int drm_error;
+    int standard_stream_fd;
 
     /* Suppression du warning unused parameter */
     (void)mode;
@@ -1005,6 +1071,13 @@ static int sys_open_resolved(task_t *task, char *full_path,
     if (!task || !task->process || !full_path) {
         kfree(full_path);
         return -EINVAL;
+    }
+
+    standard_stream_fd = standard_stream_fd_from_path(full_path);
+    if (standard_stream_fd >= 0) {
+        fd = open_standard_stream_alias(task, standard_stream_fd, flags);
+        kfree(full_path);
+        return fd;
     }
 
     int search_ret = vfs_check_search_permission(full_path, false);
@@ -1300,6 +1373,9 @@ off_t sys_lseek(int fd, off_t offset, int whence)
     
     file = task->process->files[fd];
     if (!file) return -EBADF;
+
+    if (file->type == FILE_TYPE_PIPE)
+        return -ESPIPE;
     
     if (file->f_op && file->f_op->lseek) {
         return file->f_op->lseek(file, offset, whence);
