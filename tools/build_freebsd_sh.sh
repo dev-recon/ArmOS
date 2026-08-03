@@ -37,8 +37,9 @@ fi
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/bin" "$BUNDLE_PREFIX/tests"
 
-"$HOSTCC" -std=gnu11 -I"$SH_SRC" "$SH_SRC/mknodes.c" -o "$BUILD_DIR/mknodes"
-"$HOSTCC" -std=gnu11 -I"$SH_SRC" "$SH_SRC/mksyntax.c" -o "$BUILD_DIR/mksyntax"
+HOST_CFLAGS="-std=gnu11 -I$SH_SRC -include $COMPAT_DIR/armos_sh_host_compat.h"
+"$HOSTCC" $HOST_CFLAGS "$SH_SRC/mknodes.c" -o "$BUILD_DIR/mknodes"
+"$HOSTCC" $HOST_CFLAGS "$SH_SRC/mksyntax.c" -o "$BUILD_DIR/mksyntax"
 (
     cd "$BUILD_DIR"
     sh "$SH_SRC/mkbuiltins" "$SH_SRC"
