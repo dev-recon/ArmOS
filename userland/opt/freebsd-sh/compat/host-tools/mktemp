@@ -1,0 +1,20 @@
+#!/bin/sh
+# Translate the legacy FreeBSD "mktemp -t prefix" form used by the native
+# sh generators into the portable explicit-template form accepted by both
+# BSD and GNU mktemp implementations.
+
+set -eu
+
+: "${ARMOS_HOST_MKTEMP:?real host mktemp path is required}"
+
+if [ "${1:-}" = "-t" ] && [ "$#" -ge 2 ]; then
+    prefix="$2"
+    shift 2
+    case "$prefix" in
+        *XXXXXX*) template="$prefix" ;;
+        *) template="${TMPDIR:-/tmp}/${prefix}.XXXXXX" ;;
+    esac
+    exec "$ARMOS_HOST_MKTEMP" "$template" "$@"
+fi
+
+exec "$ARMOS_HOST_MKTEMP" "$@"

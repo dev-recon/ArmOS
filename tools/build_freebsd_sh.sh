@@ -19,6 +19,7 @@ source "$ROOT_DIR/tools/cross_target_env.sh"
 CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
 HOSTCC="${HOSTCC:-cc}"
+HOST_MKTEMP="${HOST_MKTEMP:-$(command -v mktemp || true)}"
 LIBGCC="${LIBGCC:-$("$CC" $ARM_FLAGS -print-libgcc-file-name)}"
 WITH_LIBEDIT="${FREEBSD_SH_WITH_LIBEDIT:-1}"
 INSTALL_UPSTREAM_TESTS="${FREEBSD_SH_INSTALL_UPSTREAM_TESTS:-0}"
@@ -33,6 +34,10 @@ if [ ! -f "$NEWLIB_LIBC" ] || [ ! -f "$NEWLIB_RUNTIME_DIR/crt0_newlib.o" ]; then
     echo "error: target newlib and runtime objects must be built first" >&2
     exit 1
 fi
+if [ -z "$HOST_MKTEMP" ] || [ ! -x "$HOST_MKTEMP" ]; then
+    echo "error: native FreeBSD sh generators require host mktemp" >&2
+    exit 1
+fi
 
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/bin" "$BUNDLE_PREFIX/tests"
@@ -42,8 +47,10 @@ HOST_CFLAGS="-std=gnu11 -I$SH_SRC -include $COMPAT_DIR/armos_sh_host_compat.h"
 "$HOSTCC" $HOST_CFLAGS "$SH_SRC/mksyntax.c" -o "$BUILD_DIR/mksyntax"
 (
     cd "$BUILD_DIR"
-    sh "$SH_SRC/mkbuiltins" "$SH_SRC"
-    sh "$SH_SRC/mktokens"
+    PATH="$COMPAT_DIR/host-tools:$PATH" ARMOS_HOST_MKTEMP="$HOST_MKTEMP" \
+        sh "$SH_SRC/mkbuiltins" "$SH_SRC"
+    PATH="$COMPAT_DIR/host-tools:$PATH" ARMOS_HOST_MKTEMP="$HOST_MKTEMP" \
+        sh "$SH_SRC/mktokens"
     ./mknodes "$SH_SRC/nodetypes" "$SH_SRC/nodes.c.pat"
     ./mksyntax
 )
