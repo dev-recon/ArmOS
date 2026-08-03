@@ -47,6 +47,8 @@ BUNDLE_FONT_DIR="$BUNDLE_ROOT/usr/share/fonts/armos"
 BUNDLE_TCC_INCLUDE="$BUNDLE_ROOT/opt/tcc/include"
 ARCHIVE_PATH="${FREETYPE_ARCHIVE_PATH:-$DOWNLOAD_DIR/$FREETYPE_ARCHIVE}"
 SRC_DIR="${SRC_DIR:-$SOURCE_ROOT/freetype-$FREETYPE_VERSION}"
+SOURCE_CONTRACT="freetype-$FREETYPE_VERSION:$FREETYPE_SHA256"
+SOURCE_CONTRACT_FILE="$SOURCE_ROOT/.armos-source.contract"
 
 CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
@@ -91,7 +93,9 @@ download_archive()
     return 1
 }
 
-if [ ! -f "$SRC_DIR/include/freetype/freetype.h" ]; then
+if [ ! -f "$SRC_DIR/include/freetype/freetype.h" ] ||
+   [ ! -f "$SOURCE_CONTRACT_FILE" ] ||
+   [ "$(cat "$SOURCE_CONTRACT_FILE" 2>/dev/null || true)" != "$SOURCE_CONTRACT" ]; then
     mkdir -p "$DOWNLOAD_DIR"
     if [ -f "$ARCHIVE_PATH" ] && ! verify_archive; then
         echo "warning: removing incomplete or invalid FreeType archive" >&2
@@ -107,6 +111,8 @@ if [ ! -f "$SRC_DIR/include/freetype/freetype.h" ]; then
     rm -rf "$SOURCE_ROOT"
     mkdir -p "$SOURCE_ROOT"
     tar -xJf "$ARCHIVE_PATH" -C "$SOURCE_ROOT"
+    printf '%s\n' "$SOURCE_CONTRACT" > "$SOURCE_CONTRACT_FILE"
+    armos_configure_source_refreshed "$BUILD_DIR" "$SRC_DIR"
 fi
 
 if [ ! -f "$SRC_DIR/include/freetype/freetype.h" ] ||

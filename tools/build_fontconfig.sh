@@ -43,6 +43,8 @@ BUNDLE_USR_BIN="$BUNDLE_ROOT/usr/bin"
 BUNDLE_TCC_INCLUDE="$BUNDLE_ROOT/opt/tcc/include"
 ARCHIVE_PATH="${FONTCONFIG_ARCHIVE_PATH:-$DOWNLOAD_DIR/$FONTCONFIG_ARCHIVE}"
 SRC_DIR="${SRC_DIR:-$SOURCE_ROOT/fontconfig-$FONTCONFIG_VERSION}"
+SOURCE_CONTRACT="fontconfig-$FONTCONFIG_VERSION:$FONTCONFIG_SHA256"
+SOURCE_CONTRACT_FILE="$SOURCE_ROOT/.armos-source.contract"
 FREETYPE_PREFIX="${FREETYPE_PREFIX:-$BUNDLE_BUILD_ROOT/freetype/bundle/opt/freetype}"
 EXPAT_PREFIX="${EXPAT_PREFIX:-$BUNDLE_BUILD_ROOT/expat/bundle/opt/expat}"
 
@@ -70,7 +72,9 @@ verify_archive()
     fi
 }
 
-if [ ! -f "$SRC_DIR/src/fcinit.c" ]; then
+if [ ! -f "$SRC_DIR/src/fcinit.c" ] ||
+   [ ! -f "$SOURCE_CONTRACT_FILE" ] ||
+   [ "$(cat "$SOURCE_CONTRACT_FILE" 2>/dev/null || true)" != "$SOURCE_CONTRACT" ]; then
     mkdir -p "$DOWNLOAD_DIR"
     if [ ! -f "$ARCHIVE_PATH" ]; then
         curl -L --fail --output "$ARCHIVE_PATH" "$FONTCONFIG_URL"
@@ -79,6 +83,8 @@ if [ ! -f "$SRC_DIR/src/fcinit.c" ]; then
     rm -rf "$SOURCE_ROOT"
     mkdir -p "$SOURCE_ROOT"
     tar -xJf "$ARCHIVE_PATH" -C "$SOURCE_ROOT"
+    printf '%s\n' "$SOURCE_CONTRACT" > "$SOURCE_CONTRACT_FILE"
+    armos_configure_source_refreshed "$BUILD_DIR" "$SRC_DIR"
 fi
 
 if [ ! -f "$SRC_DIR/src/fcinit.c" ] ||

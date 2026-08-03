@@ -8,6 +8,15 @@
 
 ARMOS_CONFIGURE_CACHE_REVISION=2
 
+armos_configure_source_refreshed()
+{
+    local build_dir="$1"
+    local source_dir="$2"
+
+    echo "=== Source tree refreshed: invalidating configured build for $source_dir ==="
+    armos_configure_reset_build_dir "$build_dir"
+}
+
 armos_configure_cache_key()
 {
     {
