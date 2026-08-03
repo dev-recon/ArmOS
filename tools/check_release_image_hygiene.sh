@@ -32,7 +32,11 @@ for tool in find grep gzip mktemp rm strings tar; do
 done
 
 HOST_PATH_PATTERN='/Users/|/private/var/folders/|/opt/homebrew/|/usr/local/(Cellar|opt)/|/home/[^/]+/(dev|src|work|workspace|projects?)/|/root/(dev|src|work|workspace|projects?)/'
-MAC_METADATA_PATTERN='(^|/)(\.DS_Store|\._[^/]*|\.Spotlight-V100|\.Trashes)($|/)'
+# Raw binaries can legitimately contain short printable instruction/data
+# fragments such as "._%c".  Restrict the heuristic used for opaque images to
+# portable AppleDouble filenames; directory and archive scans still inspect
+# actual names and reject every ._* entry without relying on this pattern.
+MAC_METADATA_PATTERN='(^|/)(\.DS_Store|\._[[:alnum:]][[:alnum:]._-]*|\.Spotlight-V100|\.Trashes)($|/)'
 failures=0
 scan_serial=0
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/armos-release-hygiene.XXXXXX")"

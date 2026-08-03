@@ -81,6 +81,42 @@ log()
     fi
 }
 
+run_noisy()
+{
+    if [ -n "$PRINT_MODE" ]; then
+        "$@" >&2
+    else
+        "$@"
+    fi
+}
+
+build_m4()
+{
+    (
+        cd "$BUILD_ROOT/m4-$M4_VERSION"
+        "$SOURCE_ROOT/m4-$M4_VERSION/configure" \
+            --prefix="$PREFIX" \
+            --disable-dependency-tracking \
+            --disable-nls
+        make -j"$JOBS" MAKEINFO=true
+        make install MAKEINFO=true
+    )
+}
+
+build_bison()
+{
+    (
+        cd "$BUILD_ROOT/bison-$BISON_VERSION"
+        PATH="$PREFIX/bin:$PATH" M4="$PREFIX/bin/m4" \
+            "$SOURCE_ROOT/bison-$BISON_VERSION/configure" \
+            --prefix="$PREFIX" \
+            --disable-dependency-tracking \
+            --disable-nls
+        PATH="$PREFIX/bin:$PATH" make -j"$JOBS" MAKEINFO=true
+        PATH="$PREFIX/bin:$PATH" make install MAKEINFO=true
+    )
+}
+
 sha256_file()
 {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -201,15 +237,7 @@ if [ "${ARMOS_FORCE_HOST_TOOLS_REBUILD:-0}" = "1" ] ||
     tar -xJf "$M4_ARCHIVE" -C "$SOURCE_ROOT/m4-$M4_VERSION" --strip-components=1
 
     log "=== Building GNU M4 $M4_VERSION for $HOST_ID ==="
-    (
-        cd "$BUILD_ROOT/m4-$M4_VERSION"
-        "$SOURCE_ROOT/m4-$M4_VERSION/configure" \
-            --prefix="$PREFIX" \
-            --disable-dependency-tracking \
-            --disable-nls
-        make -j"$JOBS" MAKEINFO=true
-        make install MAKEINFO=true
-    )
+    run_noisy build_m4
 fi
 
 if [ "${ARMOS_FORCE_HOST_TOOLS_REBUILD:-0}" = "1" ] ||
@@ -220,16 +248,7 @@ if [ "${ARMOS_FORCE_HOST_TOOLS_REBUILD:-0}" = "1" ] ||
     tar -xJf "$BISON_ARCHIVE" -C "$SOURCE_ROOT/bison-$BISON_VERSION" --strip-components=1
 
     log "=== Building GNU Bison $BISON_VERSION for $HOST_ID ==="
-    (
-        cd "$BUILD_ROOT/bison-$BISON_VERSION"
-        PATH="$PREFIX/bin:$PATH" M4="$PREFIX/bin/m4" \
-            "$SOURCE_ROOT/bison-$BISON_VERSION/configure" \
-            --prefix="$PREFIX" \
-            --disable-dependency-tracking \
-            --disable-nls
-        PATH="$PREFIX/bin:$PATH" make -j"$JOBS" MAKEINFO=true
-        PATH="$PREFIX/bin:$PATH" make install MAKEINFO=true
-    )
+    run_noisy build_bison
 fi
 
 if ! version_is "$PREFIX/bin/m4" "m4 (GNU M4) $M4_VERSION"; then
@@ -245,10 +264,10 @@ if [ "${ARMOS_FORCE_HOST_TOOLS_REBUILD:-0}" = "1" ] ||
    ! python_environment_is_ready; then
     log "=== Provisioning pinned Mesa Python tools for $HOST_ID ==="
     rm -rf "$PYTHON_PREFIX"
-    env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
+    run_noisy env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
         "$HOST_PYTHON" -m venv "$PYTHON_PREFIX"
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-        env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
+    run_noisy env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
+        PIP_DISABLE_PIP_VERSION_CHECK=1 \
         "$PYTHON_BIN" -m pip install \
         --no-compile \
         "meson==$MESON_VERSION" \

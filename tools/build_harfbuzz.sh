@@ -52,6 +52,7 @@ RANLIB="${ARCH}ranlib"
 STRIP="${ARCH}strip"
 NM="${ARCH}nm"
 LIBGCC="${LIBGCC:-$("$CC" $ARM_FLAGS -print-libgcc-file-name)}"
+GCC_INCLUDE="${GCC_INCLUDE:-$("$CXX" $ARM_FLAGS -print-file-name=include)}"
 FORMAT_FLAGS=""
 if [ "$TARGET_ARCH" = "arm32" ]; then
     # This GCC target spells its 32-bit integer typedefs as long. They are ABI
@@ -100,6 +101,10 @@ if ! command -v "$CXX" >/dev/null 2>&1; then
     exit 1
 fi
 LIBCXX_INCLUDE="$(find_libcxx_include)"
+if [ ! -f "$GCC_INCLUDE/stddef.h" ]; then
+    echo "error: GCC intrinsic headers not found: $GCC_INCLUDE" >&2
+    exit 1
+fi
 
 verify_archive()
 {
@@ -149,7 +154,7 @@ mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/harfbuzz" \
 
 CXXFLAGS="$ARM_FLAGS $FORMAT_FLAGS -std=c++17 -O2 -ffreestanding -fno-builtin \
 -fno-stack-protector -fno-exceptions -fno-rtti -fno-threadsafe-statics \
--fno-use-cxa-atexit -fvisibility=hidden -nostdinc++ \
+-fno-use-cxa-atexit -fvisibility=hidden -nostdinc -nostdinc++ \
 -DLLONG_MIN=(-9223372036854775807LL-1) \
 -DLLONG_MAX=9223372036854775807LL \
 -DULLONG_MAX=18446744073709551615ULL \
@@ -159,7 +164,7 @@ CXXFLAGS="$ARM_FLAGS $FORMAT_FLAGS -std=c++17 -O2 -ffreestanding -fno-builtin \
 -DHB_NO_GDI -DHB_NO_WASM \
 -include $ROOT_DIR/tools/harfbuzz-cxx/armos-cxx-compat.h \
 -I$ROOT_DIR/tools/harfbuzz-cxx -I$ROOT_DIR/userland/include \
--isystem $LIBCXX_INCLUDE -I$SRC_DIR/src \
+-isystem $LIBCXX_INCLUDE -isystem $GCC_INCLUDE -I$SRC_DIR/src \
 -I$FREETYPE_PREFIX/include/freetype2 \
 -idirafter $NEWLIB_SYSROOT/include"
 CFLAGS="$ARM_FLAGS -std=gnu18 -O2 -ffreestanding -fno-builtin \

@@ -14,7 +14,7 @@ STRIP="${ARCH}strip"
 HOST_CC="${HOST_CC:-cc}"
 NANO_VERSION="${NANO_VERSION:-8.7}"
 NANO_PORT_REVISION="${NANO_PORT_REVISION:-2}"
-NANO_CONFIG_CACHE_REVISION="${NANO_CONFIG_CACHE_REVISION:-2}"
+NANO_CONFIG_CACHE_REVISION="${NANO_CONFIG_CACHE_REVISION:-3}"
 NANO_URL="${NANO_URL:-https://www.nano-editor.org/dist/v8/nano-$NANO_VERSION.tar.xz}"
 
 WORK_DIR="${WORK_DIR:-$BUNDLE_BUILD_ROOT/nano}"
@@ -94,14 +94,14 @@ fi
 rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_BIN" "$BUNDLE_ETC" "$BUNDLE_SYNTAX"
 
-cd "$BUILD_DIR"
-
 # Keep the first port intentionally small.  nano's configure script comes from
 # gnulib and normally probes a large Unix surface by executing test programs;
 # for ArmOS cross-builds we pin the answers that matter for the compact
 # profile.  Keep Nano's normal SIGWINCH support: the upstream tiny profile
 # deliberately removes terminal resize handling.
-cat > config.cache <<'CACHE'
+write_nano_config_cache()
+{
+    cat > "$BUILD_DIR/config.cache" <<'CACHE'
 ac_cv_func_chown=yes
 ac_cv_func_fchmod=yes
 ac_cv_func_fsync=yes
@@ -154,6 +154,9 @@ gt_cv_locale_ja=none
 gt_cv_locale_zh_CN=none
 am_cv_func_iconv=no
 CACHE
+}
+
+cd "$BUILD_DIR"
 
 BUILD_TRIPLET="$("$SRC_DIR/config.guess" 2>/dev/null || echo unknown)"
 NANO_CPPFLAGS="-I$ROOT_DIR/userland/include -I$NEWLIB_SYSROOT/include -I$NCURSES_PREFIX/include -I$NCURSES_PREFIX/include/ncurses"
@@ -180,6 +183,10 @@ ncurses=$NCURSES_PREFIX
 args=--cache-file=$BUILD_DIR/config.cache --build=$BUILD_TRIPLET --host=$TARGET_TRIPLET --prefix=/opt/nano --disable-tiny --disable-nls --disable-utf8 --disable-browser --enable-nanorc --enable-linenumbers --enable-color --disable-extra --disable-help --disable-histories --disable-justify --disable-libmagic --disable-multibuffer --disable-operatingdir --disable-speller --disable-tabcomp --disable-wordcomp --disable-wrapping
 EOF
 then
+    # armos_configure_needed() may have reset BUILD_DIR.  Seed the cross-build
+    # answers afterwards so configure never attempts to execute ArmOS locale
+    # probes on the build host.
+    write_nano_config_cache
     "$CC" $NANO_CFLAGS -c "$NANO_COMPAT_SRC" \
         -o "$BUILD_DIR/armos_nano_compat.o"
     CC="$CC" \

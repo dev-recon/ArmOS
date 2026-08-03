@@ -351,12 +351,11 @@ the Cocoa backend does not expose OpenGL to QEMU. The repository-local QEMU can
 be built reproducibly with:
 
 ```sh
-./tools/build_qemu_10_0_2.sh --install-deps
+./tools/build_qemu_10_0_2.sh
 ```
 
-The optional installation step provisions the supported Homebrew or apt
-packages. Without it, the build remains read-only with respect to the host and
-reports every missing tool or pkg-config module. Both macOS and Linux builds
+The helper provisions missing supported Homebrew or apt packages automatically.
+Pass `--no-install-deps` when host packages must remain unchanged. Both macOS and Linux builds
 use SDL2, OpenGL, libepoxy and virglrenderer; the build deliberately disables
 Nettle so an unrelated or incompatible host Nettle release cannot change the
 configuration. See [QEMU 10.0.2 VirGL host](QEMU_VIRGL_HOST.md) for the exact

@@ -15,29 +15,34 @@ BUILD_DIR="$WORK_DIR/build"
 PREFIX="${PREFIX:-$WORK_DIR/install}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 PATCH_DIR="$ROOT_DIR/tools/patches/qemu-$QEMU_VERSION"
-INSTALL_DEPS=0
+AUTO_INSTALL_DEPS=1
 
 usage() {
     cat <<'EOF'
-Usage: ./tools/build_qemu_10_0_2.sh [--install-deps]
+Usage: ./tools/build_qemu_10_0_2.sh [--no-install-deps]
 
-  --install-deps  Install missing SDL/OpenGL/VirGL host prerequisites first.
+  --no-install-deps  Fail instead of installing missing host prerequisites.
+
+Missing prerequisites are installed automatically by default. The deprecated
+--install-deps spelling remains accepted for compatibility.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --install-deps) INSTALL_DEPS=1 ;;
+        --no-install-deps) AUTO_INSTALL_DEPS=0 ;;
+        --install-deps) ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
     shift
 done
 
-if [ "$INSTALL_DEPS" -eq 1 ]; then
-    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --install
-else
+if [ "$AUTO_INSTALL_DEPS" -eq 0 ]; then
     "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --check
+elif ! "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --check; then
+    echo "=== Installing missing QEMU/VirGL host prerequisites ==="
+    "$ROOT_DIR/tools/bootstrap_qemu_10_0_2_host_deps.sh" --install
 fi
 
 sha256_file() {

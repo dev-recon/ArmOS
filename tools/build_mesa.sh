@@ -139,6 +139,7 @@ integration_contract()
 prepare_source()
 {
     local contract
+    local extract_dir
 
     contract="mesa=$MESA_VERSION:$(integration_contract)"
     if [ "${ARMOS_FORCE_MESA_REBUILD:-0}" != "1" ] &&
@@ -149,7 +150,18 @@ prepare_source()
 
     rm -rf "$SOURCE_DIR" "$BUILD_DIR" "$BUNDLE_ROOT"
     mkdir -p "$SOURCE_DIR" "$WORK_DIR/source"
-    tar -xJf "$ARCHIVE_PATH" -C "$SOURCE_DIR" --strip-components=1
+    # Docker Desktop bind mounts can report unstable directory identities while
+    # GNU tar restores archives containing directory symlinks (Mesa has one for
+    # .gitlab-ci/bin).  Extract on the container/host-local filesystem first,
+    # then copy the complete tree into the target-scoped build directory.  This
+    # also keeps a failed extraction from leaving a partially valid source tree.
+    extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/armos-mesa.XXXXXX")"
+    if ! tar -xJf "$ARCHIVE_PATH" -C "$extract_dir" --strip-components=1 ||
+       ! cp -a "$extract_dir/." "$SOURCE_DIR/"; then
+        rm -rf "$extract_dir" "$SOURCE_DIR"
+        return 1
+    fi
+    rm -rf "$extract_dir"
     patch -d "$SOURCE_DIR" -p1 < "$PATCH_FILE"
 
     mkdir -p \

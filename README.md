@@ -72,6 +72,10 @@ The current architecture, protocol coverage, platform status and remaining
 renderer work are described in the
 [Wayland compositor documentation](docs/WAYLAND_COMPOSITOR.md).
 
+Windows 11, Linux, and macOS contributors can use the pinned multi-architecture
+[containerized build environment](docs/CONTAINER_BUILD.md) without installing
+the ArmOS cross toolchains directly on the host.
+
 <table>
   <tr>
     <td width="50%"><img src="docs/images/armos-qemu-top.png" alt="ArmOS top running on the graphical tty1 console"></td>

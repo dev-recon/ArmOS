@@ -22,6 +22,7 @@ source "$ROOT_DIR/tools/configure_cache.sh"
 CC="${ARCH}gcc"
 AR="${ARCH}ar"
 HOST_CC="${HOST_CC:-cc}"
+TCC_BUILD_INPUT_REVISION="${TCC_BUILD_INPUT_REVISION:-2}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -73,13 +74,16 @@ if [ ! -f "$PATCHED_SRC/.armos-source.contract" ] ||
 fi
 
 rm -rf "$WORK_DIR/bundle"
-mkdir -p "$PATCHED_SRC" "$BUILD_DIR/armos-include/sys" "$BUNDLE_DIR/bin" \
+mkdir -p "$PATCHED_SRC" "$BUILD_DIR" "$BUNDLE_DIR/bin" \
          "$BUNDLE_DIR/lib/tcc/include" "$BUNDLE_DIR/include/armos"
 
 # The first native milestone does not support tcc -run.  A small mman header is
 # still needed because tccrun.c is part of libtcc even when runtime execution is
 # effectively disabled by the ArmOS build profile.
-cat > "$BUILD_DIR/armos-include/sys/mman.h" <<'EOF'
+prepare_tcc_build_inputs()
+{
+    mkdir -p "$BUILD_DIR/armos-include/sys"
+    cat > "$BUILD_DIR/armos-include/sys/mman.h" <<'EOF'
 #ifndef ARMOS_PORT_SYS_MMAN_H
 #define ARMOS_PORT_SYS_MMAN_H
 
@@ -104,7 +108,7 @@ int mprotect(void *addr, size_t length, int prot);
 #endif
 EOF
 
-cat > "$BUILD_DIR/armos_tcc_compat.c" <<'EOF'
+    cat > "$BUILD_DIR/armos_tcc_compat.c" <<'EOF'
 #include <unistd.h>
 
 long sysconf(int name)
@@ -113,12 +117,14 @@ long sysconf(int name)
     return 4096;
 }
 EOF
+}
 
 cd "$BUILD_DIR"
 
 if armos_configure_needed "$BUILD_DIR" "$BUILD_DIR/config.mak" <<EOF
 bundle=tcc-native
 source=$TCC_SOURCE_CONTRACT
+build_input_revision=$TCC_BUILD_INPUT_REVISION
 target_arch=$TARGET_ARCH
 target_platform=$TARGET_PLATFORM
 target_triplet=$TARGET_TRIPLET
@@ -130,6 +136,9 @@ cpu=$TCC_CPU
 args=--source-path=$PATCHED_SRC --prefix=/opt/tcc --cross-prefix=$ARCH --cc=gcc... --ar=ar --cpu=$TCC_CPU --targetos=Linux --triplet=$TARGET_TRIPLET --enable-static --disable-rpath
 EOF
 then
+    # The configure cache owns BUILD_DIR and may have reset it.  Generate the
+    # target-only compatibility inputs only after that decision.
+    prepare_tcc_build_inputs
     "$PATCHED_SRC/configure" \
     --source-path="$PATCHED_SRC" \
     --prefix=/opt/tcc \
@@ -145,6 +154,13 @@ then
     --libpaths=/opt/tcc/lib \
     --crtprefix=/opt/tcc/lib
     armos_configure_commit "$BUILD_DIR"
+fi
+
+if [ ! -f "$BUILD_DIR/armos-include/sys/mman.h" ] ||
+   [ ! -f "$BUILD_DIR/armos_tcc_compat.c" ]; then
+    # Self-heal an otherwise valid configured tree if only these generated
+    # target inputs were removed by an interrupted or older build.
+    prepare_tcc_build_inputs
 fi
 
 "$CC" $ARM_FLAGS -std=gnu99 -Os -ffreestanding -fno-builtin \

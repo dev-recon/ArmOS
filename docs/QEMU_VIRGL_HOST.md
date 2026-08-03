@@ -7,12 +7,26 @@ arbitrary system QEMU.
 
 ## One-command setup
 
-On macOS with Homebrew, or on an apt-based Linux host, install missing
-prerequisites and build the reference emulator with:
+On macOS with Homebrew, or on an apt-based Linux host, build the reference
+emulator with:
 
 ```sh
-./tools/build_qemu_10_0_2.sh --install-deps
+./tools/build_qemu_10_0_2.sh
 ```
+
+Missing SDL/OpenGL/VirGL prerequisites are installed automatically. Use
+`--no-install-deps` when the host must remain unchanged and missing packages
+should instead produce a diagnostic.
+
+For a host-independent Linux build through the ArmOS container, use:
+
+```sh
+./tools/container/build.sh --qemu
+```
+
+PowerShell uses `tools\container\build.ps1 -Qemu`. Container QEMU artifacts
+live under `build/host-tools/qemu/linux-<architecture>/`; they never replace
+the native host prefix described below.
 
 The resulting binaries and matching firmware resources are installed under:
 

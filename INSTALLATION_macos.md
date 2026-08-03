@@ -130,6 +130,9 @@ repo-local prefix:
 ./tools/build_qemu_10_0_2.sh
 ```
 
+Missing supported Homebrew prerequisites are installed automatically. Pass
+`--no-install-deps` to fail without changing host packages.
+
 The script downloads the [official QEMU 10.0.2 source archive](https://download.qemu.org/qemu-10.0.2.tar.xz),
 checks its pinned SHA-256, builds `arm-softmmu` and `aarch64-softmmu`, and
 installs the binaries under:
