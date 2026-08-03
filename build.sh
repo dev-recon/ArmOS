@@ -454,6 +454,7 @@ if [ "$BUILD_FOOT" = "1" ]; then
     echo "=== Building Foot terminal bundle ==="
     WORK_DIR="$TARGET_BUNDLES/foot" ARCH="$ARCH" \
         NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/tools/bootstrap_mesa_host_tools.sh" \
         build_cached_bundle foot ./tools/build_foot.sh \
             epoll-shim fcft harfbuzz utf8proc fontconfig freetype expat pixman
     rsync -a "$TARGET_BUNDLES/foot/bundle/" "$TARGET_USERFS/"

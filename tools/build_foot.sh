@@ -17,6 +17,7 @@
 # Notes:
 # - Upstream Foot sources are compiled without local source modifications.
 # - Generated objects remain below build/<arch>/<platform>/bundles/foot.
+# - Native Meson/Ninja generators come from the pinned host-tools prefix.
 # - The first ArmOS port disables IME at runtime until the compositor exposes it.
 
 set -euo pipefail
@@ -50,6 +51,8 @@ SCANNER_BUILD_DIR="$BUILD_DIR/wayland-scanner"
 BUNDLE_ROOT="$WORK_DIR/bundle"
 BUNDLE_BIN="$BUNDLE_ROOT/usr/bin"
 BUNDLE_PREFIX="$BUNDLE_ROOT/opt/foot"
+HOST_TOOLS_WORK_ROOT="${FOOT_HOST_TOOLS_WORK_ROOT:-$ROOT_DIR/build/host-tools}"
+HOST_TOOLS_DOWNLOAD_DIR="${FOOT_HOST_TOOLS_DOWNLOAD_DIR:-$ROOT_DIR/build/downloads/host-tools}"
 
 FOOT_ARCHIVE_PATH="${FOOT_ARCHIVE_PATH:-$DOWNLOAD_DIR/$FOOT_ARCHIVE}"
 WAYLAND_ARCHIVE_PATH="${WAYLAND_ARCHIVE_PATH:-$DOWNLOAD_DIR/$WAYLAND_ARCHIVE}"
@@ -147,10 +150,32 @@ for dependency in \
     fi
 done
 
-meson setup "$SCANNER_BUILD_DIR" "$WAYLAND_SOURCE" \
+if [ -n "${FOOT_HOST_TOOLS_PREFIX:-}" ]; then
+    HOST_PREFIX="$FOOT_HOST_TOOLS_PREFIX"
+elif [ -n "${MESA_HOST_TOOLS_PREFIX:-}" ]; then
+    HOST_PREFIX="$MESA_HOST_TOOLS_PREFIX"
+else
+    HOST_PREFIX="$(
+        WORK_ROOT="$HOST_TOOLS_WORK_ROOT" \
+        DOWNLOAD_DIR="$HOST_TOOLS_DOWNLOAD_DIR" \
+        "$ROOT_DIR/tools/bootstrap_mesa_host_tools.sh" --print-prefix
+    )"
+fi
+HOST_PYTHON="$HOST_PREFIX/python/bin/python3"
+MESON="$HOST_PREFIX/python/bin/meson"
+NINJA="$HOST_PREFIX/python/bin/ninja"
+
+if [ ! -x "$HOST_PYTHON" ] || [ ! -f "$MESON" ] || [ ! -x "$NINJA" ]; then
+    echo "error: incomplete pinned host-tools prefix: $HOST_PREFIX" >&2
+    exit 1
+fi
+
+export PATH="$HOST_PREFIX/bin:$HOST_PREFIX/python/bin:$PATH"
+
+"$HOST_PYTHON" "$MESON" setup "$SCANNER_BUILD_DIR" "$WAYLAND_SOURCE" \
     -Ddocumentation=false -Ddtd_validation=false \
     -Dlibraries=false -Dtests=false
-ninja -C "$SCANNER_BUILD_DIR"
+"$NINJA" -C "$SCANNER_BUILD_DIR"
 
 generate_protocol()
 {

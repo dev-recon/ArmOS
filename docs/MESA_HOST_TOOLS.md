@@ -1,8 +1,9 @@
-# Mesa host tools
+# Meson host tools
 
 Mesa 25.3.6 requires a newer Bison than the 2.3 release provided by macOS.
-ArmOS therefore does not use an arbitrary `bison` or `m4` found in the host
-`PATH`.
+ArmOS therefore does not use arbitrary generators found in the host `PATH`.
+Foot also reuses this pinned Meson/Ninja environment to build its native
+Wayland protocol scanner.
 
 Run:
 
@@ -26,7 +27,7 @@ M4, Bison and the Python environment are validated independently: an
 interrupted Python installation does not rebuild the two GNU tools on the next
 run.
 
-Mesa build scripts obtain the isolated prefix with:
+Mesa and Foot build scripts obtain the isolated prefix with:
 
 ```sh
 MESA_HOST_PREFIX="$(./tools/bootstrap_mesa_host_tools.sh --print-prefix)"
@@ -43,7 +44,7 @@ host generators, while target objects remain separated under
 `build/<arch>/<platform>`. Graphical QEMU execution stays a host-side test
 step and is not coupled to the build container.
 
-`BUILD_MESA=yes` invokes this bootstrap automatically. A normal cached build
-reuses both the host prefix and the target-local Mesa bundle; use
+`BUILD_MESA=yes` and `BUILD_FOOT=yes` invoke this bootstrap automatically. A
+normal cached build reuses both the host prefix and the target-local bundle; use
 `ARMOS_FORCE_HOST_TOOLS_REBUILD=1` only for the host tools and
 `ARMOS_FORCE_USERLAND_REBUILD=1` for a complete target bundle rebuild.
