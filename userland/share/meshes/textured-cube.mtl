@@ -1,0 +1,6 @@
+# Placeholder material for the future texture pipeline
+newmtl Checker
+Ka 0.05 0.05 0.05
+Kd 0.82 0.55 0.18
+Ks 0.25 0.25 0.25
+Ns 32

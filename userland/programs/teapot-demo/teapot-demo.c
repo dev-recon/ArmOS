@@ -13,14 +13,17 @@
  * - Animate the model below a fixed directional light.
  * - Rotate the model in response to the four arrow keys.
  * - Compare five educational software-rasterization algorithms.
+ * - Browse and safely load Wavefront OBJ files through libarmmesh.
  *
  * Notes:
  * - Geometry is tessellated from the supplied bicubic Bezier patches.
  * - A Nuklear panel selects mesh, flat, Gouraud and Phong rendering.
- * - No external mesh, OpenGL, EGL or GPU-specific API is required.
+ * - The built-in teapot remains available when external assets fail to load.
+ * - No OpenGL, EGL or GPU-specific API is required.
  */
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +31,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <armmesh/armmesh.h>
 #include <armui/armui.h>
+#include <armui/file_dialog.h>
 
 #include "teapot_model.h"
 
@@ -38,7 +43,8 @@
 #define MINIMUM_HEIGHT 240
 #define MENU_HEIGHT    42
 #define PATCH_STEPS       5
-#define MAX_TRIANGLES   1800
+#define MAX_TRIANGLES  65536
+#define MESH_NAME_MAX  64
 
 enum render_algorithm {
     RENDER_MESH,
@@ -83,8 +89,9 @@ struct vertex_color {
 };
 
 struct teapot_mesh {
-    struct triangle triangles[MAX_TRIANGLES];
+    struct triangle *triangles;
     size_t count;
+    size_t capacity;
 };
 
 struct app {
@@ -99,6 +106,7 @@ struct app {
     float yaw_speed;
     float pitch_speed;
     struct teapot_mesh mesh;
+    struct armui_file_dialog *file_dialog;
     enum render_algorithm algorithm;
     int profile_enabled;
     uint64_t last_animation_us;
@@ -108,6 +116,8 @@ struct app {
     uint64_t profile_frame_us;
     uint64_t profile_frames;
     uint64_t profile_intervals;
+    char mesh_name[MESH_NAME_MAX];
+    char mesh_status[ARMMESH_ERROR_CAPACITY];
 };
 
 static uint64_t monotonic_us(void)
@@ -223,12 +233,34 @@ static int mesh_add_triangle(struct teapot_mesh *mesh,
                              struct mesh_vertex second,
                              struct mesh_vertex third)
 {
+    struct triangle *triangles;
+    size_t capacity;
+
     if (mesh->count >= MAX_TRIANGLES)
         return -1;
+    if (mesh->count == mesh->capacity) {
+        capacity = mesh->capacity ? mesh->capacity * 2u : 2048u;
+        if (capacity > MAX_TRIANGLES)
+            capacity = MAX_TRIANGLES;
+        triangles = realloc(mesh->triangles,
+                            capacity * sizeof(*triangles));
+        if (!triangles)
+            return -1;
+        mesh->triangles = triangles;
+        mesh->capacity = capacity;
+    }
     mesh->triangles[mesh->count++] = (struct triangle){
         { first, second, third }
     };
     return 0;
+}
+
+static void mesh_release(struct teapot_mesh *mesh)
+{
+    if (!mesh)
+        return;
+    free(mesh->triangles);
+    memset(mesh, 0, sizeof(*mesh));
 }
 
 static int mesh_add_quad(struct teapot_mesh *mesh,
@@ -334,7 +366,7 @@ static int mesh_build_teapot(struct teapot_mesh *mesh)
     int row;
     int column;
 
-    memset(mesh, 0, sizeof(*mesh));
+    mesh->count = 0u;
     for (patch = 0; patch < TEAPOT_PATCH_COUNT; ++patch) {
         for (row = 0; row < PATCH_STEPS; ++row) {
             float u0 = (float)row / PATCH_STEPS;
@@ -353,6 +385,81 @@ static int mesh_build_teapot(struct teapot_mesh *mesh)
             }
         }
     }
+    return 0;
+}
+
+static int mesh_obj_triangle(const struct armmesh_triangle *source,
+                             void *data)
+{
+    struct teapot_mesh *mesh = data;
+    struct mesh_vertex vertices[3];
+
+    for (int corner = 0; corner < 3; corner++) {
+        vertices[corner].point = (struct vec3){
+            source->vertices[corner].position[0],
+            source->vertices[corner].position[1],
+            source->vertices[corner].position[2]
+        };
+        vertices[corner].normal = (struct vec3){
+            source->vertices[corner].normal[0],
+            source->vertices[corner].normal[1],
+            source->vertices[corner].normal[2]
+        };
+    }
+    return mesh_add_triangle(mesh, vertices[0], vertices[1], vertices[2]);
+}
+
+static void mesh_set_status(struct app *app, const char *format, ...)
+{
+    va_list arguments;
+
+    va_start(arguments, format);
+    (void)vsnprintf(app->mesh_status, sizeof(app->mesh_status),
+                    format, arguments);
+    va_end(arguments);
+}
+
+static int mesh_use_builtin(struct app *app)
+{
+    struct teapot_mesh candidate = { 0 };
+
+    if (mesh_build_teapot(&candidate) < 0) {
+        mesh_release(&candidate);
+        mesh_set_status(app, "Impossible de construire la theiere");
+        return -1;
+    }
+    mesh_release(&app->mesh);
+    app->mesh = candidate;
+    (void)snprintf(app->mesh_name, sizeof(app->mesh_name),
+                   "Theiere integree");
+    mesh_set_status(app, "%u triangles",
+                    (unsigned int)app->mesh.count);
+    return 0;
+}
+
+static int mesh_load_file(struct app *app, const char *path)
+{
+    struct teapot_mesh candidate = { 0 };
+    struct armmesh_stats stats;
+    char error[ARMMESH_ERROR_CAPACITY];
+    const char *name = strrchr(path, '/');
+
+    name = name ? name + 1 : path;
+    if (armmesh_load_obj(path, mesh_obj_triangle, &candidate, &stats,
+                         error, sizeof(error)) < 0) {
+        mesh_release(&candidate);
+        mesh_set_status(app, "Erreur: %s", error);
+        fprintf(stderr, "teapot-demo: %s\n", error);
+        return -1;
+    }
+    mesh_release(&app->mesh);
+    app->mesh = candidate;
+    (void)snprintf(app->mesh_name, sizeof(app->mesh_name), "%s", name);
+    mesh_set_status(app, "%u sommets, %u triangles",
+                    (unsigned int)stats.vertices,
+                    (unsigned int)stats.triangles);
+    app->yaw = -0.45f;
+    app->pitch = -0.18f;
     return 0;
 }
 
@@ -913,13 +1020,27 @@ static const char *algorithm_name(enum render_algorithm algorithm)
 static void build_menu_bar(struct app *app, struct armui_context *ui,
                            const struct armui_target *target)
 {
+    char scene_label[MESH_NAME_MAX + 24u];
     int panel_open = armui_panel_begin(
         ui, "TeapotMenu", 0.0f, 0.0f,
         (float)target->width, MENU_HEIGHT, 0, 1);
 
     if (panel_open) {
         armui_menubar_begin(ui);
-        armui_row(ui, 28.0f, 3);
+        armui_row(ui, 28.0f, 4);
+        if (armui_menu_begin(ui, "Fichier", 250.0f, 112.0f)) {
+            armui_label(ui, app->mesh_status, ARMUI_ALIGN_LEFT);
+            if (armui_menu_item(ui, "Ouvrir...")) {
+                const struct armui_file_dialog_config config = {
+                    "Ouvrir un maillage", "~/mesh", ".obj"
+                };
+
+                (void)armui_file_dialog_open(app->file_dialog, &config);
+            }
+            if (armui_menu_item(ui, "Theiere integree"))
+                (void)mesh_use_builtin(app);
+            armui_menu_end(ui);
+        }
         if (armui_menu_begin(ui, "Rendu", 170.0f, 190.0f)) {
             if (armui_menu_item(ui, "Mesh"))
                 app->algorithm = RENDER_MESH;
@@ -933,8 +1054,9 @@ static void build_menu_bar(struct app *app, struct armui_context *ui,
                 app->algorithm = RENDER_PHONG;
             armui_menu_end(ui);
         }
-        armui_label(ui, algorithm_name(app->algorithm),
-                    ARMUI_ALIGN_CENTER);
+        (void)snprintf(scene_label, sizeof(scene_label), "%s - %s",
+                       app->mesh_name, algorithm_name(app->algorithm));
+        armui_label(ui, scene_label, ARMUI_ALIGN_CENTER);
         if (armui_button_label(ui, "Quitter"))
             app->closed = 1;
         armui_menubar_end(ui);
@@ -1003,6 +1125,7 @@ static unsigned int teapot_frame(
     struct app *app = data;
     uint64_t animation_now_us;
     uint64_t render_started_us;
+    char selected_path[512];
     float frame_scale = 1.0f;
 
     (void)application;
@@ -1028,7 +1151,16 @@ static unsigned int teapot_frame(
     app->pixels = target->pixels;
     render_started_us = app->profile_enabled ? monotonic_us() : 0u;
     render_frame(app);
-    build_menu_bar(app, ui, target);
+    if (armui_file_dialog_is_open(app->file_dialog)) {
+        enum armui_file_dialog_result result = armui_file_dialog_draw(
+            app->file_dialog, ui, target->width, target->height,
+            selected_path, sizeof(selected_path));
+
+        if (result == ARMUI_FILE_DIALOG_ACCEPTED)
+            (void)mesh_load_file(app, selected_path);
+    } else {
+        build_menu_bar(app, ui, target);
+    }
     profile_frame(app, render_started_us);
     return app->closed ? ARMUI_FRAME_CLOSE : ARMUI_FRAME_CONTINUE;
 }
@@ -1069,11 +1201,19 @@ int main(int argc, char **argv)
     app.algorithm = RENDER_GOURAUD;
     app.profile_enabled =
         profile || getenv("ARMOS_TEAPOT_PROFILE") != NULL;
-    if (mesh_build_teapot(&app.mesh) < 0) {
+    app.file_dialog = armui_file_dialog_create();
+    if (!app.file_dialog) {
+        fprintf(stderr, "teapot-demo: file dialog allocation failed\n");
+        return 1;
+    }
+    if (mesh_use_builtin(&app) < 0) {
         fprintf(stderr, "teapot-demo: geometry exceeds triangle budget\n");
+        armui_file_dialog_destroy(app.file_dialog);
         return 1;
     }
     status = armui_application_run(&config, teapot_frame, &app);
+    armui_file_dialog_destroy(app.file_dialog);
+    mesh_release(&app.mesh);
     free(app.depth);
     if (status < 0) {
         perror("teapot-demo");

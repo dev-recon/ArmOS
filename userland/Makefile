@@ -176,6 +176,7 @@ XKBCOMMON_OBJECTS := $(BUILD_DIR)/lib/xkbcommon/xkbcommon.o
 THREADS_OBJECTS := $(BUILD_DIR)/lib/threads/threads.o
 SYSLOG_OBJECTS := $(BUILD_DIR)/lib/syslog/syslog.o
 VIRGL_WINSYS_OBJECTS := $(BUILD_DIR)/lib/virgl/winsys.o
+ARMMESH_OBJECTS := $(BUILD_DIR)/lib/armmesh/armmesh.o
 WAYLAND_CLIENT_LIBRARY := $(OUT_USR_LIB)/libwayland-client.a
 WAYLAND_SERVER_LIBRARY := $(OUT_USR_LIB)/libwayland-server.a
 WAYLAND_CURSOR_LIBRARY := $(OUT_USR_LIB)/libwayland-cursor.a
@@ -184,6 +185,7 @@ XKBCOMMON_LIBRARY := $(OUT_USR_LIB)/libxkbcommon.a
 THREADS_LIBRARY := $(OUT_USR_LIB)/libthreads.a
 SYSLOG_LIBRARY := $(OUT_USR_LIB)/libsyslog.a
 VIRGL_WINSYS_LIBRARY := $(OUT_USR_LIB)/libarmos-virgl-winsys.a
+ARMMESH_LIBRARY := $(OUT_USR_LIB)/libarmmesh.a
 ARMOS_WLCOMP_GPU_PROVIDER_LIBRARY ?=
 ARMOS_MESA_EGL_LIBRARY ?=
 ARMOS_MESA_GLES2_LIBRARY ?=
@@ -199,6 +201,7 @@ NUKLEAR_LIBRARY := $(OUT_OPT)/nuklear/lib/libnuklear.a
 ARMUI_OBJECT := $(BUILD_DIR)/lib/armui/armui.o
 ARMUI_RENDERER_OBJECT := $(BUILD_DIR)/lib/armui/nuklear_software.o
 ARMUI_APPLICATION_OBJECT := $(BUILD_DIR)/lib/armui/application.o
+ARMUI_FILE_DIALOG_OBJECT := $(BUILD_DIR)/lib/armui/file_dialog.o
 ARMUI_LIBRARY := $(OUT_USR_LIB)/libarmui.a
 ARMUI_DEMO_OBJECT := $(BUILD_DIR)/programs/armui-demo/armui-demo.o
 ARMUI_DEMO_TARGET := $(OUT_USR_BIN)/armui-demo
@@ -214,7 +217,8 @@ VIRGL_SMOKE_OBJECT := $(BUILD_DIR)/programs/virgl-smoke/virgl-smoke.o
 VIRGL_SMOKE_TARGET := $(OUT_USR_BIN)/virgl-smoke
 
 TARGETS += $(WAYLAND_LIBRARIES) $(THREADS_LIBRARY) $(SYSLOG_LIBRARY) \
-           $(VIRGL_WINSYS_LIBRARY) $(WAYLAND_API_TEST_TARGET) \
+           $(VIRGL_WINSYS_LIBRARY) $(ARMMESH_LIBRARY) \
+           $(WAYLAND_API_TEST_TARGET) \
            $(VIRGL_SMOKE_TARGET)
 
 ifeq ($(BUILD_NUKLEAR),1)
@@ -345,6 +349,10 @@ $(BUILD_DIR)/lib/virgl/%.o: lib/virgl/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/lib/armmesh/%.o: lib/armmesh/%.c | $(BUILD_DIR)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/lib/armui/%.o: lib/armui/%.c | $(BUILD_DIR)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -385,12 +393,17 @@ $(VIRGL_WINSYS_LIBRARY): $(VIRGL_WINSYS_OBJECTS)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
+$(ARMMESH_LIBRARY): $(ARMMESH_OBJECTS)
+	mkdir -p $(@D)
+	$(AR) rcs $@ $^
+
 $(NUKLEAR_LIBRARY): $(NUKLEAR_OBJECT)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
 $(ARMUI_LIBRARY): $(ARMUI_OBJECT) $(ARMUI_RENDERER_OBJECT) \
-		$(ARMUI_APPLICATION_OBJECT) $(NUKLEAR_OBJECT)
+		$(ARMUI_APPLICATION_OBJECT) $(ARMUI_FILE_DIALOG_OBJECT) \
+		$(NUKLEAR_OBJECT)
 	mkdir -p $(@D)
 	$(AR) rcs $@ $^
 
@@ -406,10 +419,12 @@ $(WAYLAND_API_TEST_TARGET): $(LINK_DEPS) $(WAYLAND_API_TEST_OBJECT) $(WAYLAND_LI
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
 $(TEAPOT_DEMO_TARGET): $(LINK_DEPS) $(TEAPOT_DEMO_OBJECT) \
-		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY)
+		$(ARMMESH_LIBRARY) $(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
+		$(XKBCOMMON_LIBRARY)
 	mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $(PORT_OBJECTS) $(TEAPOT_DEMO_OBJECT) \
-		$(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) $(XKBCOMMON_LIBRARY) \
+		$(ARMMESH_LIBRARY) $(ARMUI_LIBRARY) $(WAYLAND_CLIENT_LIBRARY) \
+		$(XKBCOMMON_LIBRARY) \
 		"$(NEWLIB_LIBM)" \
 		"$(NEWLIB_LIBC)" "$(LIBGCC)"
 
@@ -561,6 +576,7 @@ install: $(TARGETS)
 	cp $(SYSLOG_LIBRARY) $(USERFS_USR_LIB)/libsyslog.a
 	cp $(VIRGL_WINSYS_LIBRARY) \
 		$(USERFS_USR_LIB)/libarmos-virgl-winsys.a
+	cp $(ARMMESH_LIBRARY) $(USERFS_USR_LIB)/libarmmesh.a
 	cp $(VIRGL_SMOKE_TARGET) $(USERFS_USR_BIN)/virgl-smoke
 	$(STRIP) --strip-all $(USERFS_USR_BIN)/virgl-smoke
 	mkdir -p $(USERFS_ROOT)/usr/include/uapi/armos
@@ -574,6 +590,9 @@ install: $(TARGETS)
 	mkdir -p $(USERFS_ROOT)/usr/include/armos
 	cp include/armos/spawn.h \
 		$(USERFS_ROOT)/usr/include/armos/spawn.h
+	mkdir -p $(USERFS_ROOT)/usr/include/armmesh
+	cp include/armmesh/armmesh.h \
+		$(USERFS_ROOT)/usr/include/armmesh/armmesh.h
 	cp include/wayland-egl-core.h \
 		$(USERFS_ROOT)/usr/include/wayland-egl-core.h
 	cp include/wayland-egl-backend.h \
@@ -597,6 +616,8 @@ ifeq ($(BUILD_NUKLEAR),1)
 	cp $(ARMOS_SERVICES_LIBRARY) \
 		$(USERFS_USR_LIB)/libarmos-services.a
 	cp include/armui/armui.h $(USERFS_ROOT)/usr/include/armui/armui.h
+	cp include/armui/file_dialog.h \
+		$(USERFS_ROOT)/usr/include/armui/file_dialog.h
 	mkdir -p $(USERFS_ROOT)/usr/include/armos
 	cp include/armos/services.h \
 		$(USERFS_ROOT)/usr/include/armos/services.h
@@ -607,6 +628,10 @@ ifeq ($(BUILD_NUKLEAR),1)
 	cp opt/nuklear/include/armos_nuklear_config.h \
 		$(USERFS_OPT)/nuklear/include/armos_nuklear_config.h
 	cp $(NUKLEAR_LIBRARY) $(USERFS_OPT)/nuklear/lib/libnuklear.a
+	mkdir -p $(USERFS_ROOT)/home/user/mesh
+	cp share/meshes/*.obj $(USERFS_ROOT)/home/user/mesh/
+	cp share/meshes/*.mtl $(USERFS_ROOT)/home/user/mesh/
+	cp share/meshes/README.md $(USERFS_ROOT)/home/user/mesh/README.md
 else
 	rm -f $(USERFS_USR_BIN)/teapot-demo
 	rm -f $(USERFS_USR_BIN)/armui-demo
@@ -618,6 +643,18 @@ else
 	rm -rf $(USERFS_ROOT)/usr/include/armos
 	rm -f $(USERFS_ROOT)/usr/include/armos-shell-client-protocol.h
 	rm -rf $(USERFS_OPT)/nuklear
+	rm -f $(USERFS_ROOT)/home/user/mesh/cube.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/cornell-box.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/cornell-box.mtl
+	rm -f $(USERFS_ROOT)/home/user/mesh/metallic-sphere.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/metallic-sphere.mtl
+	rm -f $(USERFS_ROOT)/home/user/mesh/octahedron.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/pyramid.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/textured-cube.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/textured-cube.mtl
+	rm -f $(USERFS_ROOT)/home/user/mesh/torus.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/torus-knot.obj
+	rm -f $(USERFS_ROOT)/home/user/mesh/README.md
 endif
 	mkdir -p $(USERFS_ROOT)/usr/include/armos
 	cp include/armos/virgl_winsys.h \

@@ -34,7 +34,9 @@ struct armui_context {
     int disabled;
     int repeater;
     int translucent_panel;
+    int translucent_menu;
     struct nk_style_item saved_window_background;
+    struct nk_style_item saved_menu_background;
 };
 
 static nk_flags text_alignment(enum armui_align alignment)
@@ -364,6 +366,9 @@ void armui_set_contrast(struct armui_context *context, int contrast)
     colors[NK_COLOR_TAB_HEADER] = contrast ?
         nk_rgb(54, 62, 73) : nk_rgb(224, 228, 234);
     nk_style_from_table(&context->ui, colors);
+    /* Keep internal titles subordinate to the compositor decoration. */
+    context->ui.style.window.header.padding = nk_vec2(4.0f, 2.0f);
+    context->ui.style.window.header.label_padding = nk_vec2(4.0f, 1.0f);
 }
 
 void armui_set_repeater(struct armui_context *context, int enabled)
@@ -396,10 +401,21 @@ int armui_menu_begin(struct armui_context *context, const char *label,
 
     if (!context)
         return 0;
+    if (context->translucent_menu)
+        return 0;
+    context->saved_menu_background =
+        context->ui.style.window.fixed_background;
+    context->ui.style.window.fixed_background = nk_style_item_color(
+        nk_rgba(27, 32, 39, 220));
     opened = nk_menu_begin_label(&context->ui, label, NK_TEXT_LEFT,
                                  nk_vec2(width, height));
-    if (opened)
+    if (opened) {
+        context->translucent_menu = 1;
         nk_layout_row_dynamic(&context->ui, 28.0f, 1);
+    } else {
+        context->ui.style.window.fixed_background =
+            context->saved_menu_background;
+    }
     return opened;
 }
 
@@ -411,8 +427,12 @@ int armui_menu_item(struct armui_context *context, const char *label)
 
 void armui_menu_end(struct armui_context *context)
 {
-    if (context)
-        nk_menu_end(&context->ui);
+    if (!context || !context->translucent_menu)
+        return;
+    nk_menu_end(&context->ui);
+    context->ui.style.window.fixed_background =
+        context->saved_menu_background;
+    context->translucent_menu = 0;
 }
 
 void armui_render(struct armui_context *context,

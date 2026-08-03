@@ -79,7 +79,7 @@ static unsigned int shell_frame(
     if (armui_panel_begin(
             ui, "armos-system-bar", 0.0f, 0.0f,
             (float)target->width, (float)target->height, 0, 0)) {
-        armui_row(ui, (float)target->height - 4.0f, 4);
+        armui_row(ui, (float)target->height - 4.0f, 5);
         armui_label(ui, "ArmOS", ARMUI_ALIGN_LEFT);
         if (armui_button_label(ui, "Terminal"))
             (void)shell_launch(
@@ -89,6 +89,10 @@ static unsigned int shell_frame(
             (void)shell_launch(
                 "/usr/bin/armos-control-center",
                 "armos-control-center", NULL, NULL);
+        if (armui_button_label(ui, "Shutdown"))
+            (void)shell_launch(
+                "/sbin/shutdown",
+                NULL, NULL, NULL);
         snprintf(status, sizeof(status), "%uM libres  %s",
                  shell->snapshot.memory_free_kb / 1024u,
                  shell->snapshot.network_available ?

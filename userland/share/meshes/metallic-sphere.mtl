@@ -1,0 +1,6 @@
+# ArmOS demonstration material
+newmtl Metal
+Ka 0.08 0.08 0.10
+Kd 0.22 0.34 0.40
+Ks 0.95 0.95 1.00
+Ns 180.0
