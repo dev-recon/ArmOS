@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dev-recon/ArmOS/releases/tag/0.7.4"><img src="https://img.shields.io/badge/release-0.7.4-2878d7" alt="ArmOS 0.7.4"></a>
+  <a href="https://github.com/dev-recon/ArmOS/releases/tag/0.7.5"><img src="https://img.shields.io/badge/release-0.7.5-2878d7" alt="ArmOS 0.7.5"></a>
   <img src="https://img.shields.io/badge/architectures-ARMv7%20%7C%20AArch64-22a06b" alt="ARMv7 and AArch64">
   <img src="https://img.shields.io/badge/SMP-4%20cores-7557d3" alt="SMP on four cores">
   <img src="https://img.shields.io/badge/QEMU-10.0.2-e65d19" alt="QEMU 10.0.2">
@@ -20,8 +20,8 @@
 
 ArmOS is an educational and research operating system, not a Linux
 distribution. Version 0.7 brought ARM64 onto the same common kernel used by
-ARM32. Version 0.7.4 adds a common IPv4, TCP, UDP and DNS stack, plus
-CYW43455 Wi-Fi association and DHCP on Raspberry Pi 3 B+. The
+ARM32. Version 0.7.5 adds the native Wayland desktop, POSIX threads,
+FreeBSD `sh` and `top`, and a Mesa/VirGL/EGL/Raylib accelerated path. The
 architecture layer handles CPU and MMU details while processes, syscalls,
 scheduling, VFS, filesystems, drivers, and userland contracts remain shared.
 

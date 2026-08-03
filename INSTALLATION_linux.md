@@ -9,7 +9,7 @@ Raspberry Pi 3 Model B+ in AArch64 mode and Raspberry Pi 2 Model B v1.1 in
 ARMv7-A mode; see [docs/RASPBERRY_PI3.md](docs/RASPBERRY_PI3.md) and
 [docs/RASPBERRY_PI2.md](docs/RASPBERRY_PI2.md).
 
-The reproducible 0.7.1 emulator baseline is QEMU 10.0.2. Newer releases can be
+The reproducible 0.7.5 emulator baseline is QEMU 10.0.2. Newer releases can be
 used for compatibility testing, but should not silently replace the baseline.
 
 ## Disk Layout
@@ -60,7 +60,11 @@ sudo apt install -y \
   python3-venv \
   libglib2.0-dev \
   libpixman-1-dev \
-  libgtk-3-dev
+  libsdl2-dev \
+  libepoxy-dev \
+  libvirglrenderer-dev \
+  libslirp-dev \
+  zlib1g-dev
 ```
 
 Tool purpose:
@@ -79,9 +83,10 @@ Tool purpose:
 - `libc++-dev`: build-only C++ headers used to compile the HarfBuzz amalgamation;
   ArmOS still exposes HarfBuzz through its C API and installs no C++ runtime
 - `ninja-build`, `pkg-config`, `python3-venv`, `libglib2.0-dev`,
-  `libpixman-1-dev`: core host dependencies for the exact QEMU 10.0.2 build
-- `libgtk-3-dev`: GTK window backend used by `boot-graphics.sh` with the
-  repo-local QEMU build
+  `libpixman-1-dev`, `libslirp-dev`, `zlib1g-dev`: core host dependencies for
+  the exact QEMU 10.0.2 build
+- `libsdl2-dev`, `libepoxy-dev`, `libvirglrenderer-dev`: SDL/OpenGL/VirGL
+  graphics path used by accelerated `qemu-virt` sessions
 
 The package list above is sufficient for the default ARM32 route. ARM64 builds
 also require a bare-metal toolchain exposing the `aarch64-elf-` prefix,
@@ -160,7 +165,7 @@ Ubuntu release. The reliable cross-distribution method is an isolated source
 build:
 
 ```sh
-./tools/build_qemu_10_0_2.sh
+./tools/build_qemu_10_0_2.sh --install-deps
 ```
 
 The script downloads the [official QEMU 10.0.2 source archive](https://download.qemu.org/qemu-10.0.2.tar.xz),
@@ -172,14 +177,20 @@ build/qemu-10.0.2/install/bin/qemu-system-arm
 build/qemu-10.0.2/install/bin/qemu-system-aarch64
 ```
 
-On Linux the script explicitly enables GTK and refuses to install a headless
-reference build. Verify the available display backends with:
+On Linux the script explicitly enables SDL, OpenGL and virglrenderer. It
+refuses to install a headless or 2D-only reference build. Verify the available
+display backend and accelerated VirtIO-GPU device with:
 
 ```sh
 build/qemu-10.0.2/install/bin/qemu-system-arm -display help
+build/qemu-10.0.2/install/bin/qemu-system-aarch64 -device help | \
+  grep virtio-gpu-gl-device
 ```
 
-The output must contain `gtk` for `boot-graphics.sh` to open a window.
+The first output must contain `sdl`; the second command must report
+`virtio-gpu-gl-device`. If an older repository-local QEMU exists without that
+device, rerun the build command above after installing the VirGL packages.
+Rebuilding ArmOS itself is not necessary.
 
 ArmOS boot scripts automatically prefer that binary. APT can install an exact
 package only if that package version is present in the configured repositories:
@@ -224,6 +235,38 @@ For a strict baseline run, make a version mismatch fatal:
 QEMU_REQUIRED_VERSION=10.0.2 ./boot.sh
 QEMU_REQUIRED_VERSION=10.0.2 ./boot-graphics.sh
 ```
+
+### VirGL graphics session
+
+Boot the ARM64 graphical reference target with:
+
+```sh
+SMP_CPUS=4 TARGET_ARCH=arm64 TARGET_PLATFORM=qemu-virt \
+GPU_XRES=1280 GPU_YRES=720 QEMU_GPU_ACCEL=virgl \
+./boot-graphics.sh
+```
+
+### Mouse in a Linux virtual machine
+
+When Ubuntu itself runs inside Parallels, a nested QEMU window may receive
+button clicks but no pointer movement. This is a host-input issue: Parallels'
+absolute pointer integration does not provide the relative deltas expected by
+the nested SDL window.
+
+Set **Parallels → Configuration → Hardware → Mouse & Keyboard → Optimize for
+games** to **Always**, then force the tested X11/SDL relative-pointer path:
+
+```sh
+SDL_VIDEODRIVER=x11 \
+QEMU_DISPLAY=sdl,show-cursor=off \
+QEMU_POINTER_DEVICE=virtio-mouse-device,event_idx=off,indirect_desc=off \
+SMP_CPUS=4 TARGET_ARCH=arm64 TARGET_PLATFORM=qemu-virt \
+GPU_XRES=1280 GPU_YRES=720 QEMU_GPU_ACCEL=virgl \
+./boot-graphics.sh
+```
+
+This override is intended for nested Linux virtual machines. Native Linux can
+keep the default `virtio-tablet-device` absolute-pointer path.
 
 ## 6. Build And Run
 

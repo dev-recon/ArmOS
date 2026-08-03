@@ -3,7 +3,50 @@
 Release tags use the bare version number starting with `0.7` (`0.7`, `0.7.1`,
 `0.7.2`, and so on). Older `v0.x` tags remain historical and are not moved.
 
-## Unreleased
+## ArmOS 0.7.5 - 2026-08-03
+
+ArmOS 0.7.5 adds a native Wayland desktop, the VirGL/Mesa/EGL/Raylib
+accelerated graphics path, a complete pthread foundation, and substantially
+richer BSD userland while preserving the common ARM32/AArch64 kernel.
+
+### Graphical desktop and applications
+
+- Added the native `armos-wlcomp` Wayland compositor with window management,
+  input, clipboard, damage tracking, software rendering, and server-side
+  decorations.
+- Ported Foot, GNU nano, Nuklear and ArmUI, with interactive graphical demos,
+  resize support, double buffering, and shared application lifecycle
+  contracts.
+- Added the ArmOS shell and control-center foundations without moving window
+  policy or hardware-specific rendering into the common kernel.
+
+### GPU acceleration
+
+- Added generic DRM-style userland contracts for VirtIO-GPU contexts, buffer
+  objects, mappings, resource attachment, command submission, and asynchronous
+  fences.
+- Added the ArmOS VirGL winsys, a minimal Mesa/Gallium VirGL port, EGL,
+  OpenGL ES 2, and Raylib integration.
+- Added `drm-info`, `virgl-smoke`, `egl-smoke`, and GPU-backed `raypot-demo`
+  validation programs while retaining the software framebuffer renderer.
+
+### BSD and POSIX userland
+
+- Ported FreeBSD `sh` with libedit, job control, wildcard expansion, startup
+  profiles, and installation as `/bin/sh`; `/sbin/mash` remains available as
+  the recovery shell.
+- Ported FreeBSD `top` and retained the original ArmOS monitor as `mtop`.
+- Expanded PTY, signal, process-reaping, polling, terminal sizing, and command
+  execution contracts used by interactive shells and graphical terminals.
+
+### Build portability
+
+- Isolated build products under target-specific architecture/platform trees
+  and tightened ELF validation to prevent cross-target contamination.
+- Added reproducible QEMU 10.0.2 VirGL host tooling and fresh Debian/Ubuntu
+  installation guidance, including nested Linux/Parallels pointer support.
+- Improved third-party bundle caching, dependency bootstrapping, release
+  hygiene, and host-path removal from generated images.
 
 ### Native threads
 

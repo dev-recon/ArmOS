@@ -73,3 +73,21 @@ Inside ArmOS, `drm-info` must report `command-set: virgl2`; `virgl-smoke` then
 validates the capset, a 3D submission, its asynchronous fence and pixel
 readback. A build or boot failure must not silently fall back while claiming
 VirGL acceleration.
+
+## Nested Linux pointer input
+
+When the Linux host is itself a Parallels guest, the nested SDL window can
+receive clicks without receiving relative trackpad movement. Configure
+Parallels to **Optimize for games: Always**, then start ArmOS through X11 with
+the relative VirtIO mouse:
+
+```sh
+SDL_VIDEODRIVER=x11 \
+QEMU_DISPLAY=sdl,show-cursor=off \
+QEMU_POINTER_DEVICE=virtio-mouse-device,event_idx=off,indirect_desc=off \
+QEMU_GPU_ACCEL=virgl TARGET_ARCH=arm64 TARGET_PLATFORM=qemu-virt \
+./boot-graphics.sh
+```
+
+This changes only host event transport. ArmOS continues to consume the common
+VirtIO input event interface, with no platform-specific policy in the kernel.

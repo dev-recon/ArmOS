@@ -5,9 +5,9 @@ ArmOS. The goal is not to clone Linux line by line, but to converge toward the
 same useful Unix contracts while keeping the kernel understandable and
 debuggable.
 
-## 0.7.4 Current Baseline
+## 0.7.5 Current Baseline
 
-The 0.7.4 release keeps the 0.7 common-kernel architecture and adds:
+The 0.7.5 release keeps the 0.7 common-kernel architecture and adds:
 
 - one POSIX implementation path for ARM32 and ARM64, including clocks,
   positioned I/O, directory-relative operations, filesystem capacity,
@@ -52,7 +52,7 @@ architecture-private implementation of a common kernel policy.
 
 ## HDMI And USB Follow-up
 
-The 0.7.4 hardware baseline includes two Raspberry Pi 3 backends while
+The 0.7.5 hardware baseline includes two Raspberry Pi 3 backends while
 preserving UART as the recovery path:
 
 - a VideoCore mailbox framebuffer exposed through the common `/dev/fb0` and
