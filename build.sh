@@ -178,6 +178,34 @@ for tool in make python3 "${ARCH}gcc" "${ARCH}ld" "${ARCH}objcopy" "${ARCH}objdu
     fi
 done
 
+# Fail before a long incremental userland build when an enabled source bundle
+# requires a host-side generator. Bundle scripts retain their own checks so
+# they remain safe when invoked directly.
+HOST_GENERATORS=()
+if [ "$BUILD_BSD" = "1" ]; then
+    HOST_GENERATORS+=(bison flex yacc)
+fi
+if [ "$BUILD_NCURSES" = "1" ]; then
+    HOST_GENERATORS+=(tic)
+fi
+if [ "$BUILD_FONTCONFIG" = "1" ]; then
+    HOST_GENERATORS+=(gperf)
+fi
+for tool in "${HOST_GENERATORS[@]}"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Error: required host generator '$tool' not found in PATH" >&2
+        echo "Linux: sudo apt install bison flex gperf ncurses-bin" >&2
+        echo "Homebrew: brew install bison flex gperf ncurses" >&2
+        exit 1
+    fi
+done
+
+if [ "$BUILD_HARFBUZZ" = "1" ] &&
+   ! command -v "${ARCH}g++" >/dev/null 2>&1; then
+    echo "Error: required cross C++ compiler '${ARCH}g++' not found in PATH" >&2
+    exit 1
+fi
+
 if [ "$BUILD_ALL_USERLAND" != "1" ] &&
    ! TARGET_ARCH="$TARGET_ARCH" ARCH="$ARCH" \
        ./tools/validate_userfs_arch.sh \

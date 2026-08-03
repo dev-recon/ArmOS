@@ -50,6 +50,13 @@ CC="${ARCH}gcc"
 STRIP="${ARCH}strip"
 LIBGCC="${LIBGCC:-$("$CC" $ARM_FLAGS -print-libgcc-file-name)}"
 
+if ! command -v gperf >/dev/null 2>&1; then
+    echo "error: required host tool 'gperf' not found in PATH" >&2
+    echo "Linux:   sudo apt install gperf" >&2
+    echo "Homebrew: brew install gperf" >&2
+    exit 1
+fi
+
 verify_archive()
 {
     local actual

@@ -60,7 +60,8 @@ brew install dosfstools
 brew install e2fsprogs
 brew install curl
 brew install xz
-brew install bison flex
+brew install bison flex gperf
+brew install llvm
 brew install glib pixman ninja pkg-config
 ```
 
@@ -78,8 +79,10 @@ Tool purpose:
 - `e2fsprogs`: ext2 tools (`mke2fs`, `debugfs`, `e2fsck`)
 - `curl`: optional newlib source download when the local archive is absent
 - `xz`: archive support for some upstream source packages
-- `bison`, `flex`: host-side parser and lexer generators required by the
-  complete BSD userland and other imported source bundles
+- `bison`, `flex`, `gperf`: host-side parser, lexer and perfect-hash generators
+  required by the complete BSD userland, Fontconfig and other imported bundles
+- `llvm`: supplies the build-only libc++ headers used for the HarfBuzz
+  amalgamation; no C++ runtime or C++ API is installed in ArmOS
 - `glib`, `pixman`, `ninja`, `pkg-config`: host dependencies for the exact
   repo-local QEMU 10.0.2 build
 
@@ -156,6 +159,9 @@ aarch64-elf-gcc --version
 aarch64-elf-objcopy --version
 bison --version
 flex --version
+gperf --version
+tic -V
+test -f "$(brew --prefix llvm)/include/c++/v1/__config"
 qemu-system-arm --version
 qemu-system-aarch64 --version
 mkfs.fat -V
@@ -410,16 +416,26 @@ brew install arm-none-eabi-gcc
 which arm-none-eabi-gcc
 ```
 
-### `bison` or `flex` not found
+### `bison`, `flex`, `gperf`, or `tic` not found
 
 Install both host-side generators, then restart the same incremental build:
 
 ```sh
-brew install bison flex
+brew install bison flex gperf ncurses
 export PATH="$(brew --prefix bison)/bin:$PATH"
 ```
 
 No clean rebuild is required.
+
+### LLVM libc++ headers not found
+
+Install Homebrew LLVM, then resume the same incremental build:
+
+```sh
+brew install llvm
+LIBCXX_INCLUDE="$(brew --prefix llvm)/include/c++/v1" \
+  ARMOS_CONFIG=configs/qemu-virt-arm64.conf ./build.sh
+```
 
 ### `mke2fs` or `debugfs` not found
 

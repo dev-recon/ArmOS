@@ -45,6 +45,9 @@ sudo apt install -y \
   xz-utils \
   bison \
   flex \
+  gperf \
+  ncurses-bin \
+  libc++-dev \
   gcc-arm-none-eabi \
   binutils-arm-none-eabi \
   qemu-system-arm \
@@ -70,8 +73,11 @@ Tool purpose:
 - `dosfstools`: FAT image creation (`mkfs.fat`)
 - `e2fsprogs`: ext2 tools (`mke2fs`, `debugfs`, `e2fsck`)
 - `curl`, `xz-utils`: optional source package download/extraction helpers
-- `bison`, `flex`: host-side parser and lexer generators required by the
-  complete BSD userland and other imported source bundles
+- `bison`, `flex`, `gperf`: host-side parser, lexer and perfect-hash generators
+  required by the complete BSD userland, Fontconfig and other imported bundles
+- `ncurses-bin`: supplies the host `tic` compiler used by the ncurses bundle
+- `libc++-dev`: build-only C++ headers used to compile the HarfBuzz amalgamation;
+  ArmOS still exposes HarfBuzz through its C API and installs no C++ runtime
 - `ninja-build`, `pkg-config`, `python3-venv`, `libglib2.0-dev`,
   `libpixman-1-dev`: core host dependencies for the exact QEMU 10.0.2 build
 - `libgtk-3-dev`: GTK window backend used by `boot-graphics.sh` with the
@@ -122,7 +128,8 @@ Where the distribution does not package `aarch64-elf-gcc`, install the
 [Homebrew formula](https://formulae.brew.sh/formula/aarch64-elf-gcc):
 
 ```sh
-brew install aarch64-elf-gcc bison flex
+brew install aarch64-elf-gcc bison flex gperf
+brew install llvm
 ```
 
 When Bison comes from Homebrew, ensure its executable directory precedes an
@@ -197,6 +204,10 @@ aarch64-elf-gcc --version        # required for ARM64 targets
 aarch64-elf-objcopy --version
 bison --version
 flex --version
+gperf --version
+tic -V
+test -f /usr/include/c++/v1/__config || \
+  test -f "$(brew --prefix llvm)/include/c++/v1/__config"
 qemu-system-arm --version
 qemu-system-aarch64 --version
 mkfs.fat -V
@@ -419,17 +430,34 @@ Then verify:
 which arm-none-eabi-gcc
 ```
 
-### `bison` or `flex` not found
+### `bison`, `flex`, `gperf`, or `tic` not found
 
 Complete userland profiles generate parsers and lexers for imported tools on
 the host. Install both generators before restarting the incremental build:
 
 ```sh
-sudo apt install bison flex
+sudo apt install bison flex gperf ncurses-bin
 ```
 
 Already completed bundles remain cached; neither `make clean` nor
 `./build.sh --rebuild` is required.
+
+### LLVM libc++ headers not found
+
+HarfBuzz is compiled from its upstream C++ amalgamation but exports only its C
+API to ArmOS. Install the build-only libc++ headers, then resume the same build:
+
+```sh
+sudo apt install libc++-dev
+```
+
+With Homebrew, use `brew install llvm`. If LLVM uses a non-standard prefix,
+pass it explicitly:
+
+```sh
+LIBCXX_INCLUDE="$(brew --prefix llvm)/include/c++/v1" \
+  ARMOS_CONFIG=configs/qemu-virt-arm64.conf ./build.sh
+```
 
 ### FAT tools not found
 

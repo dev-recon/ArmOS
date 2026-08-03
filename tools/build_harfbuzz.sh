@@ -63,6 +63,7 @@ fi
 find_libcxx_include()
 {
     local candidate
+    local brew_llvm
 
     if [ -n "${LIBCXX_INCLUDE:-}" ] && [ -f "$LIBCXX_INCLUDE/__config" ]; then
         printf '%s\n' "$LIBCXX_INCLUDE"
@@ -72,16 +73,33 @@ find_libcxx_include()
     for candidate in \
         /opt/homebrew/opt/llvm/include/c++/v1 \
         /usr/local/opt/llvm/include/c++/v1 \
-        /usr/include/c++/v1; do
+        /usr/include/c++/v1 \
+        /usr/lib/llvm-*/include/c++/v1; do
         if [ -f "$candidate/__config" ]; then
             printf '%s\n' "$candidate"
             return
         fi
     done
 
+    if command -v brew >/dev/null 2>&1; then
+        brew_llvm="$(brew --prefix llvm 2>/dev/null || true)"
+        if [ -f "$brew_llvm/include/c++/v1/__config" ]; then
+            printf '%s\n' "$brew_llvm/include/c++/v1"
+            return
+        fi
+    fi
+
     echo "error: LLVM libc++ headers not found; set LIBCXX_INCLUDE" >&2
+    echo "Linux:   sudo apt install libc++-dev" >&2
+    echo "Homebrew: brew install llvm" >&2
     exit 1
 }
+
+if ! command -v "$CXX" >/dev/null 2>&1; then
+    echo "error: required cross C++ compiler '$CXX' not found in PATH" >&2
+    exit 1
+fi
+LIBCXX_INCLUDE="$(find_libcxx_include)"
 
 verify_archive()
 {
@@ -124,7 +142,6 @@ for dependency in \
     fi
 done
 
-LIBCXX_INCLUDE="$(find_libcxx_include)"
 rm -rf "$BUILD_DIR" "$BUNDLE_ROOT"
 mkdir -p "$BUILD_DIR" "$BUNDLE_PREFIX/include/harfbuzz" \
     "$BUNDLE_PREFIX/lib/pkgconfig" "$BUNDLE_USR_BIN" \

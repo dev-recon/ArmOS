@@ -5,26 +5,16 @@
 #ifndef ARMOS_HARFBUZZ_LIBCXX_CONFIG_SITE
 #define ARMOS_HARFBUZZ_LIBCXX_CONFIG_SITE
 
+// Keep disabled options undefined. LLVM 18 and earlier treat several libc++
+// configuration switches as presence macros, whereas newer releases treat
+// them as numeric booleans. Defining a disabled switch to 0 therefore enables
+// it on older hosts (notably the Microsoft ABI and musl libc paths).
 #define _LIBCPP_ABI_VERSION 1
 #define _LIBCPP_ABI_NAMESPACE __1
-#define _LIBCPP_ABI_FORCE_ITANIUM 0
-#define _LIBCPP_ABI_FORCE_MICROSOFT 0
 #define _LIBCPP_HAS_THREADS 1
 #define _LIBCPP_HAS_MONOTONIC_CLOCK 1
-#define _LIBCPP_HAS_TERMINAL 0
-#define _LIBCPP_HAS_MUSL_LIBC 0
 #define _LIBCPP_HAS_THREAD_API_PTHREAD 1
-#define _LIBCPP_HAS_THREAD_API_EXTERNAL 0
-#define _LIBCPP_HAS_THREAD_API_WIN32 0
-#define _LIBCPP_HAS_THREAD_API_C11 0
-#define _LIBCPP_HAS_VENDOR_AVAILABILITY_ANNOTATIONS 0
-#define _LIBCPP_HAS_FILESYSTEM 0
-#define _LIBCPP_HAS_RANDOM_DEVICE 0
-#define _LIBCPP_HAS_LOCALIZATION 0
-#define _LIBCPP_HAS_UNICODE 0
 #define _LIBCPP_HAS_WIDE_CHARACTERS 1
-#define _LIBCPP_HAS_TIME_ZONE_DATABASE 0
-#define _LIBCPP_INSTRUMENTED_WITH_ASAN 0
 #define _LIBCPP_PSTL_BACKEND_SERIAL
 #define _LIBCPP_HARDENING_MODE_DEFAULT 2
 
