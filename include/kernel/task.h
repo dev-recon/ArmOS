@@ -169,6 +169,15 @@ typedef struct scheduler_stats {
 
 void scheduler_get_stats(scheduler_stats_t* stats);
 
+/*
+ * Maintain and expose the system-wide runnable-task averages.  The timer
+ * supplies elapsed scheduler ticks; readers receive fixed-point values so the
+ * common kernel does not depend on floating-point support.
+ */
+#define SCHED_LOADAVG_SCALE 2048u
+void scheduler_loadavg_tick(uint32_t elapsed_ticks);
+void scheduler_get_loadavg(uint32_t averages[3], uint32_t* runnable);
+
 /* Forward declarations for structures */
 typedef struct inode inode_t;
 typedef struct file file_t;

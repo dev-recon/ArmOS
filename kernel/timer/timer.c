@@ -320,8 +320,11 @@ void timer_irq_handler(void)
     /* 4. Per-CPU accounting, plus one global wall-clock on the boot CPU. */
     if (cpu_id < ARMOS_MAX_CPUS)
         timer_cpu_ticks[cpu_id] += elapsed_ticks;
-    if (smp_is_boot_cpu())
+    if (smp_is_boot_cpu()) {
         system_ticks += elapsed_ticks;
+        if (process_system_ready)
+            scheduler_loadavg_tick(elapsed_ticks);
+    }
 
     if (cpu_id < ARMOS_MAX_CPUS) {
         uint64_t frequency = get_timer_frequency();

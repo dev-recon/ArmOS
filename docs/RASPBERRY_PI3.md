@@ -467,7 +467,7 @@ mmaptest
 vfstest
 systest
 kload -s 120 -m 2048 -c 4 -u 25 -p 8 -f 1 &
-top -s 1
+mtop -s 1
 lps
 cat /proc/smp
 iobench -f /tmp/iobench-ext2.dat -m 8 -b 64 -k
@@ -480,12 +480,12 @@ Expected properties:
 - `sleep 1` takes approximately one wall-clock second;
 - `online`, `seen_mask`, and `sched_mask` report all four CPUs;
 - worker tasks migrate across CPUs without spinlock diagnostics;
-- idle and `top` context-switch counts grow at the scheduler rate, not by tens
+- idle and `mtop` context-switch counts grow at the scheduler rate, not by tens
   of thousands per second;
 - `forkfail`, `sched-refuse`, and `ready-refuse` remain zero;
 - zombies and live physical/kernel-stack allocations return to baseline;
 - SD reads and writes complete without EMMC timeout diagnostics;
-- repeated `nano`, `ls`, `top`, fork/exec and COW activity does not produce
+- repeated `nano`, `ls`, `mtop`, fork/exec and COW activity does not produce
   lower-EL faults after tasks migrate between CPUs;
 - shutdown parks secondary CPUs, syncs ext2, stops the block device, and enters
   firmware powerdown without an exception.

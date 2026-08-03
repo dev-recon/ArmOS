@@ -579,7 +579,7 @@ Stress tests:
 systest &; systest &
 memstress 8192 30
 kload -s 30 -m 256 -c 8 -u 25 -p 4 &
-top
+mtop
 ```
 
 Interactive tests should often be done manually by the developer. Reserve

@@ -438,7 +438,7 @@ Stress with:
 ```sh
 systest &; systest &; systest &
 kload -s 30 -m 256 -c 8 -u 25 -p 4 &
-top
+mtop
 ```
 
 Watch:

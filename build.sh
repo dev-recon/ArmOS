@@ -52,6 +52,7 @@ enable_complete_userland_build()
     BUILD_NCURSES=1
     BUILD_LIBEDIT=1
     BUILD_FREEBSD_SH=1
+    BUILD_FREEBSD_TOP=1
     BUILD_NANO=1
     BUILD_EPOLL_SHIM=1
     BUILD_PIXMAN=1
@@ -101,6 +102,7 @@ fi
 BUILD_NCURSES="${BUILD_NCURSES:-0}"
 BUILD_LIBEDIT="${BUILD_LIBEDIT:-0}"
 BUILD_FREEBSD_SH="${BUILD_FREEBSD_SH:-0}"
+BUILD_FREEBSD_TOP="${BUILD_FREEBSD_TOP:-0}"
 BUILD_NANO="${BUILD_NANO:-0}"
 BUILD_EPOLL_SHIM="${BUILD_EPOLL_SHIM:-0}"
 BUILD_PIXMAN="${BUILD_PIXMAN:-0}"
@@ -590,6 +592,20 @@ if [ "$BUILD_FREEBSD_SH" = "1" ]; then
         build_cached_bundle freebsd-sh ./tools/build_freebsd_sh.sh \
             libedit ncurses
     rsync -a "$TARGET_BUNDLES/freebsd-sh/bundle/" "$TARGET_USERFS/"
+fi
+
+if [ "$BUILD_FREEBSD_TOP" = "1" ]; then
+    echo "=== Building FreeBSD top bundle ==="
+    if [ "$BUILD_NCURSES" != "1" ] &&
+       [ ! -f "$TARGET_USERFS/opt/ncurses/lib/libncurses.a" ]; then
+        echo "Error: FreeBSD top requires the target ncurses bundle" >&2
+        exit 1
+    fi
+    WORK_DIR="$TARGET_BUNDLES/freebsd-top" ARCH="$ARCH" \
+        NEWLIB_SYSROOT="$NEWLIB_SYSROOT" \
+        ARMOS_BUNDLE_EXTRA_INPUTS="$ROOT_DIR/userland/opt/freebsd-top/src/usr.bin/top $ROOT_DIR/userland/opt/freebsd-top/compat" \
+        build_cached_bundle freebsd-top ./tools/build_freebsd_top.sh ncurses
+    rsync -a "$TARGET_BUNDLES/freebsd-top/bundle/" "$TARGET_USERFS/"
 fi
 
 if [ "$BUILD_NANO" = "1" ]; then

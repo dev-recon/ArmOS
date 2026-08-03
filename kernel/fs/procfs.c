@@ -83,6 +83,7 @@ static file_operations_t procfs_dir_ops;
 #define PROC_INO_FS_FAT32   26u
 #define PROC_INO_FS_FAT32_STATS 27u
 #define PROC_INO_USB        28u
+#define PROC_INO_LOADAVG    29u
 #define PROC_PID_BASE       100000u
 #define PROC_PID_STRIDE     512u
 #define PROC_PID_DIR        0u
@@ -310,6 +311,8 @@ static inode_t* procfs_lookup(inode_t* dir, const char* name)
             return proc_make_inode(PROC_INO_MOUNTS, S_IFREG | 0444, 0);
         if (strcmp(name, "stat") == 0)
             return proc_make_inode(PROC_INO_STAT, S_IFREG | 0444, 0);
+        if (strcmp(name, "loadavg") == 0)
+            return proc_make_inode(PROC_INO_LOADAVG, S_IFREG | 0444, 0);
         if (strcmp(name, "tasks") == 0)
             return proc_make_inode(PROC_INO_TASKS, S_IFREG | 0444, 0);
         if (strcmp(name, "cpuinfo") == 0)
@@ -628,6 +631,34 @@ static void proc_fill_uptime(char* buf, size_t cap, size_t* len)
     proc_append(buf, cap, len, "%u.%02u 0.00\n",
                 ticks / TIMER_FREQ,
                 ((ticks % TIMER_FREQ) * 100u) / TIMER_FREQ);
+}
+
+static void proc_append_loadavg_value(char* buf, size_t cap, size_t* len,
+                                      uint32_t value)
+{
+    uint32_t whole = value / SCHED_LOADAVG_SCALE;
+    uint32_t fraction = ((value % SCHED_LOADAVG_SCALE) * 100u +
+                         SCHED_LOADAVG_SCALE / 2u) / SCHED_LOADAVG_SCALE;
+
+    if (fraction >= 100u) {
+        whole++;
+        fraction -= 100u;
+    }
+    proc_append(buf, cap, len, "%u.%02u", whole, fraction);
+}
+
+static void proc_fill_loadavg(char* buf, size_t cap, size_t* len)
+{
+    uint32_t averages[3];
+    uint32_t runnable;
+
+    scheduler_get_loadavg(averages, &runnable);
+    proc_append_loadavg_value(buf, cap, len, averages[0]);
+    proc_append(buf, cap, len, " ");
+    proc_append_loadavg_value(buf, cap, len, averages[1]);
+    proc_append(buf, cap, len, " ");
+    proc_append_loadavg_value(buf, cap, len, averages[2]);
+    proc_append(buf, cap, len, " %u/%u 0\n", runnable, task_get_count());
 }
 
 static void proc_fill_mounts(char* buf, size_t cap, size_t* len)
@@ -1945,6 +1976,7 @@ static int proc_generate_file(uint32_t ino, char* buf, size_t cap, size_t* len)
     switch (ino) {
         case PROC_INO_MEMINFO: proc_fill_meminfo(buf, cap, len); return 0;
         case PROC_INO_UPTIME:  proc_fill_uptime(buf, cap, len);  return 0;
+        case PROC_INO_LOADAVG: proc_fill_loadavg(buf, cap, len); return 0;
         case PROC_INO_MOUNTS:  proc_fill_mounts(buf, cap, len);  return 0;
         case PROC_INO_STAT:    proc_fill_stat(buf, cap, len);    return 0;
         case PROC_INO_TASKS:   proc_fill_tasks(buf, cap, len);   return 0;
@@ -2134,6 +2166,7 @@ static int procfs_root_readdir(file_t* file, dirent_t* dirent)
         { "..",      PROC_INO_ROOT,    DT_DIR },
         { "meminfo", PROC_INO_MEMINFO, DT_REG },
         { "uptime",  PROC_INO_UPTIME,  DT_REG },
+        { "loadavg", PROC_INO_LOADAVG, DT_REG },
         { "mounts",  PROC_INO_MOUNTS,  DT_REG },
         { "stat",    PROC_INO_STAT,    DT_REG },
         { "tasks",   PROC_INO_TASKS,   DT_REG },

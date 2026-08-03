@@ -5,7 +5,7 @@
  * Licensed under the Apache License, Version 2.0.
  * See LICENSE for details.
  *
- * File: userland/coreutils/src/top.c
+ * File: userland/coreutils/src/mtop.c
  * Layer: Userland / core utility
  * Description: POSIX-like command-line utility for ArmOS.
  */
@@ -807,7 +807,7 @@ static void append_task_compact(top_buf_t *buf, const top_task_t *task,
     format_count(task->ctx, ctxbuf, sizeof(ctxbuf));
     top_buf_printf(buf, C_CYAN "%5d" C_RESET " ", task->pid);
     if (task->tty >= 0)
-        top_buf_printf(buf, "tty%-1d", task->tty);
+        top_buf_printf(buf, "tty%-8d", task->tty);
     else
         top_buf_append(buf, "?   ", 4);
     top_buf_printf(buf, " %s%-5s" C_RESET " ", color, state_name(task));
@@ -876,7 +876,7 @@ static void render_top(unsigned delay_sec, int iteration)
 
     top_buf_append(&frame, "\033[?2026h\033[?25l\033[H",
                    sizeof("\033[?2026h\033[?25l\033[H") - 1);
-    top_buf_printf(&frame, C_BOLD C_CYAN "ArmOS top" C_RESET " - refresh %us", delay_sec);
+    top_buf_printf(&frame, C_BOLD C_CYAN "ArmOS mtop" C_RESET " - refresh %us", delay_sec);
     if (iteration >= 0)
         top_buf_printf(&frame, " - iteration %d", iteration + 1);
     top_buf_printf(&frame,
@@ -921,7 +921,7 @@ static void render_top(unsigned delay_sec, int iteration)
                        "PID", "TTY", "STATE", "LAST", "PRI", "DEBT",
                        "%CPU", "%USR", "%SYS", "TIME", "CTX", "PF", "RSS", "CMD");
     } else {
-        top_buf_printf(&frame, C_BOLD "%5s %-4s %-5s %3s %3s %5s %7s %6s %6s %s" C_RESET "\033[0K\r\n",
+        top_buf_printf(&frame, C_BOLD "%5s %-8s %-8s %5s %3s %5s %8s %6s %6s %s" C_RESET "\033[0K\r\n",
                        "PID", "TTY", "STATE", "CPU", "PRI", "%CPU", "TIME", "CTX", "RSS", "CMD");
     }
     append_rule(&frame, terminal_cols);
@@ -941,13 +941,13 @@ static void render_top(unsigned delay_sec, int iteration)
         top_buf_printf(&frame, C_CYAN "%5d" C_RESET " ", top_tasks[i].pid);
         append_tty(&frame, top_tasks[i].tty);
         top_buf_printf(&frame, "%*s %s%-8s" C_RESET " ",
-                       top_tasks[i].tty >= 0 ? 4 : 7,
+                       top_tasks[i].tty >= 0 ? 8 : 8,
                        "",
                        color,
                        state_name(&top_tasks[i]));
         append_cpu(&frame, top_tasks[i].cpu);
         top_buf_printf(&frame,
-                       " %3u %5u %3u.%u %3u.%u %3u.%u %8s %8s %6u %5uK %s\033[0K\r\n",
+                       " %5u %8u %3u.%u %3u.%u %3u.%u %8s %8s %6u %5uK %s\033[0K\r\n",
                        top_tasks[i].priority,
                        top_tasks[i].debt_score,
                        top_tasks[i].cpu_pct_x10 / 10u,
@@ -1017,7 +1017,7 @@ int main(int argc, char **argv)
 
     parsed = parse_args(argc, argv, &delay_sec, &max_count);
     if (parsed != 0) {
-        printf("usage: top [-s seconds] [-n count]\n");
+        printf("usage: mtop [-s seconds] [-n count]\n");
         return parsed < 0 ? 1 : 0;
     }
 

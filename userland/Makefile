@@ -504,6 +504,9 @@ $(OUT_BIN)/%: $(LINK_DEPS) $(BUILD_DIR)/coreutils/%.o
 
 install: $(TARGETS)
 	mkdir -p $(USERFS_BIN) $(USERFS_SBIN) $(USERFS_USR_BIN) $(USERFS_USR_LIB) $(USERFS_OPT)
+	# The historical monitor was renamed to mtop. Never let an incremental
+	# build publish the obsolete binary under the name reserved for FreeBSD top.
+	rm -f $(OUT_BIN)/top $(USERFS_BIN)/top
 	rm -rf $(USERFS_ROOT)/opt/newlib
 	rm -f $(USERFS_USR_BIN)/hello64
 	# xvprobe is an optional local-only binary; never retain one from another target.

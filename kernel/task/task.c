@@ -73,6 +73,14 @@ static volatile uint32_t idle_fallback_count[ARMOS_MAX_CPUS];
 static volatile uint32_t secondary_scheduler_done_mask;
 static volatile uint32_t secondary_scheduler_warned_mask;
 
+#define SCHED_LOADAVG_INTERVAL_TICKS (5u * TIMER_FREQ)
+#define SCHED_LOADAVG_EXP_1MIN       1884u
+#define SCHED_LOADAVG_EXP_5MIN       2014u
+#define SCHED_LOADAVG_EXP_15MIN      2037u
+
+static volatile uint32_t scheduler_loadavg[3];
+static uint32_t scheduler_loadavg_elapsed;
+
 //static spinlock_t task_lock = {0};
 
 static uint32_t task_reserve_task_id(void)
@@ -455,6 +463,63 @@ void scheduler_get_stats(scheduler_stats_t* stats)
     }
 
     spin_unlock_irqrestore(&task_lock, flags);
+}
+
+static uint32_t scheduler_runnable_snapshot(void)
+{
+    uint32_t runnable = __atomic_load_n(&ready_queue.nr_running,
+                                       __ATOMIC_RELAXED);
+    uint32_t cpus = smp_online_cpu_count();
+
+    if (cpus > ARMOS_MAX_CPUS)
+        cpus = ARMOS_MAX_CPUS;
+    for (uint32_t cpu = 0; cpu < cpus; cpu++) {
+        task_t* current = task_current_on_cpu(cpu);
+
+        if (current && !task_is_idle_task(current) &&
+            current->state == TASK_RUNNING)
+            runnable++;
+    }
+    return runnable;
+}
+
+static uint32_t scheduler_loadavg_step(uint32_t old_value,
+                                       uint32_t runnable,
+                                       uint32_t exponential)
+{
+    uint64_t accumulated = (uint64_t)old_value * exponential;
+
+    accumulated += (uint64_t)runnable * SCHED_LOADAVG_SCALE *
+                   (SCHED_LOADAVG_SCALE - exponential);
+    accumulated += SCHED_LOADAVG_SCALE / 2u;
+    return (uint32_t)(accumulated / SCHED_LOADAVG_SCALE);
+}
+
+void scheduler_loadavg_tick(uint32_t elapsed_ticks)
+{
+    scheduler_loadavg_elapsed += elapsed_ticks;
+    while (scheduler_loadavg_elapsed >= SCHED_LOADAVG_INTERVAL_TICKS) {
+        uint32_t runnable = scheduler_runnable_snapshot();
+
+        scheduler_loadavg_elapsed -= SCHED_LOADAVG_INTERVAL_TICKS;
+        scheduler_loadavg[0] = scheduler_loadavg_step(scheduler_loadavg[0],
+            runnable, SCHED_LOADAVG_EXP_1MIN);
+        scheduler_loadavg[1] = scheduler_loadavg_step(scheduler_loadavg[1],
+            runnable, SCHED_LOADAVG_EXP_5MIN);
+        scheduler_loadavg[2] = scheduler_loadavg_step(scheduler_loadavg[2],
+            runnable, SCHED_LOADAVG_EXP_15MIN);
+    }
+}
+
+void scheduler_get_loadavg(uint32_t averages[3], uint32_t* runnable)
+{
+    if (averages) {
+        for (uint32_t index = 0; index < 3; index++)
+            averages[index] = __atomic_load_n(&scheduler_loadavg[index],
+                                              __ATOMIC_RELAXED);
+    }
+    if (runnable)
+        *runnable = scheduler_runnable_snapshot();
 }
 
 void debug_context_switch_entry(void);
