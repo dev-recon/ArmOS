@@ -37,6 +37,13 @@ PACKAGING_VERSION="24.2"
 HOST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 HOST_CPU="$(uname -m | tr -d '\n' | tr -c '[:alnum:]_.-' '_')"
 HOST_ID="$HOST_OS-$HOST_CPU"
+if [ "$HOST_OS" = "linux" ]; then
+    if [ "${ARMOS_CONTAINER:-0}" = "1" ]; then
+        HOST_ID="$HOST_ID-container"
+    else
+        HOST_ID="$HOST_ID-native"
+    fi
+fi
 WORK_ROOT="${WORK_ROOT:-$ROOT_DIR/build/host-tools}"
 DOWNLOAD_DIR="${DOWNLOAD_DIR:-$ROOT_DIR/build/downloads/host-tools}"
 HOST_WORK="$WORK_ROOT/$HOST_ID"
@@ -168,10 +175,13 @@ version_is()
 
 python_environment_is_ready()
 {
-    [ -x "$PYTHON_BIN" ] && [ -f "$PYTHON_PREFIX/bin/meson" ] &&
+    [ -x "$PYTHON_BIN" ] && [ -x "$PYTHON_PREFIX/bin/meson" ] &&
+        [ -x "$PYTHON_PREFIX/bin/ninja" ] &&
         env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
-        "$PYTHON_BIN" "$PYTHON_PREFIX/bin/meson" --version 2>/dev/null |
+        "$PYTHON_PREFIX/bin/meson" --version 2>/dev/null |
         grep -Fxq "$MESON_VERSION" &&
+        env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV \
+        "$PYTHON_PREFIX/bin/ninja" --version >/dev/null 2>&1 &&
         env -u __PYVENV_LAUNCHER__ -u VIRTUAL_ENV "$PYTHON_BIN" -c '
 from importlib.metadata import version
 expected = {
@@ -218,7 +228,7 @@ fi
 
 mkdir -p "$DOWNLOAD_DIR" "$SOURCE_ROOT" "$BUILD_ROOT" "$HOST_WORK"
 
-CONTRACT="m4=$M4_VERSION:$M4_SHA256 bison=$BISON_VERSION:$BISON_SHA256 meson=$MESON_VERSION ninja=$NINJA_VERSION mako=$MAKO_VERSION markupsafe=$MARKUPSAFE_VERSION pyyaml=$PYYAML_VERSION packaging=$PACKAGING_VERSION host=$HOST_ID python=$("$HOST_PYTHON" --version 2>&1) cc=$(cc --version 2>/dev/null | head -n 1)"
+CONTRACT="m4=$M4_VERSION:$M4_SHA256 bison=$BISON_VERSION:$BISON_SHA256 meson=$MESON_VERSION ninja=$NINJA_VERSION mako=$MAKO_VERSION markupsafe=$MARKUPSAFE_VERSION pyyaml=$PYYAML_VERSION packaging=$PACKAGING_VERSION host=$HOST_ID prefix=$PREFIX python=$HOST_PYTHON:$("$HOST_PYTHON" --version 2>&1) cc=$(cc --version 2>/dev/null | head -n 1)"
 if [ "${ARMOS_FORCE_HOST_TOOLS_REBUILD:-0}" != "1" ] &&
    [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$CONTRACT" ] &&
    version_is "$PREFIX/bin/m4" "m4 (GNU M4) $M4_VERSION" &&

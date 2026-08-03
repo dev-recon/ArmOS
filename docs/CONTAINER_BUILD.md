@@ -133,6 +133,12 @@ third-party configure directory; source archives, extracted sources, unrelated
 bundles, kernels, and other target directories are preserved. No manual global
 clean is required.
 
+Pinned native generators are isolated as well. Linux local builds use
+`build/host-tools/linux-<architecture>-native/`, while container builds use
+`build/host-tools/linux-<architecture>-container/`. Python virtual environments
+and generated Meson launchers contain absolute interpreter paths and must never
+be shared between `/workspace` and a host checkout path.
+
 The first build after a configure-cache format update may recreate these
 bundle build directories once. Later builds reuse them normally.
 
