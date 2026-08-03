@@ -203,7 +203,7 @@ while IFS= read -r binary; do
     fi
     EXECUTABLES=$((EXECUTABLES + 1))
 done < <(
-    make -s -C "$ROOT_DIR/userland" \
+    make --no-print-directory -s -C "$ROOT_DIR/userland" \
         TARGET_ARCH=arm64 \
         TARGET_PLATFORM="$TARGET_PLATFORM" \
         KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
@@ -232,7 +232,7 @@ if [ "$INSTALL" -eq 1 ]; then
             exit 1
         fi
     done < <(
-        make -s -C "$ROOT_DIR/userland" \
+        make --no-print-directory -s -C "$ROOT_DIR/userland" \
             TARGET_ARCH=arm64 \
             TARGET_PLATFORM="$TARGET_PLATFORM" \
             KEYBOARD_LAYOUT="$KEYBOARD_LAYOUT" \
