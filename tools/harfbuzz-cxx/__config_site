@@ -15,7 +15,18 @@
 #define _LIBCPP_HAS_MONOTONIC_CLOCK 1
 #define _LIBCPP_HAS_THREAD_API_PTHREAD 1
 #define _LIBCPP_HAS_WIDE_CHARACTERS 1
+// LLVM 18-20 use the PSTL_CPU name while newer libc++ releases use the
+// shorter PSTL name.  Define both to select the same serial implementation
+// without making the cross-build depend on a host thread backend.
+#define _LIBCPP_PSTL_CPU_BACKEND_SERIAL
 #define _LIBCPP_PSTL_BACKEND_SERIAL
+// ArmOS newlib intentionally exposes the C locale only.  Keeping libc++
+// localization enabled pulls in locale_t, uselocale and the *_l functions,
+// none of which are part of the target ABI used by this build-only runtime.
+// LLVM 18 uses the negative presence macro; newer releases use the numeric
+// positive macro.  Both are required for a host-independent configuration.
+#define _LIBCPP_HAS_NO_LOCALIZATION
+#define _LIBCPP_HAS_LOCALIZATION 0
 #define _LIBCPP_HARDENING_MODE_DEFAULT 2
 
 #endif
